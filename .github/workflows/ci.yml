@@ -29,10 +29,7 @@ jobs:
           sudo apt-get install --no-install-recommends --yes fish zsh
           command -v pwsh
           command -v python3
-      - name: Install dependencies with the current DreamCLI PR preview
-        run: |
-          bun update --filter @kjanat/vaultwarden-cli @kjanat/dreamcli
-          bun install
+      - run: bun install
       - run: bun run build
       - run: bun run check-types
       - run: bun run lint
@@ -72,10 +69,7 @@ jobs:
         if: matrix.server == '1.37.4'
         working-directory: ${{ runner.temp }}
         run: npm install --prefix "$RUNNER_TEMP/reference-cli" --no-audit --no-fund @bitwarden/cli@2026.10.0
-      - name: Install dependencies with the current DreamCLI PR preview
-        run: |
-          bun update --filter @kjanat/vaultwarden-cli @kjanat/dreamcli
-          bun install
+      - run: bun install
       - name: Exercise both KDFs, transfers, organizations, Sends, authentication and REST
         env:
           VW_TEST_VERSION: ${{ matrix.server }}

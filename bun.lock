@@ -16,7 +16,7 @@
         "vw": "dist/main.js",
       },
       "dependencies": {
-        "@kjanat/dreamcli": "https://pkg.pr.new/@kjanat/dreamcli@149",
+        "@kjanat/dreamcli": "4.2.0",
         "@kjanat/vaultwarden": "workspace:*",
       },
       "devDependencies": {
@@ -150,7 +150,7 @@
 
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
 
-    "@kjanat/dreamcli": ["@kjanat/dreamcli@https://pkg.pr.new/@kjanat/dreamcli@149", { "dependencies": { "ansispeck": "^0.4.2" } }, "sha512-BgGMXIRK4xkypIW2m4AffYt8CiMXpajmv4uq147GcmKERIgRN/9klSMfGqCXgeMR5lcCWfOKhnq0aP2+TvQoGw=="],
+    "@kjanat/dreamcli": ["@kjanat/dreamcli@4.2.0", "", { "dependencies": { "ansispeck": "^0.4.2" } }, "sha512-llRDfPcCt222QBZrZCLRtL0nLArzZUY6veElNn1n2jiaaMSvfbkXzgyqC0bI2qryA3SIvgFLiop9H8L9XWHmkg=="],
 
     "@kjanat/vaultwarden": ["@kjanat/vaultwarden@workspace:packages/vaultwarden"],
 

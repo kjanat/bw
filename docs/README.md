@@ -48,10 +48,8 @@ or after a command, including nested commands. `VW_PRETTY=true` sets the default
 and `--pretty=false` overrides it. `--response` and `--cleanexit` remain required
 work.
 
-The CLI temporarily uses `@kjanat/dreamcli` from
-`https://pkg.pr.new/@kjanat/dreamcli@149`, recorded with an integrity hash in the
-Bun lockfile. Its package metadata still reports version 4.1.0; the dependency
-source is the preview URL. The CLI uses its prompt session and
+The CLI uses the published `@kjanat/dreamcli` 4.2.0 release, recorded in the
+Bun lockfile. The CLI uses its prompt session and
 password factory for master passwords, API secrets, verification codes, Send
 passwords, and protected import passwords; no Inquirer dependency is needed.
 Secret entry preserves whitespace, suppresses echo, and restores terminal state

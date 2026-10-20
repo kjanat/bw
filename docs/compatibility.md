@@ -533,12 +533,13 @@ expectations in 44.76 seconds on 2026-10-21, including silent password/raw
 attachment reads and a quiet download whose written file was checked byte for
 byte. That server fixture did not use the independent reference client.
 
-The CLI temporarily depends on the user-selected
-`https://pkg.pr.new/@kjanat/dreamcli@149` preview, with its integrity recorded in
-`bun.lock`; `bun install --frozen-lockfile` succeeds. The installed package reports
-4.1.0 in its manifest, so that version alone does not identify the preview.
-Build, types, lint and all 128 library/30 non-live CLI tests passed against this
-preview. The real 1.37.4 SSO fixture also passed under both KDFs (54 expectations
+The CLI now depends on the published `@kjanat/dreamcli` 4.2.0 release rather than
+the temporary PR preview. Both CI jobs use plain `bun install`; the workaround
+that updated the moving preview before installation has been removed.
+Against 4.2.0, a clean-cache installation, build, types, lint, 128 library tests
+and 33 non-live CLI tests passed; seven opt-in live cases were skipped.
+Earlier preview verification covered build, types, lint and all 128 library/30
+non-live CLI tests. The real 1.37.4 SSO fixture also passed under both KDFs (54 expectations
 in 14.43 seconds), including compiled `--pretty login --sso identifier --raw`.
 
 Pretty output is a declared boolean flag on each command, created before actions
@@ -550,7 +551,7 @@ explicit false overrides, quiet precedence, nested templates, schema-derived
 completions, JSON mode, literal flags after `--`, and unchanged raw secret/export
 bytes. Response envelopes and clean-exit behavior remain required work.
 
-All terminal prompts now use the selected DreamCLI preview's shared prompt
+All terminal prompts now use DreamCLI's shared prompt
 session. Hidden password entry replaces `@inquirer/password` for login, API
 secrets, two-factor codes, Send passwords, and protected imports; its dependency
 and transitive lockfile entries were removed. Ordinary and hidden input share
@@ -563,4 +564,4 @@ compiled `login`. It verifies absence of secret text in the terminal transcript,
 restoration of ECHO/ICANON, natural process exit, cancellation exit 130, and an
 unauthenticated profile afterward. Synthetic data only is used. PTY tests require
 POSIX and Python 3, and skip on unsupported hosts; CI explicitly checks for
-Python 3. Hosted execution remains unobserved.
+Python 3. The fixture is included in the hosted unit-test job.

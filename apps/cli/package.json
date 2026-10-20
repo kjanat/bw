@@ -25,7 +25,7 @@
 		"test:compat": "bun test/run-compatibility.ts"
 	},
 	"dependencies": {
-		"@kjanat/dreamcli": "https://pkg.pr.new/@kjanat/dreamcli@149",
+		"@kjanat/dreamcli": "4.2.0",
 		"@kjanat/vaultwarden": "workspace:*"
 	},
 	"devDependencies": {
