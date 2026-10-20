@@ -1,0 +1,4 @@
+[tools]
+"github:kjanat/dprint" = "latest"
+"github:tombi-toml/tombi" = "latest"
+node = "26"

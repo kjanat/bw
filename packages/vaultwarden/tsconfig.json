@@ -1,0 +1,10 @@
+{
+	"extends": "@vw/typescript-config/base.json",
+	"compilerOptions": {
+		"types": ["bun"],
+		"rootDir": ".",
+		"noUnusedLocals": true,
+		"noUnusedParameters": true
+	},
+	"include": ["src/**/*.ts", "test/**/*.ts"]
+}

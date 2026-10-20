@@ -1,0 +1,29 @@
+{
+	"name": "vw",
+	"private": true,
+	"workspaces": [
+		"apps/*",
+		"packages/*"
+	],
+	"scripts": {
+		"build": "turbo run build",
+		"check-types": "turbo run check-types",
+		"dev": "turbo run dev",
+		"format": "dprint fmt",
+		"lint": "turbo run lint",
+		"test": "turbo run test"
+	},
+	"devDependencies": {
+		"turbo": "^2.11.9",
+		"typescript": "7.0.2"
+	},
+	"engines": {
+		"node": ">=24"
+	},
+	"devEngines": {
+		"packageManager": {
+			"name": "bun",
+			"version": "1.4.3"
+		}
+	}
+}

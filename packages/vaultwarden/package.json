@@ -1,0 +1,42 @@
+{
+	"name": "@kjanat/vaultwarden",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"imports": {
+		"#*": {
+			"bun": "./src/*.ts",
+			"types": "./src/*.ts",
+			"default": "./dist/*.js"
+		}
+	},
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"default": "./dist/index.js"
+		}
+	},
+	"files": [
+		"THIRD_PARTY_NOTICES.md",
+		"dist"
+	],
+	"scripts": {
+		"build": "tsc -p tsconfig.build.json",
+		"check-types": "tsc --noEmit",
+		"lint": "eslint src test",
+		"test": "bun test"
+	},
+	"dependencies": {
+		"@noble/hashes": "2.4.0",
+		"fflate": "0.8.3"
+	},
+	"devDependencies": {
+		"@babel/eslint-parser": "8.0.1",
+		"@babel/preset-typescript": "8.0.1",
+		"@eslint/js": "10.0.1",
+		"@types/bun": "latest",
+		"@vw/typescript-config": "workspace:*",
+		"eslint": "10.9.1",
+		"typescript": "7.0.2"
+	}
+}

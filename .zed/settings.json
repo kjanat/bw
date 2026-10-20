@@ -1,0 +1,27 @@
+// Folder-specific settings
+// vim: set ft=jsonc:
+//
+// For a full list of overridable settings, and general information on folder-specific settings,
+// see the documentation: https://zed.dev/docs/configuring-zed#settings-files
+//
+// mkdir -p .zed; curl -fsSLo .zed/settings.json https://github.com/kjanat/kjanat/raw/HEAD/.zed/settings.json
+{
+	"formatter": [{ "language_server": { "name": "dprint" } }],
+	"prettier": { "allowed": false },
+	"languages": {
+		"TypeScript": {
+			"language_servers": ["typescript", "eslint"]
+		},
+		"JavaScript": {
+			"language_servers": ["typescript", "eslint"]
+		}
+	},
+	"lsp": {
+		"dprint": {
+			"binary": {
+				"path": "mise",
+				"arguments": ["exec", "--", "dprint", "lsp"]
+			}
+		}
+	}
+}

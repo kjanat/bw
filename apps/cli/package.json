@@ -1,0 +1,40 @@
+{
+	"name": "@kjanat/vaultwarden-cli",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"imports": {
+		"#*": {
+			"bun": "./src/*.ts",
+			"types": "./src/*.ts",
+			"default": "./dist/*.js"
+		}
+	},
+	"bin": {
+		"vw": "dist/main.js"
+	},
+	"files": [
+		"dist"
+	],
+	"scripts": {
+		"build": "tsc -p tsconfig.build.json",
+		"check-types": "tsc --noEmit",
+		"dev": "bun src/main.ts",
+		"lint": "eslint src test",
+		"test": "bun test"
+	},
+	"dependencies": {
+		"@inquirer/password": "5.2.4",
+		"@kjanat/dreamcli": "4.1.0",
+		"@kjanat/vaultwarden": "workspace:*"
+	},
+	"devDependencies": {
+		"@babel/eslint-parser": "8.0.1",
+		"@babel/preset-typescript": "8.0.1",
+		"@eslint/js": "10.0.1",
+		"@types/bun": "latest",
+		"@vw/typescript-config": "workspace:*",
+		"eslint": "10.9.1",
+		"typescript": "7.0.2"
+	}
+}
