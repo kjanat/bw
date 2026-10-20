@@ -7,6 +7,21 @@ function transport(
 	return ((url: string | URL | Request, init: RequestInit) => handler(String(url), init)) as typeof fetch;
 }
 const json = (data: unknown, status = 200) => Response.json(data, { status });
+test('account revisions accept integer timestamps and deletion signals, preserving service routing and auth', async () => {
+	for (const revision of [0, 1780000000000, -1, '1780000000000', null, {}, 1.5, 8640000000000001]) {
+		const api = new VaultwardenClient('https://vault.example', {
+			services: { api: 'https://api.example/prefix' },
+			fetch: transport((url, init) => {
+				expect(url).toBe('https://api.example/prefix/accounts/revision-date');
+				expect(new Headers(init.headers).get('Authorization')).toBe('Bearer synthetic-token');
+				return json(revision);
+			}),
+		});
+		if (typeof revision === 'number' && Number.isSafeInteger(revision) && Math.abs(revision) <= 8640000000000000) {
+			expect(await api.accountRevisionDate('synthetic-token')).toBe(revision);
+		} else await expect(api.accountRevisionDate('synthetic-token')).rejects.toThrow('Invalid account revision');
+	}
+});
 test('requires TLS except loopback and preserves path prefixes', () => {
 	expect(serverUrl('https://example.com/vault/')).toBe(
 		'https://example.com/vault',
@@ -53,6 +68,31 @@ test('prelogin never retries rate limiting or auth failures', async () => {
 	});
 	await expect(api.prelogin('test@example.com')).rejects.toThrow('HTTP 429');
 	expect(calls).toBe(1);
+});
+test('split identity and API endpoints preserve service prefixes through prelogin fallback and API calls', async () => {
+	const paths: string[] = [];
+	const api = new VaultwardenClient('https://vault.example.com/base', {
+		services: { api: 'https://api.example.com/custom/api/', identity: 'https://auth.example.com/custom/identity/' },
+		fetch: transport((url, init) => {
+			paths.push(url);
+			if (url.includes('/custom/identity/')) return json({}, 404);
+			if (url.endsWith('/accounts/prelogin')) return json({ kdf: 0, kdfIterations: 600000 });
+			expect(new Headers(init.headers).get('Authorization')).toBe('Bearer synthetic-token');
+			return json({ data: [] });
+		}),
+	});
+	expect(await api.prelogin('fixture@example.com')).toEqual({ type: 0, iterations: 600000 });
+	await api.api('synthetic-token', 'GET', '/folders', undefined, { search: 'a b' });
+	expect(paths).toEqual([
+		'https://auth.example.com/custom/identity/accounts/prelogin',
+		'https://api.example.com/custom/api/accounts/prelogin',
+		'https://api.example.com/custom/api/folders?search=a+b',
+	]);
+	expect(() =>
+		new VaultwardenClient('https://vault.example.com', {
+			services: { identity: 'http://auth.example.com' },
+		})
+	).toThrow();
 });
 test('supports nested KDF settings and modern wrapped user key responses', async () => {
 	const api = new VaultwardenClient('https://example.com', {

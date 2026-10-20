@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Build, types, lint and unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "26"
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.4.3"
+      - name: Install completion test shells
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes fish zsh
+          command -v pwsh
+          command -v python3
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+      - run: bun run check-types
+      - run: bun run lint
+      - run: bun run test
+
+  compatibility:
+    name: Vaultwarden ${{ matrix.server }} / Node ${{ matrix.node }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        server: ["1.36.0", "1.37.4"]
+        node: ["24", "26"]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.4.3"
+      - name: Install Docker output redactor
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/envctl"
+          gh release download v0.7.2 --repo kjanat/envctl --pattern envctl-linux-amd64 --pattern SHA256SUMS --dir "$RUNNER_TEMP/envctl"
+          cd "$RUNNER_TEMP/envctl"
+          sha256sum --check --ignore-missing SHA256SUMS
+          chmod 0755 envctl-linux-amd64
+          mv envctl-linux-amd64 envctl
+          echo "$RUNNER_TEMP/envctl" >> "$GITHUB_PATH"
+      - name: Install independent reference CLI
+        if: matrix.server == '1.37.4'
+        working-directory: ${{ runner.temp }}
+        run: npm install --prefix "$RUNNER_TEMP/reference-cli" --no-audit --no-fund @bitwarden/cli@2026.10.0
+      - run: bun install --frozen-lockfile
+      - name: Exercise both KDFs, transfers, organizations, Sends, authentication and REST
+        env:
+          VW_TEST_VERSION: ${{ matrix.server }}
+          VW_TEST_BW: ${{ runner.temp }}/reference-cli/node_modules/.bin/bw
+        run: bun run test:compat
+      - name: Verify delivered email codes under both KDFs
+        env:
+          VW_TEST_VERSION: ${{ matrix.server }}
+          VW_TEST_SMTP: "1"
+          VW_TEST_CASE: email two-factor
+        run: bun run test:compat
+      - name: Verify OIDC SSO under both KDFs
+        env:
+          VW_TEST_VERSION: ${{ matrix.server }}
+          VW_TEST_SSO: "1"
+        run: bun run test:compat

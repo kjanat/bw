@@ -4,8 +4,8 @@ import { unzipSync, zipSync } from 'fflate';
 import { VaultwardenClient, type JsonObject } from '#client';
 import { VaultService } from '#vault-service';
 import { encrypt, decrypt, deriveKdfKey, deriveMasterKey } from '#crypto';
-import { transformItem } from '#item-codec';
-import { parseCsv, writeCsv, decryptExportDocument, ImportFailure } from '#transfer';
+import { transformItem, encryptItem } from '#item-codec';
+import { parseCsv, writeCsv, decryptExportDocument, ImportFailure, importVault } from '#transfer';
 
 const key = Buffer.alloc(64, 6);
 const itemKey = Buffer.alloc(64, 7);
@@ -31,7 +31,7 @@ function fixture(handler?: (path: string, init: RequestInit) => Response) {
 		profile: { id: 'account' },
 		folders: [{ id: 'old-folder', name: encrypt(Buffer.from('Folder, name'), key) }],
 		collections: [],
-		ciphers: [{ ...transformItem(item, itemKey, 'encrypt'), key: encrypt(itemKey, key) }],
+		ciphers: [{ ...encryptItem(item, itemKey), key: encrypt(itemKey, key) }],
 	};
 	const transport =
 		((url: unknown, init: RequestInit) =>
@@ -118,6 +118,36 @@ test('bulk JSON import remaps folder relations and encrypts every item with a ne
 			),
 		).toEqual({ items: 1, folders: 1, collections: 0, attachments: 0 });
 		expect(requests).toBe(1);
+	} finally {
+		vault.dispose();
+	}
+});
+test('organization import includes full collection membership arrays required by Vaultwarden 1.36', async () => {
+	let calls = 0;
+	const vault = fixture((path, init) => {
+		calls++;
+		expect(path).toContain('/api/ciphers/import-organization?organizationId=organization');
+		const body = JSON.parse(String(init.body));
+		expect(body.collections[0]).toMatchObject({ externalId: null, groups: [], users: [] });
+		expect(body.collections[0].id).toBeUndefined();
+		expect(decrypt(body.collections[0].name, key).toString()).toBe('Collection');
+		expect(body.collectionRelationships).toEqual([{ key: 0, value: 0 }]);
+		return new Response(null, { status: 204 });
+	});
+	try {
+		expect(
+			await importVault(
+				vault,
+				{ user: key, organization: () => key },
+				'bitwardenjson',
+				JSON.stringify({
+					collections: [{ id: 'source', name: 'Collection' }],
+					items: [{ ...item, collectionIds: ['source'] }],
+				}),
+				{ organizationId: 'organization' },
+			),
+		).toEqual({ items: 1, folders: 0, collections: 1, attachments: 0 });
+		expect(calls).toBe(1);
 	} finally {
 		vault.dispose();
 	}

@@ -21,6 +21,11 @@ export class ApiError extends Error {
 	constructor(
 		public readonly status: number,
 		public readonly twoFactorProviders: number[] = [],
+		public readonly sendAccessError?:
+			| 'password_hash_b64_required'
+			| 'password_hash_b64_invalid'
+			| 'send_id_invalid'
+			| 'unsupported_grant',
 	) {
 		super(
 			twoFactorProviders.length
@@ -73,22 +78,51 @@ export function parseKdf(data: JsonObject): Kdf {
 	}
 	return { type, iterations, memory, parallelism };
 }
-export interface Tokens {
+export interface AccessToken {
 	accessToken: string;
-	refreshToken: string;
 	expiresAt: number;
+}
+export interface Tokens extends AccessToken {
+	refreshToken: string;
+}
+export interface ApiKeyCredentials {
+	clientId: string;
+	clientSecret: string;
+}
+export interface ApiKeyLogin extends AccessToken {
+	email: string;
+	kdf: Kdf;
+	encryptedUserKey: string;
 }
 export interface Login extends Tokens {
 	encryptedUserKey: string;
 }
+export interface SsoCredentials {
+	code: string;
+	codeVerifier: string;
+	redirectUri: string;
+}
+export interface ServiceUrls {
+	webVault?: string;
+	api?: string;
+	identity?: string;
+	icons?: string;
+	notifications?: string;
+	events?: string;
+	keyConnector?: string;
+}
 export class VaultwardenClient {
 	readonly server: string;
+	readonly services: Readonly<ServiceUrls>;
 	private readonly transport: typeof fetch;
 	constructor(
 		server: string,
-		options: { fetch?: typeof fetch; deviceId?: string } = {},
+		options: { fetch?: typeof fetch; deviceId?: string; services?: ServiceUrls } = {},
 	) {
 		this.server = serverUrl(server);
+		this.services = Object.freeze(Object.fromEntries(
+			Object.entries(options.services ?? {}).map(([name, value]) => [name, serverUrl(value)]),
+		));
 		this.transport = options.fetch ?? fetch;
 		this.deviceId = options.deviceId ?? randomUUID();
 	}
@@ -99,7 +133,10 @@ export class VaultwardenClient {
 	): Promise<Response> {
 		let response: Response;
 		try {
-			response = await this.transport(`${this.server}${path}`, {
+			const service = path.startsWith('/identity/') ? 'identity' : path.startsWith('/api/') ? 'api' : undefined;
+			const endpoint = service && this.services[service];
+			const url = endpoint ? `${endpoint}${path.slice(service!.length + 1)}` : `${this.server}${path}`;
+			response = await this.transport(url, {
 				...init,
 				redirect: 'error',
 				signal: init.signal ?? AbortSignal.timeout(30_000),
@@ -119,16 +156,46 @@ export class VaultwardenClient {
 		}
 		if (!response.ok) {
 			let providers: number[] = [];
+			let sendError: ApiError['sendAccessError'];
 			try {
 				const error = object(await response.json());
+				const code = error.send_access_error_type;
+				if (
+					code === 'password_hash_b64_required' || code === 'password_hash_b64_invalid' || code === 'send_id_invalid'
+				) sendError = code;
+				if (
+					path === '/identity/connect/token' && init.body instanceof URLSearchParams
+					&& init.body.get('grant_type') === 'send_access' && response.status === 400
+					&& (error.message === 'Invalid type' || error.error === 'unsupported_grant_type')
+				) {
+					sendError = 'unsupported_grant';
+				}
+				if (path.startsWith('/api/sends/') && init.method === 'POST') {
+					if (response.status === 401 && error.message === 'Password not provided') {
+						sendError = 'password_hash_b64_required';
+					}
+					if (
+						response.status === 400 && (error.message === 'Invalid password' || error.message === 'Invalid password.')
+					) sendError = 'password_hash_b64_invalid';
+				}
 				const p = field(error, 'twoFactorProviders');
 				if (Array.isArray(p)) {
-					providers = p.filter((v): v is number => typeof v === 'number');
+					providers = p.filter((v): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 0);
+				}
+				const details = field(error, 'twoFactorProviders2');
+				if (details && typeof details === 'object' && !Array.isArray(details)) {
+					providers = [
+						...new Set([
+							...providers,
+							...Object.keys(details)
+								.filter(value => /^\d+$/.test(value)).map(Number).filter(Number.isSafeInteger),
+						]),
+					];
 				}
 			} catch {
 				/* Never include server-controlled response text in errors. */
 			}
-			throw new ApiError(response.status, providers);
+			throw new ApiError(response.status, providers, sendError);
 		}
 		return response;
 	}
@@ -158,7 +225,7 @@ export class VaultwardenClient {
 		}
 		return parseKdf(await this.request('/api/accounts/prelogin', init));
 	}
-	private tokens(data: JsonObject): Tokens {
+	private access(data: JsonObject): AccessToken {
 		if (
 			typeof data.expires_in !== 'number'
 			|| !Number.isFinite(data.expires_in)
@@ -168,9 +235,57 @@ export class VaultwardenClient {
 		}
 		return {
 			accessToken: text(data.access_token),
-			refreshToken: text(data.refresh_token),
 			expiresAt: Date.now() + data.expires_in * 1000,
 		};
+	}
+	private tokens(data: JsonObject): Tokens {
+		return { ...this.access(data), refreshToken: text(data.refresh_token) };
+	}
+	async loginWithApiKey(credentials: ApiKeyCredentials): Promise<ApiKeyLogin> {
+		if (
+			!/^user\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(credentials.clientId)
+			|| !credentials.clientId.startsWith('user.') || !credentials.clientSecret
+		) throw new Error('A personal user API client ID and secret are required.');
+		const data = await this.request('/identity/connect/token', {
+			method: 'POST',
+			body: new URLSearchParams({
+				grant_type: 'client_credentials',
+				client_id: credentials.clientId,
+				client_secret: credentials.clientSecret,
+				scope: 'api',
+				deviceIdentifier: this.deviceId,
+				deviceName: 'Vaultwarden CLI',
+				deviceType: '8',
+			}),
+		});
+		const tokens = this.access(data);
+		const profile = await this.api(tokens.accessToken, 'GET', '/accounts/profile');
+		if (`user.${text(field(profile, 'id'))}`.toLowerCase() !== credentials.clientId.toLowerCase()) {
+			throw new Error('API key account identity does not match the requested user.');
+		}
+		const options = field(data, 'userDecryptionOptions');
+		const unlock = options ? object(field(object(options), 'masterPasswordUnlock') ?? {}) : {};
+		const wrapped = field(data, 'key') ?? field(unlock, 'masterKeyWrappedUserKey')
+			?? field(unlock, 'masterKeyEncryptedUserKey');
+		const settings = field(unlock, 'kdf');
+		return {
+			...tokens,
+			email: normalizeEmail(text(field(profile, 'email'))),
+			kdf: field(data, 'kdf') !== undefined ? parseKdf(data) : parseKdf({ kdfSettings: settings }),
+			encryptedUserKey: text(wrapped),
+		};
+	}
+	/** Request an email login code only after the caller explicitly selects email 2FA. */
+	async sendEmailLogin(email: string, passwordHash: string): Promise<void> {
+		await this.request('/api/two-factor/send-email-login', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				email: normalizeEmail(email),
+				masterPasswordHash: passwordHash,
+				deviceIdentifier: this.deviceId,
+			}),
+		});
 	}
 	async login(
 		email: string,
@@ -205,6 +320,67 @@ export class VaultwardenClient {
 		}
 		return { ...this.tokens(data), encryptedUserKey: text(encryptedUserKey) };
 	}
+	async ssoPrevalidate(signal?: AbortSignal): Promise<string> {
+		try {
+			return text((await this.request('/identity/sso/prevalidate', { signal })).token);
+		} catch (error) {
+			if (error instanceof ApiError && error.status === 400) {
+				throw new Error('SSO is not enabled on this Vaultwarden server.', { cause: error });
+			}
+			throw error;
+		}
+	}
+	/** Email code for a pending SSO login, associated with this device's incomplete login. */
+	async sendSsoEmailLogin(): Promise<void> {
+		await this.request('/api/two-factor/send-email-login', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ deviceIdentifier: this.deviceId }),
+		});
+	}
+	async loginWithSso(
+		credentials: SsoCredentials,
+		twoFactor?: { provider: number; token: string },
+	): Promise<ApiKeyLogin & Tokens> {
+		if (
+			!/^http:\/\/localhost:(?:806[5-9]|8070)$/.test(credentials.redirectUri)
+			|| !/^[A-Za-z0-9._~-]{43,128}$/.test(credentials.codeVerifier)
+			|| !credentials.code || credentials.code.length > 4096
+		) throw new Error('Invalid SSO grant parameters.');
+		const body = new URLSearchParams({
+			grant_type: 'authorization_code',
+			client_id: 'cli',
+			scope: 'api offline_access',
+			code: credentials.code,
+			code_verifier: credentials.codeVerifier,
+			redirect_uri: credentials.redirectUri,
+			deviceIdentifier: this.deviceId,
+			deviceName: 'Vaultwarden CLI',
+			deviceType: '8',
+		});
+		if (twoFactor) {
+			body.set('twoFactorProvider', String(twoFactor.provider));
+			body.set('twoFactorToken', twoFactor.token);
+			body.set('twoFactorRemember', '0');
+		}
+		const data = await this.request('/identity/connect/token', { method: 'POST', body });
+		const tokens = this.tokens(data), profile = await this.api(tokens.accessToken, 'GET', '/accounts/profile');
+		const email = normalizeEmail(text(field(profile, 'email')));
+		const decryption = field(data, 'userDecryptionOptions');
+		const unlock = decryption ? object(field(object(decryption), 'masterPasswordUnlock') ?? {}) : {};
+		const wrapped = field(data, 'key') ?? field(unlock, 'masterKeyWrappedUserKey')
+			?? field(unlock, 'masterKeyEncryptedUserKey');
+		if (typeof wrapped !== 'string' || !wrapped) {
+			throw new Error('SSO account has no master-password wrapped vault key. Complete account setup in the web vault.');
+		}
+		const settings = field(unlock, 'kdf');
+		const kdf = field(data, 'kdf') !== undefined
+			? parseKdf(data)
+			: settings
+			? parseKdf({ kdfSettings: settings })
+			: await this.prelogin(email);
+		return { ...tokens, email, kdf, encryptedUserKey: wrapped };
+	}
 	async refresh(refreshToken: string): Promise<Tokens> {
 		return this.tokens(
 			await this.request('/identity/connect/token', {
@@ -235,6 +411,43 @@ export class VaultwardenClient {
 			...(data === undefined ? {} : { body: JSON.stringify(data) }),
 		});
 	}
+	/** Anonymous Send credentials mint a short-lived token independent of account authentication. */
+	async sendAccessToken(accessId: string, passwordHash?: string): Promise<string> {
+		const data = await this.request('/identity/connect/token', {
+			method: 'POST',
+			body: new URLSearchParams({
+				grant_type: 'send_access',
+				client_id: 'send',
+				scope: 'api.send.access',
+				send_id: accessId,
+				...(passwordHash === undefined ? {} : { password_hash_b64: passwordHash }),
+			}),
+		});
+		return text(data.access_token);
+	}
+	/** Anonymous access on servers predating the send_access grant. Only the derived password proof is sent. */
+	async legacySendAccess(accessId: string, passwordHash?: string): Promise<JsonObject> {
+		return this.request(`/api/sends/access/${encodeURIComponent(accessId)}`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ password: passwordHash ?? null }),
+		});
+	}
+	async legacySendFile(sendId: string, fileId: string, passwordHash?: string): Promise<JsonObject> {
+		return this.request(`/api/sends/${encodeURIComponent(sendId)}/access/file/${encodeURIComponent(fileId)}`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ password: passwordHash ?? null }),
+		});
+	}
+	async uploadSend(accessToken: string, sendId: string, fileId: string, body: FormData): Promise<void> {
+		await this.requestRaw(`/api/sends/${encodeURIComponent(sendId)}/file/${encodeURIComponent(fileId)}`, {
+			method: 'POST',
+			signal: AbortSignal.timeout(120000),
+			headers: { Authorization: `Bearer ${accessToken}` },
+			body,
+		});
+	}
 	async uploadAttachment(accessToken: string, itemId: string, attachmentId: string, body: FormData): Promise<void> {
 		await this.requestRaw(`/api/ciphers/${encodeURIComponent(itemId)}/attachment/${encodeURIComponent(attachmentId)}`, {
 			method: 'POST',
@@ -251,7 +464,7 @@ export class VaultwardenClient {
 		} catch {
 			throw new Error('Invalid attachment URL.');
 		}
-		const base = new URL(this.server);
+		const base = new URL(this.services.api ?? this.server);
 		if (
 			location.username || location.password || location.hash
 			|| (location.protocol !== 'https:' && !(location.protocol === 'http:' && location.origin === base.origin))
@@ -291,8 +504,24 @@ export class VaultwardenClient {
 			reader.releaseLock();
 		}
 	}
+	/** Account revision in Unix milliseconds; a negative value indicates a deleted account. */
+	async accountRevisionDate(accessToken: string): Promise<number> {
+		const response = await this.requestRaw('/api/accounts/revision-date', {
+			headers: { Authorization: `Bearer ${accessToken}` },
+		});
+		let revision: unknown;
+		try {
+			revision = await response.json();
+		} catch {
+			throw new Error('Invalid account revision response.');
+		}
+		if (typeof revision !== 'number' || !Number.isSafeInteger(revision) || Math.abs(revision) > 8640000000000000) {
+			throw new Error('Invalid account revision response.');
+		}
+		return revision;
+	}
 	async sync(accessToken: string): Promise<JsonObject> {
-		const data = await this.request('/api/sync?excludeDomains=true', {
+		const data = await this.request('/api/sync?excludeDomains=false', {
 			headers: { Authorization: `Bearer ${accessToken}` },
 		});
 		if (!Array.isArray(field(data, 'ciphers')) || !field(data, 'profile')) {

@@ -16,11 +16,17 @@
 			"cache": false,
 			"persistent": true
 		},
+		"test:compat": {
+			"dependsOn": ["build"],
+			"outputs": [],
+			"cache": false,
+			"env": ["VW_TEST_VERSION", "VW_TEST_BW", "VW_TEST_CASE", "VW_TEST_IMPORT_FORMAT", "VW_TEST_SMTP", "VW_TEST_SSO"]
+		},
 		"test": {
 			"dependsOn": ["build"],
 			"outputs": [],
 			"cache": false,
-			"env": ["VW_TEST_SERVER", "VW_TEST_BW"]
+			"env": ["VW_TEST_SERVER", "VW_TEST_BW", "VW_TEST_IMPORT_FORMAT", "VW_TEST_MAILPIT"]
 		}
 	}
 }

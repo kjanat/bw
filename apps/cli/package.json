@@ -21,11 +21,11 @@
 		"check-types": "tsc --noEmit",
 		"dev": "bun src/main.ts",
 		"lint": "eslint src test",
-		"test": "bun test"
+		"test": "bun test",
+		"test:compat": "bun test/run-compatibility.ts"
 	},
 	"dependencies": {
-		"@inquirer/password": "5.2.4",
-		"@kjanat/dreamcli": "4.1.0",
+		"@kjanat/dreamcli": "https://pkg.pr.new/@kjanat/dreamcli@149",
 		"@kjanat/vaultwarden": "workspace:*"
 	},
 	"devDependencies": {

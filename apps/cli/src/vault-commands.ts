@@ -1,6 +1,7 @@
+import { outputCommand as command } from '#output';
 import { readFile } from 'node:fs/promises';
 import { basename } from 'node:path';
-import { arg, command, flag } from '@kjanat/dreamcli';
+import { arg, flag } from '@kjanat/dreamcli';
 import {
 	decodeJson,
 	decodeStringArray,

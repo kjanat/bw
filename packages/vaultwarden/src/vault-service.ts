@@ -1,3 +1,8 @@
+import { fingerprintWords } from '#fingerprint';
+import { findNamedObject, searchItems } from '#search';
+import { filterItemsByUrl, type UriMatchOptions } from '#uri-match';
+import { passwordHealth, type PasswordHealthOptions, type PasswordHealthRow } from '#reports';
+import { SendService } from '#sends';
 import {
 	exportVault,
 	importVault,
@@ -7,10 +12,10 @@ import {
 	type ImportResult,
 } from '#transfer';
 import { randomBytes } from 'node:crypto';
-import { VaultwardenClient, field, object, text, type JsonObject } from '#client';
+import { ApiError, VaultwardenClient, field, object, text, type JsonObject } from '#client';
 import { decrypt, encrypt, decryptSharedKey, encryptSharedKey, encryptAttachment, decryptAttachment } from '#crypto';
 import { decryptOwnedItem } from '#vault';
-import { transformItem } from '#item-codec';
+import { encryptItem } from '#item-codec';
 import type { ItemFilter, VaultFolder, VaultItem } from '#models';
 
 const idPath = (id: string) => encodeURIComponent(text(id));
@@ -29,6 +34,64 @@ export class VaultService {
 		readonly snapshot: JsonObject,
 		private readonly userKey: Uint8Array,
 	) {}
+	async fingerprint(user = 'me'): Promise<string> {
+		const profile = object(this.snapshot.profile);
+		const id = user === 'me' ? text(profile.id) : user;
+		if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+			throw new Error('A user ID or me is required for fingerprint verification.');
+		}
+		let value: unknown;
+		if (user === 'me') {
+			const pair = profile.accountKeys ? object(object(profile.accountKeys).publicKeyEncryptionKeyPair ?? {}) : {};
+			value = profile.publicKey ?? pair.publicKey;
+		}
+		if (!value) value = (await this.client.api(this.accessToken, 'GET', `/users/${idPath(id)}/public-key`)).publicKey;
+		const encoded = text(value), bytes = Buffer.from(encoded, 'base64');
+		if (!bytes.length || bytes.toString('base64') !== encoded) throw new Error('Invalid user public key.');
+		return fingerprintWords(id, bytes).join('-');
+	}
+	async listItemsForUrl(url: string, filter: ItemFilter = {}, options: UriMatchOptions = {}): Promise<VaultItem[]> {
+		const domains = object(this.snapshot.domains ?? {});
+		const groups = Array.isArray(domains.equivalentDomains)
+			? domains.equivalentDomains.filter((value): value is string[] =>
+				Array.isArray(value) && value.every(part => typeof part === 'string')
+			)
+			: [];
+		for (const value of array(domains.globalEquivalentDomains ?? [])) {
+			if (!value.excluded && Array.isArray(value.domains)) {
+				groups.push(value.domains.filter((part): part is string => typeof part === 'string'));
+			}
+		}
+		const policy = array(this.snapshot.policies ?? []).find(value => value.type === 16 && value.enabled);
+		const policyMatch = policy ? object(policy.data ?? {}).uriMatchDetection : undefined;
+		const defaultMatch = typeof policyMatch === 'number' && policyMatch >= 0 && policyMatch <= 5
+			? policyMatch as UriMatchOptions['defaultMatch']
+			: options.defaultMatch;
+		return filterItemsByUrl(this.listItems(filter), url, {
+			...options,
+			defaultMatch,
+			equivalentDomains: options.equivalentDomains ?? groups,
+		});
+	}
+	findItem(query: string, predicate: (item: VaultItem) => boolean = () => true): VaultItem {
+		if (!query.trim()) throw new Error('Item not found.');
+		const byGuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(query);
+		const exact = array(this.snapshot.ciphers).find(item =>
+			typeof item.id === 'string' && item.id.toLowerCase() === query.toLowerCase()
+		);
+		const candidates = exact ? [this.getItem(text(exact.id))] : byGuid ? [] : searchItems(this.listItems(), query);
+		const matches = candidates.filter(predicate);
+		if (matches.length !== 1) {
+			throw new Error(matches.length > 1 ? 'Multiple matching items. Use an item ID.' : 'Item not found.');
+		}
+		return matches[0]!;
+	}
+	passwordHealth(options: PasswordHealthOptions = {}): Promise<PasswordHealthRow[]> {
+		return passwordHealth([...this.listItems(), ...this.listItems({ archived: true })], options);
+	}
+	get sends(): SendService {
+		return new SendService(this.client, this.accessToken, this.snapshot, this.userKey);
+	}
 	exportVault(format: ExportFormat, options: TransferOptions = {}): Promise<Buffer> {
 		return exportVault(
 			this,
@@ -83,6 +146,12 @@ export class VaultService {
 			delete org.key;
 			return org;
 		});
+	}
+	findOrganization(query: string): JsonObject {
+		return findNamedObject(this.listOrganizations(), query);
+	}
+	findCollection(query: string): JsonObject {
+		return findNamedObject(this.listCollections(), query);
 	}
 	listCollections(): JsonObject[] {
 		return array(field(this.snapshot, 'collections') ?? []).map(collection => ({
@@ -201,7 +270,7 @@ export class VaultService {
 			// For legacy items, generate a fresh item key; never wrap the user's account key for an organization.
 			const cipher = existing.key
 				? structuredClone(existing)
-				: transformItem(decryptOwnedItem(existing, this.userKey), key, 'encrypt');
+				: encryptItem(decryptOwnedItem(existing, this.userKey), key);
 			cipher.organizationId = organizationId;
 			cipher.key = encrypt(key, owner);
 			cipher.encryptedFor = text(object(field(this.snapshot, 'profile')).id);
@@ -243,7 +312,7 @@ export class VaultService {
 		return found;
 	}
 	listItems(filter: ItemFilter = {}): VaultItem[] {
-		return array(field(this.snapshot, 'ciphers')).filter(item => {
+		const items = array(field(this.snapshot, 'ciphers')).filter(item => {
 			if (Boolean(item.deletedDate) !== Boolean(filter.trash)) return false;
 			if (!filter.trash && Boolean(item.archivedDate) !== Boolean(filter.archived)) return false;
 			const filters = [
@@ -251,23 +320,15 @@ export class VaultService {
 				filter.organizationId === undefined ? undefined : matchesId(item.organizationId, filter.organizationId),
 				filter.collectionId === undefined
 					? undefined
+					: filter.collectionId === 'null'
+					? !Array.isArray(item.collectionIds) || item.collectionIds.length === 0
+					: filter.collectionId === 'notnull'
+					? Array.isArray(item.collectionIds) && item.collectionIds.length > 0
 					: Array.isArray(item.collectionIds) && item.collectionIds.includes(filter.collectionId),
 			].filter(value => value !== undefined);
 			return !filters.length || filters.some(Boolean);
-		}).map(item => decryptOwnedItem(item, this.ownerKey(item)) as VaultItem).filter(item => {
-			if (!filter.search) return true;
-			const login = item.login ?? {};
-			const values = [
-				item.id,
-				item.name,
-				item.notes,
-				login.username,
-				...(Array.isArray(login.uris) ? login.uris.map(uri => object(uri).uri) : []),
-			];
-			return values.some(value =>
-				typeof value === 'string' && value.toLowerCase().includes(filter.search!.toLowerCase())
-			);
-		});
+		}).map(item => decryptOwnedItem(item, this.ownerKey(item)) as VaultItem);
+		return filter.search ? searchItems(items, filter.search) : items;
 	}
 	getItem(id: string): VaultItem {
 		const wire = this.wire(id);
@@ -283,6 +344,9 @@ export class VaultService {
 		const folder = this.listFolders().find(folder => folder.id === id);
 		if (!folder) throw new Error('Folder not found.');
 		return folder;
+	}
+	findFolder(query: string): VaultFolder {
+		return findNamedObject(this.listFolders(), query);
 	}
 	private encodeItem(input: VaultItem, existing?: JsonObject): JsonObject {
 		if (typeof input.name !== 'string' || !input.name.trim()) throw new Error('Item name is required.');
@@ -300,7 +364,7 @@ export class VaultService {
 			const plain = { ...input };
 			delete plain.key;
 			if (existing?.attachments) plain.attachments = undefined; // Attachment metadata has its own endpoint.
-			const encoded = transformItem(plain, itemKey ?? owner, 'encrypt');
+			const encoded = encryptItem(plain, itemKey ?? owner);
 			encoded.key = existing ? (existing.key ?? null) : encrypt(itemKey!, owner);
 			encoded.encryptedFor = text(object(field(this.snapshot, 'profile')).id);
 			const revision = existing ? text(input.revisionDate ?? existing.revisionDate) : null;
@@ -397,27 +461,38 @@ export class VaultService {
 		}
 	}
 	async getAttachment(itemId: string, idOrName: string): Promise<{ fileName: string; contents: Buffer }> {
-		const item = this.wire(itemId);
+		const resolvedItemId = text(this.findItem(itemId).id);
+		const item = this.wire(resolvedItemId);
 		const itemKey = this.itemKey(item);
 		try {
-			const attachments = array(item.attachments ?? []);
-			let attachment = attachments.find(a => a.id === idOrName);
-			if (!attachment) {
-				const matches = attachments.filter(a => decrypt(text(a.fileName), itemKey).toString('utf8') === idOrName);
-				if (matches.length !== 1) {
-					throw new Error(matches.length ? 'Multiple matching attachments. Use an ID.' : 'Attachment not found.');
-				}
-				attachment = matches[0]!;
+			const query = idOrName.toLowerCase();
+			if (!query) throw new Error('Attachment not found.');
+			let matches = array(item.attachments ?? []).map(attachment => ({
+				attachment,
+				name: decrypt(text(attachment.fileName), itemKey).toString('utf8').toLowerCase(),
+			})).filter(value => text(value.attachment.id).toLowerCase() === query || value.name.includes(query));
+			const exactNames = matches.filter(value => value.name === query);
+			if (exactNames.length === 1) matches = exactNames;
+			if (matches.length !== 1) {
+				throw new Error(matches.length ? 'Multiple matching attachments. Use an ID.' : 'Attachment not found.');
 			}
-			const metadata = await this.client.api(
-				this.accessToken,
-				'GET',
-				`/ciphers/${idPath(itemId)}/attachment/${idPath(text(attachment.id))}`,
-			);
-			const key = metadata.key ? decrypt(text(metadata.key), itemKey) : Buffer.from(itemKey);
+			const attachment = matches[0]!.attachment;
+			let metadata: JsonObject;
+			try {
+				metadata = await this.client.api(
+					this.accessToken,
+					'GET',
+					`/ciphers/${idPath(resolvedItemId)}/attachment/${idPath(text(attachment.id))}`,
+				);
+			} catch (error) {
+				if (!(error instanceof ApiError) || error.status !== 404) throw error;
+				metadata = attachment;
+			}
+			const wrappedKey = metadata.key ?? attachment.key;
+			const key = wrappedKey ? decrypt(text(wrappedKey), itemKey) : Buffer.from(itemKey);
 			try {
 				return {
-					fileName: decrypt(text(metadata.fileName), itemKey).toString('utf8'),
+					fileName: decrypt(text(metadata.fileName ?? attachment.fileName), itemKey).toString('utf8'),
 					contents: decryptAttachment(await this.client.downloadAttachment(text(metadata.url)), key),
 				};
 			} finally {

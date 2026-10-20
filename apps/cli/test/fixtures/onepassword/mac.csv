@@ -1,0 +1,7 @@
+"Title","Type","Username","Password","URLs","NotesPlain","Notes","Number","Verification number","Cardholder name","Expiry date","First name","Last name","Initial","Default phone","Company","Email","API secret","Created date"
+"Legacy CSV compatibility Mac login","Login","alice","  synthetic-\"quoted\"  ","example.com/a,b
+https://second.example.com","first
+second","more notes","","","","","","","","","","","synthetic-secret","1700000000"
+"Legacy CSV compatibility Mac card","Credit Card","","","","","","4111111111111111","123","Alice Example","06/2030","","","","","","","",""
+"Legacy CSV compatibility Mac identity","Identity","","","","","","","","","","Alice","Example","Q","123","Example company","alice@example.com","",""
+"Legacy CSV compatibility Mac note","Secure Note","","","","synthetic notes","","","","","","","","","","","","",""

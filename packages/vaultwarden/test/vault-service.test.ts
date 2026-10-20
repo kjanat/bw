@@ -1,9 +1,10 @@
 import { expect, test } from 'bun:test';
 import { generateKeyPairSync, publicEncrypt, createPublicKey, constants } from 'node:crypto';
-import { VaultwardenClient, type JsonObject } from '#client';
-import { encrypt, decrypt } from '#crypto';
+import type { JsonObject } from '#client';
+import { VaultwardenClient } from '#client';
+import { encrypt, decrypt, encryptAttachment } from '#crypto';
 import { VaultService } from '#vault-service';
-import { transformItem } from '#item-codec';
+import { transformItem, encryptItem } from '#item-codec';
 import { totp } from '#totp';
 
 const userKey = Buffer.alloc(64, 1);
@@ -18,7 +19,7 @@ const plaintext = {
 };
 function wire(overrides: JsonObject = {}) {
 	return {
-		...transformItem(plaintext, itemKey, 'encrypt'),
+		...encryptItem(plaintext, itemKey),
 		id: 'item',
 		key: encrypt(itemKey, userKey),
 		revisionDate: '2026-01-01T00:00:00Z',
@@ -100,6 +101,7 @@ test('decrypts organization items and collections using account RSA private key'
 	try {
 		expect(vault.listItems()[0]?.name).toBe('Example');
 		expect(vault.listCollections()[0]?.name).toBe('Collection');
+		expect(vault.findCollection('LECT').name).toBe('Collection');
 		expect(vault.listOrganizations()[0]?.key).toBeUndefined();
 	} finally {
 		vault.dispose();
@@ -154,7 +156,7 @@ for (const legacy of [false, true]) {
 			try {
 				expect(key.equals(userKey)).toBe(false);
 				if (!legacy) expect(key).toEqual(itemKey);
-				expect(transformItem(body.cipher, key, 'decrypt').login).toEqual(plaintext.login);
+				expect(transformItem(body.cipher, key, 'decrypt').login).toMatchObject(plaintext.login);
 			} finally {
 				key.fill(0);
 			}
@@ -217,4 +219,85 @@ test('failed binary upload removes incomplete attachment metadata', async () => 
 	);
 	expect(methods).toEqual(['POST', 'POST', 'DELETE']);
 	vault.dispose();
+});
+
+test('attachment queries search item names and filenames, preferring one exact filename before downloading', async () => {
+	const key = Buffer.alloc(64, 7), contents = Buffer.from([0, 255, 10, 1]);
+	const attachments = [
+		{ id: 'abc123', fileName: encrypt(Buffer.from('Report.bin'), itemKey), key: encrypt(key, itemKey) },
+		{ id: 'def456', fileName: encrypt(Buffer.from('Report.bin.backup'), itemKey), key: encrypt(key, itemKey) },
+	];
+	const paths: string[] = [];
+	const vault = service((path, init) => {
+		paths.push(path);
+		if (path.startsWith('https://files.example/')) {
+			expect(new Headers(init.headers).has('Authorization')).toBe(false);
+			expect(init.credentials).toBe('omit');
+			return new Response(new Uint8Array(encryptAttachment(contents, key)));
+		}
+		expect(path).toMatch(/\/api\/ciphers\/item\/attachment\/(abc123|def456)$/);
+		return Response.json({ url: 'https://files.example/signed-attachment' });
+	}, { profile: {}, ciphers: [wire({ attachments })] });
+	try {
+		for (const query of ['REPORT.BIN', 'ABC123']) {
+			const result = await vault.getAttachment('Example', query);
+			try {
+				expect(result.fileName).toBe('Report.bin');
+				expect(result.contents).toEqual(contents);
+			} finally {
+				result.contents.fill(0);
+			}
+		}
+		expect(paths).toHaveLength(4);
+		for (const query of ['REPORT', '.bin', 'missing', '']) {
+			await expect(vault.getAttachment('item', query)).rejects.toThrow();
+		}
+		expect(paths).toHaveLength(4);
+		const partial = await vault.getAttachment('item', 'BACKUP');
+		expect(partial.fileName).toBe('Report.bin.backup');
+		expect(paths[4]).toEndWith('/attachment/def456');
+		partial.contents.fill(0);
+		attachments.push({
+			id: 'duplicate',
+			fileName: encrypt(Buffer.from('REPORT.BIN'), itemKey),
+			key: encrypt(key, itemKey),
+		});
+		await expect(vault.getAttachment('item', 'report.bin')).rejects.toThrow('Multiple');
+		expect(paths).toHaveLength(6);
+	} finally {
+		vault.dispose();
+		key.fill(0);
+	}
+});
+
+test('attachment metadata falls back only on 404, retaining cached keys and credential-free downloads', async () => {
+	const key = Buffer.alloc(64, 8), contents = Buffer.from('synthetic attachment');
+	for (const status of [404, 401, 403, 429, 500]) {
+		let downloads = 0;
+		const attachment = {
+			id: 'attachment',
+			fileName: encrypt(Buffer.from('old.bin'), itemKey),
+			key: encrypt(key, itemKey),
+			url: 'https://files.example/cached',
+		};
+		const vault = service((path, init) => {
+			if (path.startsWith('https://files.example/')) {
+				downloads++;
+				expect(new Headers(init.headers).has('Authorization')).toBe(false);
+				return new Response(new Uint8Array(encryptAttachment(contents, key)));
+			}
+			return Response.json({}, { status });
+		}, { profile: {}, ciphers: [wire({ attachments: [attachment] })] });
+		try {
+			if (status === 404) {
+				const result = await vault.getAttachment('item', 'old.bin');
+				expect(result.contents).toEqual(contents);
+				result.contents.fill(0);
+			} else await expect(vault.getAttachment('item', 'old.bin')).rejects.toThrow(`HTTP ${status}`);
+			expect(downloads).toBe(status === 404 ? 1 : 0);
+		} finally {
+			vault.dispose();
+		}
+	}
+	key.fill(0);
 });

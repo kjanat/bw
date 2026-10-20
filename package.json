@@ -11,7 +11,8 @@
 		"dev": "turbo run dev",
 		"format": "dprint fmt",
 		"lint": "turbo run lint",
-		"test": "turbo run test"
+		"test": "turbo run test",
+		"test:compat": "turbo run test:compat"
 	},
 	"devDependencies": {
 		"turbo": "^2.11.9",
@@ -25,5 +26,8 @@
 			"name": "bun",
 			"version": "1.4.3"
 		}
+	},
+	"patchedDependencies": {
+		"kdbxweb@2.1.1": "patches/kdbxweb@2.1.1.patch"
 	}
 }

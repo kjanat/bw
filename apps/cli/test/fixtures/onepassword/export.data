@@ -1,0 +1,592 @@
+{
+  "accounts": [
+    {
+      "attrs": {
+        "accountName": "Synthetic account"
+      },
+      "vaults": [
+        {
+          "attrs": {
+            "name": "Test vault"
+          },
+          "items": [
+            {
+              "uuid": "login",
+              "favIndex": 1,
+              "categoryUuid": "001",
+              "state": "active",
+              "overview": {
+                "title": "1PUX compatibility login",
+                "urls": [
+                  {
+                    "url": " example.com/a,b ",
+                    "label": "Website"
+                  },
+                  {
+                    "url": "https://second.example",
+                    "label": "Other"
+                  }
+                ],
+                "tags": [
+                  "work/team"
+                ]
+              },
+              "details": {
+                "loginFields": [
+                  {
+                    "designation": "username",
+                    "name": "username",
+                    "fieldType": "T",
+                    "value": "alice"
+                  },
+                  {
+                    "designation": "password",
+                    "name": "password",
+                    "fieldType": "P",
+                    "value": "  synthetic-password  "
+                  },
+                  {
+                    "name": "checked",
+                    "fieldType": "C",
+                    "value": "on"
+                  },
+                  {
+                    "name": "unchecked",
+                    "fieldType": "C",
+                    "value": ""
+                  }
+                ],
+                "sections": [
+                  {
+                    "title": "Custom section",
+                    "fields": [
+                      {
+                        "id": "TOTP_fixture",
+                        "title": "one-time password",
+                        "value": {
+                          "totp": "otpauth://totp/Example?secret=JBSWY3DPEHPK3PXP"
+                        },
+                        "guarded": false
+                      },
+                      {
+                        "id": "guard",
+                        "title": "guarded",
+                        "value": {
+                          "concealed": "synthetic-hidden"
+                        },
+                        "guarded": true
+                      },
+                      {
+                        "id": "long",
+                        "title": "Multiline",
+                        "value": {
+                          "string": "first\r\nsecond"
+                        },
+                        "guarded": false
+                      },
+                      {
+                        "id": "email",
+                        "title": "Email extra",
+                        "value": {
+                          "email": {
+                            "email_address": "synthetic@example.com",
+                            "provider": "Example"
+                          }
+                        },
+                        "guarded": false
+                      }
+                    ]
+                  }
+                ],
+                "passwordHistory": [
+                  {
+                    "value": "previous synthetic password",
+                    "time": 1700000000
+                  },
+                  {
+                    "value": "newer synthetic password",
+                    "time": 1700000001000
+                  }
+                ]
+              }
+            },
+            {
+              "uuid": "card",
+              "favIndex": 0,
+              "categoryUuid": "002",
+              "state": "active",
+              "overview": {
+                "title": "1PUX compatibility card",
+                "urls": [],
+                "tags": [
+                  "work/team"
+                ]
+              },
+              "details": {
+                "loginFields": [],
+                "sections": [
+                  {
+                    "title": "Custom section",
+                    "fields": [
+                      {
+                        "id": "ccnum",
+                        "title": "number",
+                        "value": {
+                          "creditCardNumber": "4111111111111111"
+                        },
+                        "guarded": false
+                      },
+                      {
+                        "id": "cvv",
+                        "title": "code",
+                        "value": {
+                          "concealed": "123"
+                        },
+                        "guarded": false
+                      },
+                      {
+                        "id": "cardholder",
+                        "title": "holder",
+                        "value": {
+                          "string": "Alice Example"
+                        },
+                        "guarded": false
+                      },
+                      {
+                        "id": "expiry",
+                        "title": "expires",
+                        "value": {
+                          "monthYear": 203006
+                        },
+                        "guarded": false
+                      },
+                      {
+                        "id": "type",
+                        "title": "type",
+                        "value": {
+                          "creditCardType": "visa"
+                        },
+                        "guarded": false
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "uuid": "identity",
+              "favIndex": 0,
+              "categoryUuid": "004",
+              "state": "active",
+              "overview": {
+                "title": "1PUX compatibility identity",
+                "urls": [],
+                "tags": [
+                  "work/team"
+                ]
+              },
+              "details": {
+                "loginFields": [],
+                "sections": [
+                  {
+                    "title": "Custom section",
+                    "fields": [
+                      {
+                        "id": "firstname",
+                        "title": "first name",
+                        "value": {
+                          "string": "Alice"
+                        },
+                        "guarded": false
+                      },
+                      {
+                        "id": "lastname",
+                        "title": "last name",
+                        "value": {
+                          "string": "Example"
+                        },
+                        "guarded": false
+                      },
+                      {
+                        "id": "initial",
+                        "title": "middle name",
+                        "value": {
+                          "string": "Q"
+                        },
+                        "guarded": false
+                      },
+                      {
+                        "id": "email",
+                        "title": "email",
+                        "value": {
+                          "email": {
+                            "email_address": "alice@example.com",
+                            "provider": "Mail"
+                          }
+                        },
+                        "guarded": false
+                      },
+                      {
+                        "id": "address",
+                        "title": "home",
+                        "value": {
+                          "address": {
+                            "street": "Test street 1",
+                            "city": "Test city",
+                            "country": "nl",
+                            "state": "Test state",
+                            "zip": "1234AB"
+                          }
+                        },
+                        "guarded": false
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "uuid": "passport",
+              "favIndex": 0,
+              "categoryUuid": "106",
+              "state": "active",
+              "overview": {
+                "title": "1PUX compatibility passport",
+                "urls": [],
+                "tags": [
+                  "work/team"
+                ]
+              },
+              "details": {
+                "loginFields": [],
+                "sections": [
+                  {
+                    "title": "Custom section",
+                    "fields": [
+                      {
+                        "id": "fullname",
+                        "title": "name",
+                        "value": {
+                          "string": "Alice Q Example"
+                        },
+                        "guarded": false
+                      },
+                      {
+                        "id": "issuing_country",
+                        "title": "country",
+                        "value": {
+                          "string": "NL"
+                        },
+                        "guarded": false
+                      },
+                      {
+                        "id": "number",
+                        "title": "passport number",
+                        "value": {
+                          "concealed": "SYNTHETIC"
+                        },
+                        "guarded": false
+                      },
+                      {
+                        "id": "birthdate",
+                        "title": "date of birth",
+                        "value": {
+                          "date": 946684800
+                        },
+                        "guarded": false
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "uuid": "bank",
+              "favIndex": 0,
+              "categoryUuid": "101",
+              "state": "active",
+              "overview": {
+                "title": "1PUX compatibility bank",
+                "urls": [],
+                "tags": [
+                  "work/team"
+                ]
+              },
+              "details": {
+                "loginFields": [],
+                "sections": [
+                  {
+                    "title": "Custom section",
+                    "fields": [
+                      {
+                        "id": "owner",
+                        "title": "owner",
+                        "value": {
+                          "string": "Alice Example"
+                        },
+                        "guarded": false
+                      },
+                      {
+                        "id": "accountNo",
+                        "title": "account number",
+                        "value": {
+                          "concealed": "synthetic-account"
+                        },
+                        "guarded": false
+                      },
+                      {
+                        "id": "bankName",
+                        "title": "bank",
+                        "value": {
+                          "string": "Test Bank"
+                        },
+                        "guarded": false
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "uuid": "api",
+              "favIndex": 0,
+              "categoryUuid": "112",
+              "state": "active",
+              "overview": {
+                "title": "1PUX compatibility api",
+                "urls": [],
+                "tags": [
+                  "work/team"
+                ]
+              },
+              "details": {
+                "loginFields": [],
+                "sections": [
+                  {
+                    "title": "Custom section",
+                    "fields": [
+                      {
+                        "id": "credential",
+                        "title": "credential",
+                        "value": {
+                          "concealed": "synthetic-api-key"
+                        },
+                        "guarded": false
+                      },
+                      {
+                        "id": "hostname",
+                        "title": "hostname",
+                        "value": {
+                          "url": "api.example.com"
+                        },
+                        "guarded": false
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "uuid": "note",
+              "favIndex": 0,
+              "categoryUuid": "003",
+              "state": "active",
+              "overview": {
+                "title": "1PUX compatibility note",
+                "urls": [],
+                "tags": [
+                  "work/team"
+                ]
+              },
+              "details": {
+                "loginFields": [],
+                "sections": [
+                  {
+                    "title": "Custom section",
+                    "fields": [
+                      {
+                        "id": "text",
+                        "title": "custom text",
+                        "value": {
+                          "string": "synthetic-field"
+                        },
+                        "guarded": false
+                      }
+                    ]
+                  }
+                ],
+                "notesPlain": "  Notes\r\nsecond\tline  \r\n"
+              }
+            },
+            {
+              "uuid": "archived",
+              "favIndex": 0,
+              "categoryUuid": "005",
+              "state": "archived",
+              "overview": {
+                "title": "1PUX compatibility archived",
+                "urls": [],
+                "tags": [
+                  "work/team"
+                ]
+              },
+              "details": {
+                "loginFields": [],
+                "sections": [
+                  {
+                    "title": "Custom section",
+                    "fields": []
+                  }
+                ],
+                "password": "archived-synthetic"
+              }
+            },
+            {
+              "uuid": "ssh-ed25519",
+              "favIndex": 0,
+              "categoryUuid": "114",
+              "state": "active",
+              "overview": {
+                "title": "1PUX compatibility ssh-ed25519",
+                "urls": [],
+                "tags": [
+                  "work/team"
+                ]
+              },
+              "details": {
+                "loginFields": [],
+                "sections": [
+                  {
+                    "title": "Custom section",
+                    "fields": [
+                      {
+                        "id": "private",
+                        "title": "private key",
+                        "value": {
+                          "sshKey": {
+                            "privateKey": "ignored",
+                            "metadata": {
+                              "privateKey": "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIApqXEPd8y1WTPzjeZjzaBYiAc4NzmNqH2I9dcScpCPZ\n-----END PRIVATE KEY-----\n"
+                            }
+                          }
+                        },
+                        "guarded": false
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "uuid": "ssh-rsa",
+              "favIndex": 0,
+              "categoryUuid": "114",
+              "state": "active",
+              "overview": {
+                "title": "1PUX compatibility ssh-rsa",
+                "urls": [],
+                "tags": [
+                  "work/team"
+                ]
+              },
+              "details": {
+                "loginFields": [],
+                "sections": [
+                  {
+                    "title": "Custom section",
+                    "fields": [
+                      {
+                        "id": "private",
+                        "title": "private key",
+                        "value": {
+                          "sshKey": {
+                            "privateKey": "ignored",
+                            "metadata": {
+                              "privateKey": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDU22Yefe+eqDn2\n6feLYt8yoZGln1yJqHlz04q6sIWmgjOu3YXON0QOYVkYx63MBwmn/JQltU0zrkOE\nyhmE6v/wsLcsTt0vhkgvJEGsjV+JOEZAqeLYJf/YWeWNsFCGoXUxRPdjNlRBm+sp\n7aOmWobPhMVvmxMuob9jvwtqYf0iMPzQTWa/6bXHGCMNfBxr5LD9yhHDv7dplLYX\nYgUvGbkGoi/1cvl59NthzeHJ6tnp6HY0X0emgFU3HSCYd97iLMs2LuwvmE24xoIB\nRVVuqV0tUC7FpUBZq/HJNO+yDqu16XfvI37rXe4pHaHyqDQzxMaSAd5ZVWK0/D3J\nbw5C1/gpAgMBAAECggEACyI+wTGNKxtZjNTIIf5V9mwFFkizqm+piqlyBDnfg8oj\nse3cZeD2KlplMqqfKKDlnGfVx/MnyqA+399CXnV8VbaoniSx5R59ABpBZSkv6hmL\ncy5vsyapr0NkgnjKfYBMhPs6hXH+DkB9mH/Zo4Xwr0IeoavW4QWM4UbI7hOaDgOx\nfDFrhjaRJTMwjon1UPewLZLV3Dqf4hT4G3wBzA4DhniVW4Q4BFEGH0YSdacXMbL3\nT14gIBk8dvEIaqqPd4sXIzgOIN5/o2ajN0lZgmCX9/A4F2r2i/eZG9Yorl68iSMr\nlXe+lcIwuukI86GIJ6b1yDoVkOicvdkihuSxzuqW0QKBgQD5dvuM3LynL1lZAcZ/\nxxzaJZeWnfL7iOAlpSHiS2Ok3MvnzSDJGmldjzgZXKedfXpWettRVXDP3Vp3str+\n+vlWhi+lHNPdLAuOACyMNWlm6R/1cAQxjxkU7y9dyz7ljGVCZMhHxSATChi3TnH7\nJWoTQ5ikAhsk2g4tXp/05J3mJwKBgQDabui5Ws4c8tQqZu3ICav5GkmGRSD2rBFN\nM4Lz/ITSaNur69zUB6T/vfWKnPEGmHqYO1mVEVUUbCtCKTL4PaNGNsdRKR/PGdpr\n8dHuSOy+Xd0tti9mGK1ePPObuEFeN+B1awqO3Bofce45c+7Ye3Ove9Nv4t03snaM\nrmCFiFDxLwKBgQD0+xKHP5KIQChnDyZG/1tnIzmdcNlYiQ9OCL+gwlZFZYtcxQXo\nV+aXOXlm9qWoNLw6RwYv9k8F4qPgHqWPdxn7DWWmqQuqDIIAXk1hF2a96Dw5RFrp\n7FQ+SbFjU6AdvuUF8YD5ci1QZT7mbMPkVda4uk4g6eyMIROBHIbK8OPbSwKBgEPg\nRQccFYJfXtiSRX9sqfjtVz2XC6g7TeEMibvhkzCDDwf8chGdEoO59qwNGsSu6yGV\nB8BPs312I3casFD9blgqO4OX4N+NLBdw/IgsNwzsxAcpXs8+CdmH3TddaUqq2GAE\nVDKSaLeuwpUt1mGE8yzrsIdLGuzs0vPiV/IGqwhXAoGAbO2HKOdKQGDL0WU4C7Xt\nG1tJsrcl6DcCwTq78Xlf5jo5tj0TnB5qJ+qyO9efQx2yJQc7sey6nNUGPU8WrzCu\n/sdl/ICNU1MvPBpWHCxKvcUbuBWyOU7FCbVsysC6djhb3yN8VT1jyLaZVvFZXCF3\nvzDMVnOvEo7wb6Zy09jYogc=\n-----END PRIVATE KEY-----\n"
+                            }
+                          }
+                        },
+                        "guarded": false
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "uuid": "ssh-ec",
+              "favIndex": 0,
+              "categoryUuid": "114",
+              "state": "active",
+              "overview": {
+                "title": "1PUX compatibility ssh-ec",
+                "urls": [],
+                "tags": [
+                  "work/team"
+                ]
+              },
+              "details": {
+                "loginFields": [],
+                "sections": [
+                  {
+                    "title": "Custom section",
+                    "fields": [
+                      {
+                        "id": "private",
+                        "title": "private key",
+                        "value": {
+                          "sshKey": {
+                            "privateKey": "ignored",
+                            "metadata": {
+                              "privateKey": "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgvb7LSGWMtjg9ZB++\n1kQKt7/WwgBnLuTT/BlStXa8eMWhRANCAARY7ksNVs+0lFD3j/bER13MqHcT6y1D\nSpCIqbqiWwR0l9BuxrSrUsTeUlRbIbGunrMRpgSq5rBql5TqTetZAi4s\n-----END PRIVATE KEY-----\n"
+                            }
+                          }
+                        },
+                        "guarded": false
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "uuid": "bad-ssh",
+              "favIndex": 0,
+              "categoryUuid": "114",
+              "state": "active",
+              "overview": {
+                "title": "1PUX compatibility bad-ssh",
+                "urls": [],
+                "tags": [
+                  "work/team"
+                ]
+              },
+              "details": {
+                "loginFields": [],
+                "sections": [
+                  {
+                    "title": "Custom section",
+                    "fields": [
+                      {
+                        "id": "private",
+                        "title": "private key",
+                        "value": {
+                          "sshKey": {
+                            "metadata": {
+                              "privateKey": "invalid synthetic key"
+                            }
+                          }
+                        },
+                        "guarded": false
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

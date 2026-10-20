@@ -1,9 +1,10 @@
+import { outputCommand as command } from '#output';
 import { readFile } from 'node:fs/promises';
-import { arg, command, flag } from '@kjanat/dreamcli';
-import passwordPrompt from '@inquirer/password';
+import { arg, flag } from '@kjanat/dreamcli';
+import { secretPrompt } from '#prompts';
 import { generateSecret, importFormats, object, type ImportFormat } from '@kjanat/vaultwarden';
 import { withStore } from '#store';
-import { writeAttachment } from '#files';
+import { writeAttachment, writeStdout } from '#files';
 import type { VaultRuntime } from '#vault-commands';
 
 async function password(
@@ -62,9 +63,7 @@ export function toolCommands(runtime: VaultRuntime, directory: string) {
 			);
 			try {
 				if (flags.raw && !flags.output) {
-					await new Promise<void>((resolve, reject) =>
-						process.stdout.write(result, error => error ? reject(error) : resolve())
-					);
+					await writeStdout(result);
 				} else {
 					const extension = flags.format === 'encrypted_json' ? 'json' : flags.format;
 					const name = `vaultwarden_export_${new Date().toISOString().replace(/[:.]/g, '-')}.${extension}`;
@@ -74,13 +73,14 @@ export function toolCommands(runtime: VaultRuntime, directory: string) {
 				result.fill(0);
 			}
 		});
-	const importCommand = command('import').description('Import vault JSON, CSV, or a ZIP backup')
+	const importCommand = command('import').description('Import vault JSON, CSV, XML, KDBX, or a ZIP backup')
 		.arg('format', arg.enum(importFormats).optional()).arg('input', arg.path({ mustExist: true }).optional())
 		.flag('formats', flag.boolean()).flag('organizationid', flag.string()).flag(
 			'session',
 			flag.string().env('VW_SESSION'),
 		)
 		.flag('passwordenv', flag.string()).flag('passwordfile', flag.path({ mustExist: true }))
+		.flag('keyfile', flag.path())
 		.action(async ({ args, flags, out }) => {
 			if (flags.formats) {
 				out.json(importFormats);
@@ -90,15 +90,23 @@ export function toolCommands(runtime: VaultRuntime, directory: string) {
 				throw new Error('An import format and file are required. Use vw import --formats.');
 			}
 			const source = await readFile(args.input);
+			let keyFile: Buffer | undefined;
 			try {
+				if (flags.keyfile) {
+					if (args.format !== 'keepasskdbx') throw new Error('--keyfile requires the keepasskdbx format.');
+					keyFile = await readFile(flags.keyfile);
+				}
 				let secret = await password(undefined, flags.passwordenv, flags.passwordfile, 'VW_IMPORT_PASSWORD');
+				if (secret === undefined && args.format === 'keepasskdbx' && !keyFile && process.stdin.isTTY) {
+					secret = await secretPrompt('KeePass database password:');
+				}
 				if (secret === undefined && args.format === 'bitwardenjson') {
 					let protectedFile = false;
 					try {
 						protectedFile = JSON.parse(source.toString('utf8')).passwordProtected === true;
 					} catch { /* The library reports malformed files without echoing their contents. */ }
 					if (protectedFile && process.stdin.isTTY) {
-						secret = await passwordPrompt({ message: 'Import file password:', mask: '*' });
+						secret = await secretPrompt('Import file password:');
 					}
 				}
 				out.json(
@@ -106,10 +114,12 @@ export function toolCommands(runtime: VaultRuntime, directory: string) {
 						vault.importVault(args.format as ImportFormat, source, {
 							organizationId: flags.organizationid,
 							password: secret,
+							keyFile,
 						})),
 				);
 			} finally {
 				source.fill(0);
+				keyFile?.fill(0);
 			}
 		});
 	return { generate, exportCommand, importCommand };
