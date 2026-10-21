@@ -1196,20 +1196,32 @@ for (
 					// Exercise both directions with independent bw serialization and KDF handling.
 					const filePassword = join(dir, 'transfer-password.txt');
 					await writeFile(filePassword, 'Synthetic-export-password-456!\n', { mode: 0o600 });
+					const baseExportNames = ['Compatibility fixture', 'Edited by vw'];
+					const fullExportNames = [...baseExportNames, ...newerItems.map(item => `Type ${item.type}`)];
 					const originalItems = new Set(JSON.parse(await checked(['list', 'items'])).map((v: { id: string }) => v.id));
 					const originalFolders = new Set(
 						JSON.parse(await checked(['list', 'folders'])).map((v: { id: string }) => v.id),
 					);
-					async function verifyImported(withAttachment = false) {
+					async function verifyImported(
+						withAttachment = false,
+						expectedNames: string[] = fullExportNames,
+					) {
 						await checked(['sync']);
 						const added = JSON.parse(await checked(['list', 'items'])).filter((v: { id: string }) =>
 							!originalItems.has(v.id)
 						);
-						expect(added.length).toBe(2);
+						expect(added.map((v: { name: string }) => v.name).sort()).toEqual([...expectedNames].sort());
 						expect(added.find((v: { name: string }) => v.name === 'Edited by vw').login.password).toBe('edited-secret');
 						expect(added.find((v: { name: string }) => v.name === 'Compatibility fixture').login.password).toBe(
 							'fixture-secret',
 						);
+						for (const item of newerItems) {
+							if (!expectedNames.includes(`Type ${item.type}`)) continue;
+							expect(added.find((value: { name: string }) => value.name === `Type ${item.type}`)).toMatchObject({
+								type: item.type,
+								[item.section]: item.fields,
+							});
+						}
 						if (withAttachment) {
 							const copy = added.find((v: { name: string }) => v.name === 'Compatibility fixture');
 							expect(copy.attachments.length).toBe(1);
@@ -1232,6 +1244,7 @@ for (
 						}
 					}
 					for (const format of ['json', 'csv', 'encrypted_json', 'password'] as const) {
+						const expectedNames = format === 'csv' ? baseExportNames : fullExportNames;
 						const transferFormat = format === 'password' ? 'encrypted_json' : format;
 						const importFormat = format === 'csv' ? 'bitwardencsv' : 'bitwardenjson';
 						const ours = join(dir, `vw-${format}.export`);
@@ -1250,7 +1263,7 @@ for (
 							...(format === 'password' ? ['--passwordfile', filePassword] : []),
 						], login.stdout.trim());
 						if (imported.code) throw new Error(`Official import ${format} failed: ${imported.stderr}`);
-						await verifyImported();
+						await verifyImported(false, expectedNames);
 						// Refresh bw after deleting the imported copies, then export its authoritative cache.
 						expect((await official(['sync'], login.stdout.trim())).code).toBe(0);
 						const theirs = join(dir, `bw-${format}.export`);
@@ -1271,8 +1284,8 @@ for (
 								...(format === 'password' ? ['--passwordfile', filePassword] : []),
 							]),
 						);
-						expect(result.items).toBe(2);
-						await verifyImported();
+						expect(result.items).toBe(expectedNames.length);
+						await verifyImported(false, expectedNames);
 					}
 					const attached = JSON.parse(
 						await checked(['create', 'attachment', '--file', uploadPath, '--itemid', item.id]),
