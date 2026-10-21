@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test';
 import { generateKeyPairSync, publicEncrypt, createPublicKey, constants } from 'node:crypto';
 import type { JsonObject } from '#client';
 import { VaultwardenClient } from '#client';
-import { encrypt, decrypt, encryptAttachment } from '#crypto';
+import { encrypt, decrypt, encryptAttachment, decryptAttachment } from '#crypto';
 import { VaultService } from '#vault-service';
 import { transformItem, encryptItem } from '#item-codec';
 import { totp } from '#totp';
@@ -27,10 +27,10 @@ function wire(overrides: JsonObject = {}) {
 	};
 }
 function service(
-	handler: (path: string, init: RequestInit) => Response,
+	handler: (path: string, init: RequestInit) => Response | Promise<Response>,
 	snapshot: JsonObject = { profile: { id: 'user' }, ciphers: [wire()], folders: [] },
 ) {
-	const fetcher = ((url: unknown, init: RequestInit) => handler(String(url), init)) as unknown as typeof fetch;
+	const fetcher = (async (url: unknown, init: RequestInit) => handler(String(url), init)) as unknown as typeof fetch;
 	return new VaultService(
 		new VaultwardenClient('https://example.com', { fetch: fetcher }),
 		'access',
@@ -170,6 +170,128 @@ for (const legacy of [false, true]) {
 		}
 	});
 }
+test('move supports an organization item without collection assignments', async () => {
+	const { snapshot, orgKey } = organizationSnapshot([wire()]);
+	const vault = service((path, init) => {
+		expect(path).toEndWith('/api/ciphers/item/share');
+		const body = JSON.parse(String(init.body));
+		expect(body.collectionIds).toEqual([]);
+		const key = decrypt(body.cipher.key, orgKey);
+		try {
+			expect(transformItem(body.cipher, key, 'decrypt').login).toMatchObject(plaintext.login);
+		} finally {
+			key.fill(0);
+		}
+		return Response.json({ ...body.cipher, id: 'item', organizationId: 'org', collectionIds: [] });
+	}, snapshot);
+	try {
+		expect((await vault.moveItem('item', 'org', [])).organizationId).toBe('org');
+	} finally {
+		vault.dispose();
+		orgKey.fill(0);
+	}
+});
+test('moving a legacy item migrates its attachment bytes and keys before sharing', async () => {
+	const fileContents = Buffer.from('legacy attachment contents'),
+		legacyFile = encryptAttachment(fileContents, userKey),
+		oldAttachment = {
+			id: 'old-attachment',
+			fileName: encrypt(Buffer.from('legacy.txt'), userKey),
+			url: 'https://example.com/download/old-attachment',
+			size: legacyFile.length,
+		},
+		legacyCipher = {
+			...transformItem(plaintext, userKey, 'encrypt'),
+			id: 'item',
+			key: null,
+			revisionDate: '2026-01-01T00:00:00Z',
+			attachments: [oldAttachment],
+		},
+		{ snapshot, orgKey } = organizationSnapshot([legacyCipher]);
+	let attachments: JsonObject[] = [oldAttachment], uploadedFile: Buffer | undefined;
+	const vault = service(async (path, init) => {
+		if (path.endsWith('/download/old-attachment')) return new Response(new Uint8Array(legacyFile));
+		if (path.endsWith('/attachment/old-attachment') && init.method === 'GET') {
+			return Response.json({ ...oldAttachment });
+		}
+		if (path.endsWith('/attachment/v2')) {
+			const body = JSON.parse(String(init.body));
+			const attachmentKey = decrypt(body.key, userKey);
+			try {
+				expect(decrypt(body.fileName, userKey).toString()).toBe('legacy.txt');
+				expect(attachmentKey.equals(userKey)).toBe(false);
+				const metadata = {
+					id: 'new-attachment',
+					fileName: body.fileName,
+					key: body.key,
+					url: 'https://example.com/download/new-attachment',
+				};
+				attachments = [...attachments, metadata];
+				return Response.json({
+					attachmentId: 'new-attachment',
+					fileUploadType: 0,
+					cipherResponse: { ...legacyCipher, attachments },
+				});
+			} finally {
+				attachmentKey.fill(0);
+			}
+		}
+		if (path.endsWith('/attachment/new-attachment')) {
+			const form = init.body as FormData;
+			const blob = form.get('data') as Blob;
+			const ciphertext = Buffer.from(await blob.arrayBuffer()),
+				key = decrypt(
+					((attachments.find(value => value.id === 'new-attachment') ?? {}) as JsonObject).key as string,
+					userKey,
+				);
+			try {
+				expect(decryptAttachment(ciphertext, key)).toEqual(fileContents);
+				uploadedFile = ciphertext;
+			} finally {
+				key.fill(0);
+			}
+			return Response.json({});
+		}
+		if (path.endsWith('/attachment/old-attachment') && init.method === 'DELETE') {
+			attachments = attachments.filter(value => value.id !== 'old-attachment');
+			return Response.json({});
+		}
+		if (path.includes('/sync?')) {
+			return Response.json({
+				profile: snapshot.profile,
+				ciphers: [{ ...legacyCipher, attachments }],
+				collections: snapshot.collections,
+			});
+		}
+		if (path.endsWith('/share')) {
+			const body = JSON.parse(String(init.body)), newKey = decrypt(body.cipher.key, orgKey);
+			try {
+				const migrated = body.cipher.attachments2['new-attachment'];
+				expect(body.cipher.attachments2['old-attachment']).toBeUndefined();
+				expect(decrypt(migrated.fileName, newKey).toString()).toBe('legacy.txt');
+				const attachmentKey = decrypt(migrated.key, newKey);
+				try {
+					expect(decryptAttachment(uploadedFile!, attachmentKey)).toEqual(fileContents);
+				} finally {
+					attachmentKey.fill(0);
+				}
+				return Response.json({ ...body.cipher, id: 'item' });
+			} finally {
+				newKey.fill(0);
+			}
+		}
+		throw new Error(`Unexpected request: ${path}`);
+	}, snapshot);
+	try {
+		expect((await vault.moveItem('item', 'org', ['collection'])).name).toBe('Example');
+	} finally {
+		vault.dispose();
+		fileContents.fill(0);
+		legacyFile.fill(0);
+		uploadedFile?.fill(0);
+		orgKey.fill(0);
+	}
+});
 test('collection rename preserves existing membership assignments', async () => {
 	const { snapshot, orgKey } = organizationSnapshot();
 	const users = [{ id: 'member', readOnly: true, hidePasswords: true, manage: false }];

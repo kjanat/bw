@@ -16,6 +16,7 @@ import {
 	SendMutationFailure,
 	loginWithPassword,
 	loginWithSso,
+	setupSsoAccount,
 	loginWithApiKey,
 	refreshAccount,
 	unlockAccount,
@@ -125,6 +126,8 @@ export function createApp(directory = dataDirectory()) {
 					state.server = url;
 					state.services = services;
 					await save();
+					out.log('Saved setting `config`.');
+					return;
 				}
 				out.log(state.server ?? '');
 			})
@@ -137,8 +140,9 @@ export function createApp(directory = dataDirectory()) {
 			'identifier',
 			flag.string().describe('Optional SSO organization identifier'),
 		)
-		.flag('check', flag.boolean()).flag('raw', flag.boolean()).flag('nointeraction', flag.boolean())
+		.flag('check', flag.boolean()).flag('raw', flag.boolean())
 		.flag('method', flag.number({ int: true, min: 0 }).describe('Two-factor provider: 0=TOTP, 1=email, 3=YubiKey'))
+		.flag('nointeraction', flag.boolean().env('VW_NOINTERACTION'))
 		.flag('code', flag.string().sensitive().env('VW_2FA_TOKEN'))
 		.action(async ({ args, flags, out }) =>
 			withStore(directory, async (state, save) => {
@@ -183,7 +187,7 @@ export function createApp(directory = dataDirectory()) {
 						organizationIdentifier: flags.identifier,
 						openBrowser: !flags.nointeraction,
 					});
-					const account = await loginWithSso(
+					let account = await loginWithSso(
 						client(state),
 						credentials,
 						flags.method === undefined || flags.code === undefined
@@ -197,6 +201,7 @@ export function createApp(directory = dataDirectory()) {
 						throw new Error('SSO account identity does not match the requested email.');
 					}
 					secret = await masterPassword(passwordSource);
+					if (!account.encryptedUserKey) account = await setupSsoAccount(client(state), account, secret);
 					const probe = await unlockAccount(account, secret);
 					probe.fill(0);
 					state.account = account;
@@ -238,7 +243,10 @@ export function createApp(directory = dataDirectory()) {
 	const unlock = command('unlock').description('Unlock the cached user key and issue a session')
 		.arg('password', arg.string().sensitive().optional()).flag('passwordenv', passwordEnvFlag())
 		.flag('passwordfile', flag.path()).flag('check', flag.boolean())
-		.flag('session', sessionFlag()).flag('nointeraction', flag.boolean()).flag('raw', flag.boolean())
+		.flag('session', sessionFlag()).flag('nointeraction', flag.boolean().env('VW_NOINTERACTION')).flag(
+			'raw',
+			flag.boolean(),
+		)
 		.action(async ({ args, flags, out }) =>
 			withStore(directory, async (state, save) => {
 				if (!state.account) throw new Error('Log in first.');
@@ -316,6 +324,7 @@ export function createApp(directory = dataDirectory()) {
 		online = false,
 	): Promise<T> =>
 		withStore(directory, async (state, save) => {
+			if (!state.account) throw new Error('You are not logged in.');
 			const key = openSession(state, session);
 			let vault: VaultService | undefined;
 			try {

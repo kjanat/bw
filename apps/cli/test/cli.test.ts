@@ -25,16 +25,28 @@ test('built Node CLI exposes DreamCLI help and validates commands', async () => 
 		const help = await run(dir, ['--help']);
 		expect(help.code).toBe(0);
 		expect(help.stdout).toContain('Vaultwarden-first');
+		const moveHelp = await run(dir, ['move', '--help']);
+		expect(moveHelp.code).toBe(0);
+		expect(moveHelp.stdout).toContain('[encodedJson]');
 		const config = await run(dir, [
 			'config',
 			'server',
 			'https://example.com/vault/',
 		]);
 		expect(config.code).toBe(0);
-		expect(config.stdout.trim()).toBe('https://example.com/vault');
+		expect(config.stdout.trim()).toBe('Saved setting `config`.');
+		expect((await run(dir, ['config', 'server'])).stdout.trim()).toBe('https://example.com/vault');
+		const shorthand = await run(dir, ['config', 'server', 'bitwarden.com']);
+		expect(shorthand.code).toBe(0);
+		expect(shorthand.stdout.trim()).toBe('Saved setting `config`.');
+		expect((await run(dir, ['config', 'server'])).stdout.trim()).toBe('https://bitwarden.com');
 		const status = await run(dir, ['status']);
 		expect(JSON.parse(status.stdout).status).toBe('unauthenticated');
 		expect((await run(dir, ['list', 'items'])).code).toBe(1);
+		expect((await run(dir, ['list', 'items', '--cleanexit'])).code).toBe(0);
+		expect((await run(dir, ['--cleanexit', 'list', 'items'])).code).toBe(0);
+		expect((await run(dir, ['list', 'items', '--cleanexit=false'])).code).toBe(1);
+		expect((await run(dir, ['list', 'items'], { BW_CLEANEXIT: 'true' })).code).toBe(0);
 		expect(
 			(await run(dir, ['config', 'server', 'http://example.com'])).code,
 		).toBe(1);
@@ -64,11 +76,12 @@ test('quiet suppresses JSON, text, and command errors while preserving operation
 		});
 		expect((await run(dir, ['config', 'server'])).stdout.trim()).toBe('https://example.com/vault');
 		expect(await run(dir, ['list', 'items', '--quiet'])).toEqual({ code: 1, stdout: '', stderr: '' });
-		expect((await run(dir, ['list', 'items', '--quiet=false'])).stderr).toContain('Vault is locked');
+		expect((await run(dir, ['list', 'items', '--quiet=false'])).stderr).toContain('You are not logged in.');
 		const parseError = await run(dir, ['generate', '--unknown-fixture-flag', '--quiet']);
 		expect(parseError.code).not.toBe(0);
 		expect(parseError.stderr).toContain('unknown-fixture-flag');
 		expect(await run(dir, ['status'], { VW_QUIET: 'true' })).toEqual({ code: 0, stdout: '', stderr: '' });
+		expect(await run(dir, ['status'], { BW_QUIET: 'true' })).toEqual({ code: 0, stdout: '', stderr: '' });
 		expect((await run(dir, ['status', '--quiet=false'], { VW_QUIET: 'true' })).stdout).toContain('unauthenticated');
 		expect((await run(dir, ['--quiet', '--help'])).stdout).toContain('Vaultwarden-first');
 		expect((await run(dir, ['--quiet', '--version'])).stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
@@ -133,6 +146,7 @@ test('pretty formats structured JSON across global and nested commands without c
 			expect(await run(dir, args)).toEqual({ code: 0, stdout: expected, stderr: '' });
 		}
 		expect((await run(dir, ['get', 'template', 'item'], { VW_PRETTY: 'true' })).stdout).toBe(expected);
+		expect((await run(dir, ['get', 'template', 'item'], { BW_PRETTY: 'true' })).stdout).toBe(expected);
 		expect((await run(dir, ['get', 'template', 'item', '--pretty=false'], { VW_PRETTY: 'true' })).stdout).toBe(
 			compact.stdout,
 		);
@@ -147,6 +161,77 @@ test('pretty formats structured JSON across global and nested commands without c
 		expect((await run(dir, ['--help'])).stdout).toContain('--pretty');
 		expect((await run(dir, ['get', '--help'])).stdout).toContain('--pretty');
 		expect((await run(dir, [])).stdout).toContain('Vaultwarden-first');
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('bw-named session environment unlocks status when no vw-named value is set', async () => {
+	const dir = await mkdtemp(join(tmpdir(), 'vw-bw-env-'));
+	const key = Buffer.alloc(64, 29);
+	try {
+		let session = '';
+		await withStore(dir, async (state, save) => {
+			state.server = 'https://example.com';
+			state.account = {
+				email: 'synthetic@example.com',
+				kdf: { type: 0, iterations: 10000 },
+				encryptedUserKey: 'synthetic-wrapped-key',
+				accessToken: 'synthetic-token',
+				refreshToken: 'synthetic-refresh',
+				expiresAt: Date.now() + 3600000,
+			};
+			session = sealSession(state, key);
+			await save();
+		});
+		expect(JSON.parse((await run(dir, ['status'], { BW_SESSION: session })).stdout).status).toBe('unlocked');
+		expect(JSON.parse((await run(dir, ['status'], { BW_SESSION: session, VW_SESSION: 'invalid' })).stdout).status)
+			.toBe('locked');
+	} finally {
+		key.fill(0);
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('response mode matches bw envelopes for status, generated strings, and command errors', async () => {
+	const dir = await mkdtemp(join(tmpdir(), 'vw-response-'));
+	try {
+		const status = await run(dir, ['--response', 'status']);
+		expect(status.code).toBe(0);
+		expect(JSON.parse(status.stdout)).toEqual({
+			success: true,
+			data: {
+				object: 'template',
+				template: { serverUrl: null, lastSync: null, status: 'unauthenticated' },
+			},
+		});
+		const generated = await run(dir, ['generate', '--response', '--length', '8']);
+		expect(generated.code).toBe(0);
+		expect(JSON.parse(generated.stdout)).toMatchObject({ success: true, data: { object: 'string' } });
+		expect(JSON.parse(generated.stdout).data.data).toMatch(/^.{8}$/);
+		const configured = await run(dir, ['config', 'server', 'https://vault.example.test', '--response']);
+		expect(JSON.parse(configured.stdout)).toEqual({
+			success: true,
+			data: { object: 'message', title: 'Saved setting `config`.', message: null, noColor: false },
+		});
+		const itemTemplate = await run(dir, ['--response', 'get', 'template', 'item']);
+		expect(JSON.parse(itemTemplate.stdout)).toMatchObject({ success: true, data: { object: 'template' } });
+		const sendTemplate = await run(dir, ['send', 'template', 'text', '--response']);
+		expect(JSON.parse(sendTemplate.stdout)).toMatchObject({
+			success: true,
+			data: { object: 'template', template: { object: 'send' } },
+		});
+		const sdkVersion = await run(dir, ['sdk-version']);
+		expect((await run(dir, ['--response', 'sdk-version'])).stdout).toBe(sdkVersion.stdout);
+		expect((await run(dir, ['--response'])).stdout).toContain('Vaultwarden-first');
+		const failure = await run(dir, ['--response', 'list', 'items']);
+		expect(failure.code).toBe(1);
+		expect(JSON.parse(failure.stdout)).toEqual({ success: false, message: 'You are not logged in.' });
+		expect(failure.stderr).toBe('');
+		const fromEnvironment = await run(dir, ['status'], { BW_RESPONSE: 'true' });
+		expect(JSON.parse(fromEnvironment.stdout)).toMatchObject({ success: true, data: { object: 'template' } });
+		expect(JSON.parse((await run(dir, ['status'], { BW_RESPONSE: 'true', VW_RESPONSE: 'false' })).stdout))
+			.toMatchObject({ serverUrl: 'https://vault.example.test', status: 'unauthenticated' });
 	} finally {
 		await rm(dir, { recursive: true, force: true });
 	}
@@ -285,12 +370,36 @@ test('configured service overrides route CLI authentication and are cleared by a
 			`${base}/custom-auth`,
 			'--web-vault',
 			`${base}/web`,
+			'--icons',
+			`${base}/icons`,
+			'--notifications',
+			`${base}/notifications`,
+			'--events',
+			`${base}/events`,
+			'--key-connector',
+			`${base}/key-connector`,
 		]);
 		expect(config.code).toBe(0);
+		expect(config.stdout.trim()).toBe('Saved setting `config`.');
+		await withStore(dir, async state => {
+			expect(state.server).toBe(base);
+			expect(state.services).toEqual({
+				webVault: `${base}/web`,
+				api: `${base}/custom-api`,
+				identity: `${base}/custom-auth`,
+				icons: `${base}/icons`,
+				notifications: `${base}/notifications`,
+				events: `${base}/events`,
+				keyConnector: `${base}/key-connector`,
+			});
+		});
 		const login = () => run(dir, ['login', 'fixture@example.com', 'synthetic-password', '--nointeraction']);
 		expect((await login()).code).toBe(1);
 		expect(paths).toEqual(['/custom-auth/accounts/prelogin']);
-		expect((await run(dir, ['config', 'server', base])).code).toBe(0);
+		const reset = await run(dir, ['config', 'server', base]);
+		expect(reset.code).toBe(0);
+		expect(reset.stdout.trim()).toBe('Saved setting `config`.');
+		await withStore(dir, async state => expect(state.services).toEqual({}));
 		expect((await login()).code).toBe(1);
 		expect(paths.at(-1)).toBe('/identity/accounts/prelogin');
 		expect((await run(dir, ['config', 'server', base, '--identity', 'https://user:secret@example.com'])).code).toBe(1);
@@ -316,6 +425,56 @@ test('generation and import format discovery work before login in the built Node
 		expect(JSON.parse(formats.stdout)).toContain('bitwardenjson');
 		expect(JSON.parse(formats.stdout)).toContain('bitwardenzip');
 		expect(JSON.parse(formats.stdout)).toContain('nordpasscsv');
+		expect(JSON.parse(formats.stdout)).toContain('passkeepcsv');
+		expect(JSON.parse(formats.stdout)).toContain('passwordwallettxt');
+		expect(JSON.parse(formats.stdout)).toContain('passpackcsv');
+		expect(JSON.parse(formats.stdout)).toContain('ascendocsv');
+		expect(JSON.parse(formats.stdout)).toContain('blackberrycsv');
+		expect(JSON.parse(formats.stdout)).toContain('blurcsv');
+		expect(JSON.parse(formats.stdout)).toContain('codebookcsv');
+		expect(JSON.parse(formats.stdout)).toContain('avastcsv');
+		expect(JSON.parse(formats.stdout)).toContain('buttercupcsv');
+		expect(JSON.parse(formats.stdout)).toContain('padlockcsv');
+		expect(JSON.parse(formats.stdout)).toContain('yoticsv');
+		expect(JSON.parse(formats.stdout)).toContain('saferpasscsv');
+		expect(JSON.parse(formats.stdout)).toContain('securesafecsv');
+		expect(JSON.parse(formats.stdout)).toContain('meldiumcsv');
+		expect(JSON.parse(formats.stdout)).toContain('splashidcsv');
+		expect(JSON.parse(formats.stdout)).toContain('truekeycsv');
+		expect(JSON.parse(formats.stdout)).toContain('remembearcsv');
+		expect(JSON.parse(formats.stdout)).toContain('upmcsv');
+		expect(JSON.parse(formats.stdout)).toContain('logmeoncecsv');
+		expect(JSON.parse(formats.stdout)).toContain('mykicsv');
+		expect(JSON.parse(formats.stdout)).toContain('msecurecsv');
+		expect(JSON.parse(formats.stdout)).toContain('passwordagentcsv');
+		expect(JSON.parse(formats.stdout)).toContain('dashlanecsv');
+		expect(JSON.parse(formats.stdout)).toContain('delineacsv');
+		expect(JSON.parse(formats.stdout)).toContain('kasperskytxt');
+		expect(JSON.parse(formats.stdout)).toContain('zohovaultcsv');
+		expect(JSON.parse(formats.stdout)).toContain('roboformcsv');
+		expect(JSON.parse(formats.stdout)).toContain('keepercsv');
+		expect(JSON.parse(formats.stdout)).toContain('keeperjson');
+		expect(JSON.parse(formats.stdout)).toContain('dashlanejson');
+		expect(JSON.parse(formats.stdout)).toContain('passwordxpcsv');
+		expect(JSON.parse(formats.stdout)).toContain('delineaxml');
+		expect(JSON.parse(formats.stdout)).toContain('netwrixpasswordsecure');
+		expect(JSON.parse(formats.stdout)).toContain('passwordbossjson');
+		expect(JSON.parse(formats.stdout)).toContain('psonojson');
+		expect(JSON.parse(formats.stdout)).toContain('pwsafexml');
+		expect(JSON.parse(formats.stdout)).toContain('stickypasswordxml');
+		expect(JSON.parse(formats.stdout)).toContain('clipperzhtml');
+		expect(JSON.parse(formats.stdout)).toContain('fsecurefsk');
+		expect(JSON.parse(formats.stdout)).toContain('keeper');
+		expect(JSON.parse(formats.stdout)).toContain('protonpass');
+		expect(JSON.parse(formats.stdout)).toContain('passworddepot17xml');
+		expect(JSON.parse(formats.stdout)).toContain('passworddragonxml');
+		expect(JSON.parse(formats.stdout)).toContain('safeincloudxml');
+		expect(JSON.parse(formats.stdout)).toContain('avastjson');
+		expect(JSON.parse(formats.stdout)).toContain('enpassjson');
+		expect(JSON.parse(formats.stdout)).toContain('enpasscsv');
+		expect(JSON.parse(formats.stdout)).toContain('gnomejson');
+		expect(JSON.parse(formats.stdout)).toContain('passmanjson');
+		expect(JSON.parse(formats.stdout)).toContain('passkyjson');
 	} finally {
 		await rm(dir, { recursive: true, force: true });
 	}

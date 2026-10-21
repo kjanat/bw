@@ -202,6 +202,8 @@ try {
 		'SIGNUPS_VERIFY=false',
 		'-e',
 		'LOGIN_RATELIMIT_MAX_BURST=10000',
+		'-e',
+		'UNAUTHENTICATED_RATELIMIT_MAX_BURST=10000',
 		...(smtpEnabled
 			? [
 				'--network',
@@ -243,37 +245,70 @@ try {
 	}
 	if (!ready) throw new Error('Disposable Vaultwarden did not become healthy.');
 	if (interrupted) throw new Error('Compatibility run interrupted.');
-	const args = [
-		'bun',
-		'test',
-		...(ssoEnabled
-			? ['test/sso-live.test.ts']
-			: smtpEnabled
-			? ['test/email-live.test.ts']
-			: ['test/live.test.ts', 'test/challenge-live.test.ts']),
-	];
-	if (process.env.VW_TEST_CASE) args.push('--test-name-pattern', process.env.VW_TEST_CASE);
-	running = spawn(args[0]!, args.slice(1), {
-		detached: true,
-		cwd: new URL('..', import.meta.url).pathname,
-		env: {
-			PATH: process.env.PATH,
-			VW_TEST_SERVER: server,
-			VW_TEST_BW: compareReference ? reference : undefined,
-			VW_TEST_IMPORT_FORMAT: process.env.VW_TEST_IMPORT_FORMAT,
-			VW_TEST_MAILPIT: mailApi,
-			VW_TEST_OIDC: oidcUrl,
-			VW_OIDC_CONTROL: ssoEnabled ? oidcControl : undefined,
-		},
-		stdio: 'inherit',
-	});
-	exitCode = await new Promise<number>((resolve, reject) => {
-		running!.once('error', reject);
-		running!.once('exit', code => resolve(code ?? 130));
-	});
-	if (exitCode !== 0 && !interrupted) {
-		const logs = await docker(['logs', '--tail', '80', name]);
-		console.error(logs.output);
+	const cwd = new URL('..', import.meta.url).pathname;
+	const env = {
+		PATH: process.env.PATH,
+		VW_TEST_SERVER: server,
+		VW_TEST_BW: compareReference ? reference : undefined,
+		VW_TEST_IMPORT_FORMAT: process.env.VW_TEST_IMPORT_FORMAT,
+		VW_TEST_IMPORT_SHARD: undefined as string | undefined,
+		VW_TEST_SKIP_IMPORTS: undefined as string | undefined,
+		VW_TEST_FOCUSED_IMPORT: process.env.VW_TEST_FOCUSED_IMPORT,
+		VW_TEST_MAILPIT: mailApi,
+		VW_TEST_OIDC: oidcUrl,
+		VW_OIDC_CONTROL: ssoEnabled ? oidcControl : undefined,
+	};
+	const testArgs = (files: string[], overrides: { shard?: string; skipImports?: boolean } = {}) => {
+		const args = ['bun', 'test', ...files];
+		if (process.env.VW_TEST_CASE) args.push('--test-name-pattern', process.env.VW_TEST_CASE);
+		env.VW_TEST_IMPORT_SHARD = overrides.shard ?? process.env.VW_TEST_IMPORT_SHARD;
+		env.VW_TEST_SKIP_IMPORTS = overrides.skipImports ? '1' : process.env.VW_TEST_SKIP_IMPORTS;
+		return args;
+	};
+	const shardImportMatrix = compareReference && !process.env.VW_TEST_FOCUSED_IMPORT && !ssoEnabled && !smtpEnabled
+		&& !process.env.VW_TEST_CASE && !process.env.VW_TEST_IMPORT_FORMAT && !process.env.VW_TEST_IMPORT_SHARD
+		&& !process.env.VW_TEST_SKIP_IMPORTS;
+	const runs: { files: string[]; shard?: string; skipImports?: boolean }[] = process.env.VW_TEST_IMPORT_SHARD
+		? [{ files: ['test/challenge-live.test.ts'], shard: process.env.VW_TEST_IMPORT_SHARD }]
+		: process.env.VW_TEST_SKIP_IMPORTS
+		? [{ files: ['test/challenge-live.test.ts'], skipImports: true }]
+		: shardImportMatrix
+		? [
+			{ files: ['test/live.test.ts'] },
+			...Array.from({ length: 8 }, (_, index) => ({ files: ['test/challenge-live.test.ts'], shard: `${index}/8` })),
+			{ files: ['test/challenge-live.test.ts'], skipImports: true },
+		]
+		: [{
+			files: process.env.VW_TEST_FOCUSED_IMPORT === '1'
+				? ['test/import-live.test.ts']
+				: ssoEnabled
+				? ['test/sso-live.test.ts']
+				: smtpEnabled
+				? ['test/email-live.test.ts']
+				: ['test/live.test.ts', 'test/challenge-live.test.ts'],
+		}];
+	for (const run of runs) {
+		if (runs.length > 1) {
+			console.log(
+				run.shard ? `Compatibility import shard ${run.shard}` : run.skipImports
+					? 'Compatibility REST and authentication checks'
+					: 'Compatibility KDF and vault checks',
+			);
+		}
+		const args = testArgs(run.files, { shard: run.shard, skipImports: run.skipImports });
+		running = spawn(args[0]!, args.slice(1), { detached: true, cwd, env, stdio: 'inherit' });
+		exitCode = await new Promise<number>((resolve, reject) => {
+			running!.once('error', reject);
+			running!.once('exit', code => resolve(code ?? 130));
+		});
+		running = undefined;
+		if (exitCode !== 0) {
+			if (!interrupted) {
+				const logs = await docker(['logs', '--tail', '80', name]);
+				console.error(logs.output);
+			}
+			break;
+		}
 	}
 } finally {
 	stopTests();

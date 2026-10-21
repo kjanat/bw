@@ -35,7 +35,7 @@ export class ApiError extends Error {
 	}
 }
 export function serverUrl(value: string): string {
-	const url = new URL(value);
+	const url = new URL(/^[a-z][a-z\d+.-]*:\/\//i.test(value) ? value : `https://${value}`);
 	if (url.username || url.password || url.search || url.hash) {
 		throw new Error(
 			'Server URL must not contain credentials, a query, or a fragment.',
@@ -96,6 +96,12 @@ export interface ApiKeyLogin extends AccessToken {
 }
 export interface Login extends Tokens {
 	encryptedUserKey: string;
+}
+export interface SsoLoginResult extends Tokens {
+	email: string;
+	kdf: Kdf;
+	/** Absent only for a new SSO-provisioned account that still needs password setup. */
+	encryptedUserKey?: string;
 }
 export interface SsoCredentials {
 	code: string;
@@ -341,7 +347,7 @@ export class VaultwardenClient {
 	async loginWithSso(
 		credentials: SsoCredentials,
 		twoFactor?: { provider: number; token: string },
-	): Promise<ApiKeyLogin & Tokens> {
+	): Promise<SsoLoginResult> {
 		if (
 			!/^http:\/\/localhost:(?:806[5-9]|8070)$/.test(credentials.redirectUri)
 			|| !/^[A-Za-z0-9._~-]{43,128}$/.test(credentials.codeVerifier)
@@ -370,16 +376,28 @@ export class VaultwardenClient {
 		const unlock = decryption ? object(field(object(decryption), 'masterPasswordUnlock') ?? {}) : {};
 		const wrapped = field(data, 'key') ?? field(unlock, 'masterKeyWrappedUserKey')
 			?? field(unlock, 'masterKeyEncryptedUserKey');
-		if (typeof wrapped !== 'string' || !wrapped) {
-			throw new Error('SSO account has no master-password wrapped vault key. Complete account setup in the web vault.');
-		}
 		const settings = field(unlock, 'kdf');
 		const kdf = field(data, 'kdf') !== undefined
 			? parseKdf(data)
 			: settings
 			? parseKdf({ kdfSettings: settings })
 			: await this.prelogin(email);
-		return { ...tokens, email, kdf, encryptedUserKey: wrapped };
+		return { ...tokens, email, kdf, ...(typeof wrapped === 'string' && wrapped ? { encryptedUserKey: wrapped } : {}) };
+	}
+	/** Initialize a JIT-provisioned SSO account with a locally generated password and key set. */
+	async setSsoPassword(
+		accessToken: string,
+		kdf: Kdf,
+		input: { encryptedUserKey: string; masterPasswordHash: string; publicKey: string; encryptedPrivateKey: string },
+	): Promise<void> {
+		await this.api(accessToken, 'POST', '/accounts/set-password', {
+			kdf: kdf.type,
+			kdfIterations: kdf.iterations,
+			...(kdf.type === 1 ? { kdfMemory: kdf.memory, kdfParallelism: kdf.parallelism } : {}),
+			key: input.encryptedUserKey,
+			masterPasswordHash: input.masterPasswordHash,
+			keys: { publicKey: input.publicKey, encryptedPrivateKey: input.encryptedPrivateKey },
+		});
 	}
 	async refresh(refreshToken: string): Promise<Tokens> {
 		return this.tokens(

@@ -45,8 +45,14 @@ reference's separate command/parser paths. `VW_QUIET=true` supplies the default;
 `--pretty` formats structured JSON with two-space indentation; raw secret,
 attachment, export, and text output retain their exact bytes. It works before
 or after a command, including nested commands. `VW_PRETTY=true` sets the default
-and `--pretty=false` overrides it. `--response` and `--cleanexit` remain required
-work.
+and `--pretty=false` overrides it. `--response` emits success/data and
+failure/message JSON envelopes; exact response payload parity for every command
+is still under audit. `--cleanexit` makes command errors return status 0; `--cleanexit=false`
+restores the normal failure status, and `BW_CLEANEXIT` supplies the default.
+Equivalent `BW_*` variables are accepted as fallbacks for the corresponding
+`VW_*` session, password, email, 2FA, API-key, import/export-password, pretty,
+quiet, no-interaction, clean-exit, and response settings; an explicitly set `VW_*` value takes
+precedence.
 
 The CLI uses the published `@kjanat/dreamcli` 4.2.0 release, recorded in the
 Bun lockfile. The CLI uses its prompt session and
@@ -241,11 +247,25 @@ password source; `VW_EXPORT_PASSWORD` and `VW_IMPORT_PASSWORD` are the default
 variables for those operations. Plain exports contain vault secrets. File
 output uses mode 0600 and refuses overwrite; `--raw` writes directly to stdout.
 
-Imports currently accept Bitwarden JSON/CSV/ZIP, Chrome/Edge/Opera/Vivaldi/Brave,
-Firefox/Safari/Arc CSV, Avira CSV, KeePassX/KeePassXC CSV (`keepassxcsv`),
+Imports currently accept Bitwarden JSON/CSV/ZIP, Avast JSON (`avastjson`),
+Enpass JSON (`enpassjson`), GNOME Passwords JSON (`gnomejson`), Passky JSON (`passkyjson`),
+Passman JSON (`passmanjson`), Enpass CSV (`enpasscsv`), Delinea CSV (`delineacsv`),
+Kaspersky Password Manager TXT (`kasperskytxt`), Chrome/Edge/Opera/Vivaldi/Brave,
+Zoho Vault CSV (`zohovaultcsv`), RoboForm CSV (`roboformcsv`),
+Firefox/Safari/Arc CSV, Avira CSV,
+KeePassX/KeePassXC CSV (`keepassxcsv`),
 LastPass/Passbolt CSV (`lastpasscsv`, `passboltcsv`), NordPass CSV
-(`nordpasscsv`), and plaintext
-KeePass 2 XML (`keepass2xml`), encrypted KeePass databases (`keepasskdbx`), and
+(`nordpasscsv`), Encryptr CSV (`encryptrcsv`), PassKeep CSV (`passkeepcsv`),
+PasswordWallet text CSV (`passwordwallettxt`), Passpack CSV (`passpackcsv`),
+Ascendo (`ascendocsv`), BlackBerry (`blackberrycsv`), Blur (`blurcsv`),
+Codebook (`codebookcsv`), Avast (`avastcsv`), Buttercup (`buttercupcsv`),
+Padlock (`padlockcsv`), Yoti (`yoticsv`), SaferPass (`saferpasscsv`),
+SecureSafe (`securesafecsv`), Meldium (`meldiumcsv`), True Key (`truekeycsv`),
+SplashID (`splashidcsv`), RememBear (`remembearcsv`), UPM (`upmcsv`), LogMeOnce
+(`logmeoncecsv`), Myki (`mykicsv`), mSecure (`msecurecsv`), Password Agent
+(`passwordagentcsv`), Dashlane (`dashlanecsv`), plaintext
+KeePass 2 XML (`keepass2xml`), encrypted
+KeePass databases (`keepasskdbx`), and
 1Password 8 archives or extracted `export.data` JSON (`1password1pux`), legacy
 1PIF (`1password1pif`), and Mac/Windows CSV (`1passwordmaccsv`, `1passwordwincsv`). Other
 reference adapters remain required work. Items receive fresh encryption keys
@@ -314,6 +334,11 @@ card expiration, and address data. Hidden custom fields stay hidden unless long
 or multiline: those move into notes following the reference mapping. Folder
 paths become collections for organization imports. Invalid embedded JSON or
 malformed URL/custom-field arrays fail before any upload, even after valid rows.
+
+Encryptr CSV maps password and credit-card records, joins its Notes and Text
+columns with a blank line, and converts other record types or empty passwords
+into secure notes like the reference importer. Card brands and `MM/YY` expiry
+values are populated from the exported fields.
 
 `parseExternalCsv(format, text, organization?)` lets library callers inspect the
 native document before importing it. The normal import operation encrypts that

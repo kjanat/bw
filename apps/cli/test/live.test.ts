@@ -17,13 +17,17 @@ import {
 	masterPasswordHash,
 	stretchKey,
 	encrypt,
+	encryptAttachment,
+	encryptItem,
 	decryptSharedKey,
 	type Kdf,
 } from '@kjanat/vaultwarden';
 
 // Explicit opt-in. Only disposable loopback instances may be mutated by this test.
 const server = process.env.VW_TEST_SERVER;
-const live = server ? test : test.skip;
+// A focused importer comparison runs its own end-to-end login and server flow;
+// do not repeat the unrelated expensive KDF fixtures in that mode.
+const live = server && !process.env.VW_TEST_IMPORT_FORMAT ? test : test.skip;
 for (
 	const kdf of [
 		{ type: 0, iterations: 600000 },
@@ -381,6 +385,79 @@ for (
 				const movedDownload = join(dir, 'moved.bin');
 				await checked(['get', 'attachment', 'FIXTURE', '--itemid', 'MOVE FIXTURE', '--output', movedDownload]);
 				expect(await readFile(movedDownload)).toEqual(attachmentBytes);
+				const legacyItem = JSON.parse(
+					await checked([
+						'create',
+						'item',
+						encode({
+							type: 1,
+							name: 'Legacy attachment move',
+							login: { username: 'legacy-user', password: 'legacy-move-secret' },
+						}),
+					]),
+				);
+				const beforeLegacyUpdate = await fetch(`${server}/api/sync?excludeDomains=false`, {
+					headers: { Authorization: `Bearer ${auth.access_token}` },
+				});
+				expect(beforeLegacyUpdate.status).toBe(200);
+				const beforeLegacyCiphers = (await beforeLegacyUpdate.json()).ciphers as Record<string, unknown>[];
+				const currentLegacyCipher = beforeLegacyCiphers.find(cipher => cipher.id === legacyItem.id);
+				if (!currentLegacyCipher) throw new Error('Could not read the legacy attachment fixture cipher.');
+				const legacyPlain = {
+					type: 1,
+					name: 'Legacy attachment move',
+					login: { username: 'legacy-user', password: 'legacy-move-secret' },
+				};
+				const legacyUpdate = await fetch(`${server}/api/ciphers/${legacyItem.id}`, {
+					method: 'PUT',
+					headers: {
+						Authorization: `Bearer ${auth.access_token}`,
+						'Content-Type': 'application/json',
+					},
+					body: JSON.stringify({
+						...currentLegacyCipher,
+						...encryptItem(legacyPlain, userKey),
+						encryptedFor: profile.id,
+						encryptedByKeyId: null,
+						key: null,
+						lastKnownRevisionDate: currentLegacyCipher.revisionDate,
+					}),
+				});
+				expect(legacyUpdate.status).toBe(200);
+				const legacyAttachmentBytes = Buffer.from('legacy attachment bytes encrypted with the account key');
+				const legacyFileName = encrypt(Buffer.from('legacy-move.bin'), userKey);
+				const legacyForm = new FormData();
+				legacyForm.set('key', '');
+				legacyForm.set(
+					'data',
+					new Blob([new Uint8Array(encryptAttachment(legacyAttachmentBytes, userKey))]),
+					legacyFileName,
+				);
+				const legacyUpload = await fetch(`${server}/api/ciphers/${legacyItem.id}/attachment`, {
+					method: 'POST',
+					headers: { Authorization: `Bearer ${auth.access_token}` },
+					body: legacyForm,
+				});
+				expect(legacyUpload.status).toBe(200);
+				const legacyWire = (await legacyUpload.json()).attachments[0];
+				expect(legacyWire.key).toBe('');
+				await checked(['sync']);
+				const migratedLegacyItem = JSON.parse(
+					await checked(['move', legacyItem.id, organization.id, encode([collection.id])]),
+				);
+				expect(migratedLegacyItem.organizationId).toBe(organization.id);
+				expect(migratedLegacyItem.login.password).toBe('legacy-move-secret');
+				const legacyDownloadPath = join(dir, 'legacy-move.bin');
+				await checked([
+					'get',
+					'attachment',
+					'legacy-move.bin',
+					'--itemid',
+					legacyItem.id,
+					'--output',
+					legacyDownloadPath,
+				]);
+				expect(await readFile(legacyDownloadPath)).toEqual(legacyAttachmentBytes);
 				const binaryChild = Bun.spawn([
 					'node',
 					new URL('../dist/main.js', import.meta.url).pathname,
@@ -824,6 +901,25 @@ for (
 					expect((await official(['sync'], login.stdout.trim())).code).toBe(0);
 					const ids = (source: string) => JSON.parse(source).map((value: { id: string }) => value.id).sort();
 					for (
+						const filter of [
+							['--folderid', 'null'],
+							['--organizationid', 'notnull'],
+							['--collectionid', 'null'],
+							['--collectionid', 'notnull'],
+							['--folderid', folder.id, '--organizationid', 'notnull'],
+							['--search', 'Shared', '--folderid', folder.id, '--organizationid', 'notnull'],
+						]
+					) {
+						const reference = await official(['list', 'items', ...filter], login.stdout.trim());
+						if (reference.code) {
+							throw new Error(`Official list filter failed (${filter.join(' ')}): ${reference.stderr}`);
+						}
+						expect(
+							ids(await checked(['list', 'items', ...filter])),
+							`list items ${filter.join(' ')}`,
+						).toEqual(ids(reference.stdout));
+					}
+					for (
 						const url of [
 							'https://www.example.com/other',
 							'http://host.example.net:8443/b',
@@ -1131,6 +1227,30 @@ for (
 						expect(restored.attachments).toBe(1);
 						await verifyImported(true);
 					}
+					const noCollectionItems = [] as { id: string }[];
+					for (const name of ['Move without collection: vw', 'Move without collection: bw']) {
+						noCollectionItems.push(JSON.parse(
+							await checked([
+								'create',
+								'item',
+								encode({ type: 1, name, login: { username: 'move-user', password: 'move-secret' } }),
+							]),
+						));
+					}
+					expect((await official(['sync', '--force'], login.stdout.trim())).code).toBe(0);
+					const movedWithoutCollection = JSON.parse(
+						await checked(['move', noCollectionItems[0]!.id, organization.id]),
+					);
+					expect(movedWithoutCollection.organizationId).toBe(organization.id);
+					expect(movedWithoutCollection.collectionIds).toEqual([]);
+					expect((await official(['sync', '--force'], login.stdout.trim())).code).toBe(0);
+					const referenceMoveWithoutCollection = await official(
+						['move', noCollectionItems[1]!.id, organization.id],
+						login.stdout.trim(),
+					);
+					expect(referenceMoveWithoutCollection.code).toBe(1);
+					expect(referenceMoveWithoutCollection.stderr).toContain('`requestJson` was not provided.');
+					await checked(['sync']);
 					await checked(['delete', 'attachment', attached.attachments[0].id, '--itemid', item.id]);
 					expect((await official(['logout'])).code).toBe(0);
 					const referenceApiLogin = await official(['login', '--apikey']);

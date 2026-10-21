@@ -1,6 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { ApiError, type VaultwardenClient, type SsoCredentials } from '#client';
-import type { PasswordLoginOptions, TwoFactorAnswer, SsoAccount } from '#account';
+import { createAccountKeyMaterial } from '#crypto';
+import type { PasswordLoginOptions, TwoFactorAnswer, SsoAccount, SsoPendingAccount } from '#account';
 
 export interface SsoAuthorization {
 	url: string;
@@ -81,7 +82,7 @@ export async function loginWithSso(
 	credentials: SsoCredentials,
 	twoFactor?: TwoFactorAnswer,
 	options: PasswordLoginOptions = {},
-): Promise<SsoAccount> {
+): Promise<SsoAccount | SsoPendingAccount> {
 	try {
 		return { ...await client.loginWithSso(credentials, twoFactor), auth: 'sso' };
 	} catch (error) {
@@ -98,5 +99,27 @@ export async function loginWithSso(
 			throw new Error('Invalid two-factor answer.', { cause: error });
 		}
 		return { ...await client.loginWithSso(credentials, answer), auth: 'sso' };
+	}
+}
+
+/** Set a new master password and initialize keys for a JIT-provisioned Vaultwarden SSO account. */
+export async function setupSsoAccount(
+	client: VaultwardenClient,
+	account: SsoAccount | SsoPendingAccount,
+	password: string,
+): Promise<SsoAccount> {
+	if ('encryptedUserKey' in account && account.encryptedUserKey) throw new Error('SSO account is already initialized.');
+	if (!password) throw new Error('A master password is required to initialize the SSO account.');
+	const material = await createAccountKeyMaterial(password, account.email, account.kdf);
+	try {
+		await client.setSsoPassword(account.accessToken, account.kdf, {
+			encryptedUserKey: material.encryptedUserKey,
+			masterPasswordHash: material.masterPasswordHash,
+			publicKey: material.publicKey,
+			encryptedPrivateKey: material.encryptedPrivateKey,
+		});
+		return { ...account, encryptedUserKey: material.encryptedUserKey, auth: 'sso' };
+	} finally {
+		material.userKey.fill(0);
 	}
 }

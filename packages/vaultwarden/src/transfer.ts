@@ -1,9 +1,18 @@
 import { parseCsv, writeCsv } from '#csv';
 import { externalCsvFormats, isExternalCsvFormat, parseExternalCsv } from '#csv-import';
+import { externalJsonFormats, isExternalJsonFormat, parseExternalJson } from '#json-import';
 import { parseKeePassXml } from '#keepass-xml';
 import { parseKdbx } from '#kdbx';
 import { parseOnePassword1Pux, type ImportRecordError } from '#onepassword';
 import { parseOnePassword1Pif, parseOnePasswordCsv } from '#onepassword-legacy';
+import { parseKasperskyTxt } from '#text-import';
+import { parseDelineaXml } from '#delinea-xml';
+import { parsePasswordDragonXml } from '#password-dragon-xml';
+import { parseSafeInCloudXml } from '#safeincloud-xml';
+import { parsePasswordSafeXml } from '#passwordsafe-xml';
+import { parseStickyPasswordXml } from '#stickypassword-xml';
+import { parseClipperzHtml } from '#clipperz-html';
+import { parsePasswordDepot17Xml } from '#password-depot-xml';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { zipSync, unzipSync } from 'fflate';
 import { decrypt, encrypt, deriveKdfKey, stretchKey, type Kdf } from '#crypto';
@@ -34,13 +43,23 @@ export const importFormats = [
 	'bitwardenjson',
 	'bitwardencsv',
 	'bitwardenzip',
+	'kasperskytxt',
 	...externalCsvFormats,
+	...externalJsonFormats,
 	'keepass2xml',
 	'keepasskdbx',
 	'1password1pux',
 	'1password1pif',
 	'1passwordmaccsv',
 	'1passwordwincsv',
+	'delineaxml',
+	'passworddragonxml',
+	'safeincloudxml',
+	'pwsafexml',
+	'stickypasswordxml',
+	'clipperzhtml',
+	'keeper',
+	'passworddepot17xml',
 ] as const;
 export type ImportFormat = typeof importFormats[number];
 export type ExportFormat = 'json' | 'csv' | 'encrypted_json' | 'zip';
@@ -412,10 +431,32 @@ export async function importVault(
 			})
 			: isExternalCsvFormat(format)
 			? parseExternalCsv(format, source, !!options.organizationId)
+			: format === 'keeper'
+			? ['{', '['].includes(source.trimStart()[0] ?? '')
+				? parseExternalJson('keeperjson', source, !!options.organizationId)
+				: parseExternalCsv('keepercsv', source, !!options.organizationId)
+			: isExternalJsonFormat(format)
+			? parseExternalJson(format, source, !!options.organizationId)
+			: format === 'kasperskytxt'
+			? parseKasperskyTxt(source)
 			: format === 'bitwardencsv'
 			? csvDocument(source, !!options.organizationId)
 			: format === 'keepass2xml'
 			? parseKeePassXml(source, !!options.organizationId)
+			: format === 'delineaxml'
+			? parseDelineaXml(source, !!options.organizationId)
+			: format === 'passworddragonxml'
+			? parsePasswordDragonXml(source, !!options.organizationId)
+			: format === 'safeincloudxml'
+			? parseSafeInCloudXml(source)
+			: format === 'pwsafexml'
+			? parsePasswordSafeXml(source, !!options.organizationId)
+			: format === 'stickypasswordxml'
+			? parseStickyPasswordXml(source, !!options.organizationId)
+			: format === 'clipperzhtml'
+			? parseClipperzHtml(source)
+			: format === 'passworddepot17xml'
+			? parsePasswordDepot17Xml(source, !!options.organizationId)
 			: json(source),
 		owner,
 		options.password,

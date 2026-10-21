@@ -13,6 +13,10 @@ export interface ApiKeyAccount extends ApiKeyLogin {
 export interface SsoAccount extends ApiKeyLogin, Login {
 	auth: 'sso';
 }
+export interface SsoPendingAccount extends Omit<import('#client').SsoLoginResult, 'encryptedUserKey'> {
+	auth: 'sso';
+	encryptedUserKey?: never;
+}
 export type Account = PasswordAccount | ApiKeyAccount | SsoAccount;
 export interface TwoFactorAnswer {
 	provider: number;

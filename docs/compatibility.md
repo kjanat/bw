@@ -60,32 +60,39 @@ failures. Tests cover SemVer prerelease/build ordering, credential-free requests
 redirect rejection configuration and sanitized error handling. No self-update
 or Bitwarden product-update request occurs.
 
-| Area                      | Coverage                                                                                                                                            |
-| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Server selection          | Explicit URL; path prefixes; no cloud fallback                                                                                                      |
-| Prelogin                  | Identity endpoint with legacy API fallback only on 404/405                                                                                          |
-| Password authentication   | PBKDF2 and Argon2id, stable CLI device ID, initial sync/unlock, password inputs, refresh and 401 recovery                                           |
-| API-key authentication    | Personal user client credentials, authenticated principal/KDF lookup, locked login, repeated-grant renewal, master-password unlock                  |
-| Two-factor                | Provider/token submission; challenge flows remain in progress                                                                                       |
-| User keys                 | Legacy Key and modern wrapped-key response fields                                                                                                   |
-| Encryption                | Encryption V1 EncString type 2; verify MAC before decrypting                                                                                        |
-| Organization keys         | Account private-key decryption and RSA OAEP key types 3/4                                                                                           |
-| Item reads/writes         | Login, secure note, card, identity, SSH key; per-item keys; custom fields and password history                                                      |
-| Edit conflicts            | Preserve current item key; send lastKnownRevisionDate; reject stale edits                                                                           |
-| Item lifecycle            | Create, edit, soft/permanent delete, restore, archive/unarchive                                                                                     |
-| Folders                   | Create, list, get, edit, delete with encrypted names                                                                                                |
-| Organizations/collections | Collection CRUD with access preservation; member listing and confirmation; item moves and collection assignments                                    |
-| Attachments               | Type-2 binary encryption, multipart upload, signed downloads, raw bytes, private file output, deletion, upload-failure cleanup                      |
-| Sends                     | Text/file creation, owner reads, metadata/text edits, password removal, deletion, anonymous receive; separate fragment-key and account-key handling |
-| Filtering                 | Search, folder/organization/collection IDs, trash and archive                                                                                       |
-| Templates/encoding/TOTP   | Item/folder templates, stdin base64 encoding; RFC 6238 and Steam TOTP                                                                               |
-| Reports                   | Password-health strength/reuse, archived and organization logins, optional HIBP range checks; get exposed occurrence counts                         |
-| Local state               | Atomic private storage, encrypted cache, offline reads, session invalidation                                                                        |
-| Protocol version          | Bitwarden-Client-Version 2026.10.0; required for Vaultwarden to include SSH keys in sync                                                            |
+| Area                      | Coverage                                                                                                                                                                |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Server selection          | Explicit URL; path prefixes; no cloud fallback                                                                                                                          |
+| Prelogin                  | Identity endpoint with legacy API fallback only on 404/405                                                                                                              |
+| Password authentication   | PBKDF2 and Argon2id, stable CLI device ID, initial sync/unlock, password inputs, refresh and 401 recovery                                                               |
+| API-key authentication    | Personal user client credentials, authenticated principal/KDF lookup, locked login, repeated-grant renewal, master-password unlock                                      |
+| Two-factor                | Provider/token submission and supported TOTP/email challenges; the reference CLI's separate new-device email-OTP challenge is not emitted by pinned Vaultwarden targets |
+| User keys                 | Legacy Key and modern wrapped-key response fields                                                                                                                       |
+| Encryption                | Encryption V1 EncString type 2; verify MAC before decrypting                                                                                                            |
+| Organization keys         | Account private-key decryption and RSA OAEP key types 3/4                                                                                                               |
+| Item reads/writes         | Login, secure note, card, identity, SSH key; per-item keys; custom fields and password history                                                                          |
+| Edit conflicts            | Preserve current item key; send lastKnownRevisionDate; reject stale edits                                                                                               |
+| Item lifecycle            | Create, edit, soft/permanent delete, restore, archive/unarchive                                                                                                         |
+| Folders                   | Create, list, get, edit, delete with encrypted names                                                                                                                    |
+| Organizations/collections | Collection CRUD with access preservation; member listing and confirmation; item moves and collection assignments                                                        |
+| Attachments               | Type-2 binary encryption, multipart upload, signed downloads, raw bytes, private file output, deletion, upload-failure cleanup                                          |
+| Sends                     | Text/file creation, owner reads, metadata/text edits, password removal, deletion, anonymous receive; separate fragment-key and account-key handling                     |
+| Filtering                 | Search, folder/organization/collection IDs, trash and archive                                                                                                           |
+| Templates/encoding/TOTP   | Item/folder templates, stdin base64 encoding; RFC 6238 and Steam TOTP                                                                                                   |
+| Reports                   | Password-health strength/reuse, archived and organization logins, optional HIBP range checks; get exposed occurrence counts                                             |
+| Local state               | Atomic private storage, encrypted cache, offline reads, session invalidation                                                                                            |
+| Protocol version          | Bitwarden-Client-Version 2026.10.0; required for Vaultwarden to include SSH keys in sync                                                                                |
 
 KDF work is bounded: PBKDF2 at most 10,000,000 iterations; Argon2id at most
 20 iterations, 256 MiB, and 16 lanes. Unsupported formats fail explicitly.
 See [implementation status](implementation-status.md) for the full command target.
+
+The pinned Vaultwarden identity handler sends a new-device notification after
+successful authentication when email is configured; its token response does not
+include `requiresDeviceVerification`. The official CLI's follow-up OTP prompt is
+therefore a cloud-specific branch, not a Vaultwarden login challenge. See the
+[Vaultwarden response handler](https://github.com/dani-garcia/vaultwarden/blob/58a980f850464f7d9cdc99a765df36f0a3308b91/src/api/identity.rs#L500-L608)
+and the [reference CLI branch](https://github.com/bitwarden/clients/blob/ce5386b939062d9535cdf1a998101d25194908d0/apps/cli/src/auth/commands/login.command.ts#L340-L356).
 
 ## Verification
 
@@ -118,6 +125,14 @@ passed through `envctl redact` before display or capture; redactor failure
 withholds that output. The selected image must be an immutable digest from
 `apps/cli/test/fixtures/compatibility-targets.json`. `test:compat` is an uncached
 Turbo package task and forwards only its named test configuration variables.
+For the 1.37.4 reference run, the managed runner executes KDF/vault checks once,
+then divides the external-import matrix into eight independently reported
+shards, and runs authentication/REST parity separately. This keeps each Bun
+test below its per-test timeout without dropping importer cases. The disposable
+server raises its unauthenticated request burst limit for the repeated synthetic
+registrations; this setting applies only to the managed test container. A shard
+can be rerun with `VW_TEST_IMPORT_SHARD=INDEX/8`, and REST/authentication checks
+alone with `VW_TEST_SKIP_IMPORTS=1`.
 
 The 1.37.4 run requires the independent **bw 2026.10.0** executable and checks its
 version in an isolated profile. That reference client cannot parse 1.36.0's
@@ -232,17 +247,18 @@ provider and removes the server and CLI profiles after the tests.
 
 Both KDF cases verify library authorization and refresh, exact vault-key recovery,
 compiled Node `login --sso` through the localhost callback, encrypted item reads,
-TOTP completion, and rejection of a wrong PKCE verifier. The browser is simulated
-by following HTTP redirects; an OS browser launcher and a vendor identity
-provider's UI are not exercised. New-account SSO vault/password initialization
-remains required work. SSO email delivery is protocol tested, with real-server
-SSO email coverage still pending. The CI matrix includes this suite in each
-server/Node cell; hosted execution remains unobserved.
+TOTP completion, and rejection of a wrong PKCE verifier. They also JIT-provision
+fresh SSO users and exercise the compiled CLI's first-login path: it sets a master
+password, initializes vault/RSA keys through `/api/accounts/set-password`, syncs,
+and unlocks the account. The browser is simulated by following HTTP redirects; an
+OS browser launcher and a vendor identity provider's UI are not exercised. SSO
+email delivery is protocol tested, with real-server SSO email coverage still
+pending. The CI matrix includes this suite in each server/Node cell; hosted
+execution remains unobserved.
 
 Verified locally on 2026-10-21 under Node 26.11.1 and Bun 1.4.3: both SSO
-cases passed on 1.36.0 in 11.21 seconds and on 1.37.4 in 11.07 seconds,
-with 46 expectations per server. Both fixture containers were removed, and no
-compatibility container remained after the runs.
+cases passed on 1.36.0 (12.39 seconds, 82 expectations) and 1.37.4 (12.26
+seconds, 82 expectations). Both fixture containers were removed after the runs.
 
 The subsequent sync parity change adds `--last`, `--force`/`-f`, and account
 revision checks. Internal post-login and post-mutation refreshes still download
@@ -456,9 +472,10 @@ Build, type checks, lint, and formatting checks passed for the new packages.
 
 The complete scope is tracked in [implementation status](implementation-status.md).
 Outstanding work includes the remaining import adapters, transfer edge cases,
-legacy Send access protocols, the local API, legacy attachment migration coverage,
-additional authentication flows, global flag parity, newer item/encryption types,
-and an automated multi-version compatibility matrix.
+legacy Send access protocols, remaining local API parity, live verification of
+legacy attachment migration during moves, additional authentication flows,
+global flag parity, newer item/encryption types, and an automated multi-version
+compatibility matrix.
 
 Before claiming an operation is supported, implement it in the library, exercise
 it against disposable Vaultwarden, and add CLI coverage where applicable. Mocked
@@ -499,9 +516,291 @@ The pinned [file-format inventory](reference/bw-import-formats-2026.10.0.json)
 contains 72 IDs extracted from the reference's canonical `importOptionsById`,
 filtering nonempty `acceptedFileTypes` exactly as its CLI listing does. This is
 source-derived: the reference refuses `import --formats` while logged out.
-Our current importer list implements 21 of those IDs and adds `bitwardenzip`;
-51 reference IDs remain required work. Several are browser aliases, so the
-number of missing IDs is not a count of equally sized implementations.
+Our importer list now covers all 72 reference IDs and adds the Vaultwarden
+`bitwardenzip` backup format. Password Depot 17 XML has fixture-based unit
+coverage and a completed live comparison with `bw` on Vaultwarden 1.37.4. The
+unified Keeper ID selects its CSV or JSON importer from the file content, and
+Proton Pass uses the canonical `protonpass` ID. F-Secure FSK and Proton Pass
+have passing focused comparisons against `bw` 2026.10.0 on Vaultwarden 1.37.4.
+Clipperz HTML has a passing focused comparison against `bw` 2026.10.0 after
+the fixture was corrected to include the XHTML public doctype used by actual
+exports.
+
+Encryptr CSV (`encryptrcsv`) follows the pinned reference importer for password,
+credit-card, unknown and empty-login records. Its `Notes` and `Text` columns
+join with a blank line; card brand and expiry fields use the reference mapping.
+Unit fixtures cover those cases, and the disposable-server cross-client matrix
+compared its imported, decrypted records with independent `/usr/bin/bw`
+2026.10.0 on Vaultwarden 1.37.4 under PBKDF2, including the password, card,
+secure-note and empty-login cases. The focused run passed three live tests and
+739 expectations total, including baseline protocol and REST checks.
+
+PassKeep CSV (`passkeepcsv`) maps its category, login fields, description, and
+second password as a custom field. PasswordWallet text CSV (`passwordwallettxt`)
+uses positional columns for name, URL, username, password, notes, and folder;
+its `¬` note separator becomes a newline. Both adapters have personal and
+organization grouping unit coverage. They also passed the compiled CLI and
+independent `/usr/bin/bw` comparison on Vaultwarden 1.37.4 under PBKDF2,
+including decrypted item fields and folder relationships, as part of the
+2026-10-21 compatibility run (851 expectations across the live suites).
+
+Passpack CSV (`passpackcsv`) reads its JSON-encoded tags and extra fields,
+retains shared notes, and maps tags to folders or multiple organization
+collections. Unit coverage includes malformed JSON handling and collection
+relationships. It passed the compiled CLI and independent `/usr/bin/bw`
+comparison on Vaultwarden 1.37.4 under PBKDF2, including decrypted fields and
+folder relationships, in the 2026-10-21 focused compatibility run.
+
+Ascendo (`ascendocsv`), BlackBerry (`blackberrycsv`), Blur (`blurcsv`),
+Codebook (`codebookcsv`), Avast (`avastcsv`), Buttercup (`buttercupcsv`),
+Padlock (`padlockcsv`), and Yoti (`yoticsv`) CSV adapters map credentials,
+notes, favorites, generic fields, and folders according to their pinned
+reference importers. All eight passed a focused compiled-CLI and independent
+`/usr/bin/bw` comparison on Vaultwarden 1.37.4 under PBKDF2 on 2026-10-21,
+including decrypted item fields and folder relationships where applicable.
+
+SaferPass (`saferpasscsv`), SecureSafe (`securesafecsv`), and Meldium
+(`meldiumcsv`) CSV imports cover URL/name derivation, case-insensitive URL
+headers, notes, and credentials. All three passed a focused compiled-CLI and
+independent `/usr/bin/bw` comparison on Vaultwarden 1.37.4 under PBKDF2 on
+2026-10-21, including decrypted fields.
+
+True Key (`truekeycsv`) and SplashID (`splashidcsv`) now map login, note, and
+card records or positional categories as applicable. Both passed focused
+compiled-CLI and independent `/usr/bin/bw` comparisons on Vaultwarden 1.37.4
+under PBKDF2 on 2026-10-21, including decrypted fields and folder relations.
+
+RememBear (`remembearcsv`) now maps active logins and cards, skips trashed
+records, and preserves card PIN/ZIP fields. UPM (`upmcsv`) maps its positional
+login export. Both passed focused compiled-CLI and independent `/usr/bin/bw`
+comparisons on Vaultwarden 1.37.4 under PBKDF2 on 2026-10-21, including
+decrypted item fields.
+
+LogMeOnce (`logmeoncecsv`) maps named login columns and folder groups. Unit
+coverage checks personal folders and organization collections. It passed a
+focused compiled-CLI and independent `/usr/bin/bw` comparison on Vaultwarden
+1.37.4 under PBKDF2 on 2026-10-21, including decrypted fields and folder
+relationships.
+
+Myki (`mykicsv`) maps the distinct account, credit-card, identity, ID-card,
+two-factor, and secure-note exports, preserving additional values as custom
+fields. Fixtures follow the pinned reference importer and its source fixtures.
+All six variants passed focused compiled-CLI comparisons with independent
+`/usr/bin/bw` on Vaultwarden 1.37.4 under PBKDF2 on 2026-10-21, including
+decrypted fields.
+
+mSecure (`msecurecsv`) maps legacy pipe-encoded values within CSV fields,
+including logins, cards, secure notes, and tag folders. Unit coverage includes
+personal folders and organization collections. It passed a focused compiled-CLI
+and independent `/usr/bin/bw` comparison on Vaultwarden 1.37.4 under PBKDF2 on
+2026-10-21, including decrypted item fields and folder relationships.
+
+Password Agent (`passwordagentcsv`) supports its five-column legacy layout and
+both current layouts, converts credential-free rows to secure notes, and maps
+folders to organization collections. It passed a focused compiled-CLI and
+independent `/usr/bin/bw` comparison on Vaultwarden 1.37.4 under PBKDF2 on
+2026-10-21, including decrypted fields and folder relationships.
+
+Dashlane (`dashlanecsv`) maps credential, payment, identity, personal-info,
+and secure-note exports, retaining unmapped columns as custom fields. It passed
+a focused compiled-CLI and independent `/usr/bin/bw` comparison on Vaultwarden
+1.37.4 under PBKDF2 on 2026-10-21, including decrypted fields and folder
+relationships.
+
+Avast Passwords JSON (`avastjson`) maps login, secure-note, and card records.
+It passed focused compiled-CLI and independent `/usr/bin/bw` comparisons on
+Vaultwarden 1.37.4 under PBKDF2 on 2026-10-21, including decrypted fields.
+
+Enpass JSON (`enpassjson`) maps login, secure-note, and card records, including
+nested folders, TOTP, hidden custom fields, Android app URIs, and card expiry.
+The compiled CLI's imported, decrypted records and folder links matched
+independent `/usr/bin/bw` 2026.10.0 on Vaultwarden 1.37.4 under PBKDF2 in a
+focused 2026-10-21 run (41 expectations across the live authentication/import
+fixture). The fixture needed an explicit signal to stop its local REST sidecar
+during teardown; the Enpass import and comparison assertions had completed.
+
+Enpass CSV (`enpasscsv`) follows the pinned pair-based export format, including
+multiple Website URIs, trailing notes, starred sensitive fields, one-time codes,
+and payment cards. The compiled CLI's imported, decrypted records matched
+independent `/usr/bin/bw` 2026.10.0 on Vaultwarden 1.37.4 under PBKDF2 in a
+focused 2026-10-21 run (39 expectations across the live authentication/import
+fixture). As with Enpass JSON, I stopped the local REST sidecar after the import
+comparisons because its graceful teardown stalled.
+
+GNOME Passwords JSON (`gnomejson`) maps URL credentials, usernames, custom
+attributes, multiline notes, and keyring paths to folders or organization
+collections. A focused 2026-10-21 compiled-CLI run on Vaultwarden 1.37.4 under
+PBKDF2 matched the imported, decrypted records and folder links from independent
+`/usr/bin/bw` 2026.10.0 (39 expectations across the live fixture). The fixture's
+local REST sidecar required an explicit signal during teardown; the test then
+reported success and removed the temporary Vaultwarden container.
+
+Passman JSON (`passmanjson`) maps login credentials, email fallback, TOTP,
+descriptions, custom fields, and the first tag as a folder or collection. Unit
+coverage includes multiline custom values and conversion to secure notes when
+login credentials and URLs are absent. Its focused 2026-10-21 compiled-CLI
+comparison against independent `/usr/bin/bw` 2026.10.0 on Vaultwarden 1.37.4
+matched decrypted items and folder links (39 expectations across the live
+fixture). The fixture's local REST sidecar required an explicit signal during
+teardown; the test then reported success and removed the temporary container.
+
+Passky JSON (`passkyjson`) imports unencrypted website, username, password, and
+message records, converting entries without login data or a URL to secure notes.
+Encrypted backups fail explicitly. A focused 2026-10-21 compiled-CLI comparison
+against independent `/usr/bin/bw` 2026.10.0 on Vaultwarden 1.37.4 matched the
+decrypted records (37 expectations across the live fixture). The test-owned
+local REST sidecar required an explicit signal during teardown; the runner
+reported success and removed the temporary container.
+
+Delinea CSV (`delineacsv`) maps URL-bearing rows to logins and rows without a
+URL to secure notes. It retains custom fields, treats Password fields as hidden,
+and maps folders to organization collections when requested. A focused
+2026-10-21 compiled-CLI run matched the decrypted records and folders from
+independent `/usr/bin/bw` 2026.10.0 on Vaultwarden 1.37.4 (40 expectations
+across the live fixture); the test-owned local REST sidecar needed an explicit
+signal during teardown before the runner reported success and removed the
+temporary container.
+
+Kaspersky Password Manager TXT (`kasperskytxt`) parses its Websites,
+Applications, and Notes sections, preserving credential fields and multiline
+comments. A focused 2026-10-21 compiled-CLI comparison matched independent
+`/usr/bin/bw` 2026.10.0 on Vaultwarden 1.37.4 (39 expectations across the live
+fixture). The test-owned local REST sidecar needed an explicit signal during
+teardown before the test reported success and removed its container.
+
+Zoho Vault CSV (`zohovaultcsv`) maps names, URL fallback, TOTP fallback,
+favorites, folder paths, and Zoho's line-based SecretData/CustomData records.
+The focused 2026-10-21 compiled-CLI comparison matched independent
+`/usr/bin/bw` 2026.10.0 on Vaultwarden 1.37.4 (40 expectations across the live
+fixture). Its test-owned REST sidecar needed an explicit signal during teardown;
+the runner then reported success and removed the temporary container.
+
+RoboForm CSV (`roboformcsv`) maps the legacy `Rf_fields` and `RfFieldsV2`
+encodings, including alternate credentials, hidden password fields, TOTP, and
+folder paths. Its focused 2026-10-21 compiled-CLI comparison matched independent
+`/usr/bin/bw` 2026.10.0 on Vaultwarden 1.37.4 (40 expectations across the live
+fixture). The test-owned REST sidecar required an explicit signal during
+teardown before the runner reported success and removed its container.
+
+Keeper CSV (`keepercsv`) uses Keeper's headerless layout, preserves credential
+whitespace, maps `TFC:Keeper` to TOTP, retains additional fields, and converts
+folder paths to folders or collections. Unit fixtures cover login and secure
+note rows. Its focused 2026-10-21 compiled-CLI comparison matched independent
+`/usr/bin/bw` 2026.10.0 on Vaultwarden 1.37.4 (39 expectations across the live
+fixture). The test-owned REST sidecar required an explicit signal during
+teardown before the runner reported success and removed its container.
+
+Keeper JSON (`keeperjson`) maps logins, payment cards, and legacy identity
+records, Keeper's structured custom fields, TOTP, folder relationships, and
+cross-record references. Its focused 2026-10-21 compiled-CLI comparison matched
+independent `/usr/bin/bw` 2026.10.0 on Vaultwarden 1.37.4 (41 expectations
+across the live fixture), including preserved password whitespace, TOTP, card
+details, and Keeper folder sanitization. The test-owned REST sidecar required
+an explicit signal during teardown before the runner reported success and
+removed its container.
+
+Dashlane JSON (`dashlanejson`) maps logins, addresses, identities, payment
+cards, and the reference's generic-note fallback. Its focused 2026-10-21
+compiled-CLI comparison matched independent `/usr/bin/bw` 2026.10.0 on
+Vaultwarden 1.37.4 (39 expectations across the live fixture), including
+credential whitespace and the supported legacy card/identity fields. The
+test-owned REST sidecar required an explicit signal during teardown before the
+runner reported success and removed its container.
+
+PasswordXP CSV (`passwordxpcsv`) supports English, Dutch, and German headers,
+folder marker rows, credential fields, descriptions, and additional custom
+columns. Its focused 2026-10-21 compiled-CLI comparison matched independent
+`/usr/bin/bw` 2026.10.0 on Vaultwarden 1.37.4 (40 expectations across the live
+fixture), including significant password whitespace, folder relationships,
+and custom data. The test-owned REST sidecar required an explicit signal during
+teardown before the runner reported success and removed its container.
+
+Delinea XML (`delineaxml`) imports direct-child secret fields as logins when a
+URL slug exists and as secure notes otherwise. It retains custom fields,
+password field sensitivity, notes, and folder relationships. Its focused
+2026-10-21 compiled-CLI comparison matched independent `/usr/bin/bw` 2026.10.0
+on Vaultwarden 1.37.4 (45 expectations across the combined PasswordXP and
+Delinea XML live fixture). The test-owned REST sidecar required an explicit
+signal during teardown before the runner reported success and removed its
+container.
+
+Netwrix Password Secure CSV (`netwrixpasswordsecure`) supports the reference's
+semicolon delimiter, language-specific column aliases, multiple URL columns,
+TOTP, folders, custom fields, and exports with an additional enclosing quote
+layer. Its focused 2026-10-21 compiled-CLI comparison matched independent
+`/usr/bin/bw` 2026.10.0 on Vaultwarden 1.37.4 (39 expectations across the live
+fixture). The test-owned REST sidecar required an explicit signal during
+teardown before the runner reported success and removed its container.
+
+Password Boss JSON (`passwordbossjson`) has parser and unit fixtures for the
+current flat-array export and legacy nested `items`/`folders` export, including
+logins, cards, notes, tags, custom fields, and folder relationships. Both the
+Password Boss and Password Dragon routes now have high-level import tests that
+verify their parsed items are encrypted and sent through Vaultwarden's bulk
+import endpoint. A revised flat-array Password Boss fixture and a Password
+Dragon XML fixture are in the focused live comparison harness. The earlier and
+revised Password Boss flat-array fixtures were rejected by `/usr/bin/bw`
+2026.10.0 with its generic “Data is not formatted correctly” error. The managed
+Vaultwarden suite therefore exercises our Password Boss parser and encrypted
+server import while deliberately skipping that reference comparison; no parity
+claim is made for this format until a reference-accepted export fixture is found.
+
+Password Depot 17 XML (`passworddepot17xml`) maps login, card, identity, and
+secure-note records; favorites, nested groups, custom-field types, and both
+Windows child-field and macOS attribute-field layouts are supported. Unit tests
+cover XML entity rejection and personal/organization grouping. The focused
+Vaultwarden 1.37.4 comparison matched the independent `/usr/bin/bw` 2026.10.0
+import for login/card data, favorites, custom fields, and folder membership.
+
+Clipperz HTML (`clipperzhtml`) reads the JSON held in the export's textarea and
+maps action types, recognized labels, custom fields, notes, and login-to-note
+conversion. The focused comparison against `/usr/bin/bw` 2026.10.0 on
+Vaultwarden 1.37.4 passes with the XHTML public doctype present in real exports.
+
+F-Secure FSK (`fsecurefsk`) imports login and credit-card records, favorite
+timestamps, URI values, and card custom fields. Its focused Vaultwarden 1.37.4
+comparison matched the independent `/usr/bin/bw` 2026.10.0 import, including
+the reference's plain-text PIN field behavior.
+
+Proton Pass (`protonpass`) maps unencrypted vault exports into supported
+Vaultwarden login, card, note, identity, and SSH-key types, skips trashed items,
+and maps vault membership to folders or collections. Its focused Vaultwarden
+1.37.4 comparison matched the independent `/usr/bin/bw` 2026.10.0 import for
+login, card, note, trash filtering, and vault-folder membership.
+
+Password Dragon XML (`passworddragonxml`) maps login fields, attributes, and
+category paths to folders or collections. Unit fixtures cover both ownership
+modes, malformed XML, and entity-declaration rejection. Its focused
+Vaultwarden 1.37.4 live suite previously reached its 10-minute timeout before
+producing a completed cross-client comparison. A smaller fixture is now in the
+focused comparison harness; live parity remains unverified.
+
+SafeInCloud XML (`safeincloudxml`) maps login and secure-note cards, detects
+payment cards from their autofill fields, handles hidden passwords and OTPs,
+and skips deleted/template cards. Unit fixtures cover a BOM-prefixed export,
+all three item kinds, and XML rejection cases. A focused 2026-10-21 live run
+against Vaultwarden 1.37.4 and `/usr/bin/bw` 2026.10.0 matched three imported
+items after removing one trailing line feed from notes in the comparison; the
+raw CLI note strings differ by that final line feed. The focused comparison
+path in `test/run-compatibility.ts` avoids the slower unrelated REST suite.
+
+Psono JSON (`psonojson`) maps website and application passwords, bookmarks,
+TOTP records, secure notes, environment variables, custom values, and nested
+folders. Empty folders are skipped as in the reference importer; organization
+imports turn folder membership into collections. Its focused 2026-10-21 live
+comparison matched both fixture items against `/usr/bin/bw` 2026.10.0 on
+Vaultwarden 1.37.4.
+
+Password Safe XML (`pwsafexml`) converts dotted groups into folder paths,
+expands the export's notes delimiter, and uses email as the username when the
+username is blank. Its focused 2026-10-21 live comparison matched imported
+items and folder relationships against `/usr/bin/bw` 2026.10.0 on Vaultwarden
+1.37.4.
+
+Sticky Password XML (`stickypasswordxml`) resolves login records through
+account links, maps account comments and URLs, and follows group parent IDs to
+build folder paths. Its focused 2026-10-21 live comparison matched imported
+items and folders against `/usr/bin/bw` 2026.10.0 on Vaultwarden 1.37.4.
 
 Edge (`edgecsv`), Opera (`operacsv`), Vivaldi (`vivaldicsv`), and Brave (`bravecsv`)
 share the reference Chrome adapter; Passbolt (`passboltcsv`) shares LastPass.

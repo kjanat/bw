@@ -1,5 +1,5 @@
 /** Quoted CSV records; legacy 1Password uses backslash rather than doubled-quote escapes. */
-export function parseCsv(input: string, escapeChar: '"' | '\\' = '"'): string[][] {
+export function parseCsv(input: string, escapeChar: '"' | '\\' = '"', delimiter = ','): string[][] {
 	const rows: string[][] = [];
 	let row: string[] = [];
 	let field = '';
@@ -23,7 +23,7 @@ export function parseCsv(input: string, escapeChar: '"' | '\\' = '"'): string[][
 			quoted = true;
 			continue;
 		}
-		if (char === ',') {
+		if (char === delimiter) {
 			row.push(field);
 			field = '';
 			closed = false;

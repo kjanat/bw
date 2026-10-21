@@ -1,9 +1,15 @@
 import { test, expect } from 'bun:test';
-import { createHash } from 'node:crypto';
+import { createHash, createPrivateKey, createPublicKey } from 'node:crypto';
 import { VaultwardenClient, ApiError } from '#client';
-import { createSsoAuthorization, ssoCredentialsFromCallback, loginWithSso, SsoAuthorizationDeclinedError } from '#sso';
+import {
+	createSsoAuthorization,
+	ssoCredentialsFromCallback,
+	loginWithSso,
+	setupSsoAccount,
+	SsoAuthorizationDeclinedError,
+} from '#sso';
 import { refreshAccount, unlockAccount } from '#account';
-import { deriveMasterKey, stretchKey, encrypt } from '#crypto';
+import { deriveMasterKey, stretchKey, encrypt, decrypt } from '#crypto';
 
 const key = Buffer.alloc(64, 21), email = 'sso@example.com', password = 'synthetic-master-password';
 const kdf = { type: 0, iterations: 10000 } as const;
@@ -114,6 +120,7 @@ test('SSO login resolves email/KDF from authenticated data, retains no grant par
 		}) as unknown as typeof fetch,
 	});
 	const account = await loginWithSso(client, credentials);
+	if (!account.encryptedUserKey) throw new Error('Expected initialized SSO account fixture.');
 	expect(account.auth).toBe('sso');
 	expect(account.email).toBe(email);
 	expect(account.kdf).toEqual(kdf);
@@ -168,16 +175,14 @@ test('SSO email 2FA retries the same code once and requests delivery using the p
 	expect(grants).toBe(2);
 	expect(emailRequests).toBe(1);
 });
-test('SSO errors and missing vault setup never fall back to password login or repeat grants', async () => {
-	for (const scenario of ['cancel', 'retry-failed', 'uninitialized']) {
+test('SSO errors never fall back to password login or repeat grants', async () => {
+	for (const scenario of ['cancel', 'retry-failed']) {
 		let grants = 0;
 		const client = new VaultwardenClient('https://vault.example', {
 			fetch: (async (url: unknown) => {
 				if (String(url).endsWith('/profile')) return Response.json({ id: 'user', email });
 				grants++;
-				return scenario === 'uninitialized'
-					? Response.json({ access_token: 'access', refresh_token: 'refresh', expires_in: 3600 })
-					: Response.json({ twoFactorProviders: [0] }, { status: 400 });
+				return Response.json({ twoFactorProviders: [0] }, { status: 400 });
 			}) as unknown as typeof fetch,
 		});
 		const operation = loginWithSso(client, credentials, undefined, {
@@ -186,9 +191,50 @@ test('SSO errors and missing vault setup never fall back to password login or re
 				return { provider: 0, token: 'wrong' };
 			},
 		});
-		if (scenario === 'uninitialized') await expect(operation).rejects.toThrow('web vault');
-		else if (scenario === 'cancel') await expect(operation).rejects.toThrow('Cancelled');
+		if (scenario === 'cancel') await expect(operation).rejects.toThrow('Cancelled');
 		else await expect(operation).rejects.toBeInstanceOf(ApiError);
 		expect(grants).toBe(scenario === 'retry-failed' ? 2 : 1);
+	}
+});
+
+test('new SSO accounts set a master password and upload wrapped vault and asymmetric keys', async () => {
+	const body: Record<string, unknown>[] = [];
+	const client = new VaultwardenClient('https://vault.example', {
+		fetch: (async (url: unknown, init?: RequestInit) => {
+			const path = String(url);
+			if (path.endsWith('/connect/token')) {
+				return Response.json({ access_token: 'access', refresh_token: 'refresh', expires_in: 3600 });
+			}
+			if (path.endsWith('/profile')) return Response.json({ id: 'user', email });
+			if (path.endsWith('/prelogin')) return Response.json({ kdf: 0, kdfIterations: 100000 });
+			if (path.endsWith('/accounts/set-password')) {
+				expect(new Headers(init?.headers).get('authorization')).toBe('Bearer access');
+				body.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+				return Response.json({});
+			}
+			throw new Error(`Unexpected request: ${path}`);
+		}) as unknown as typeof fetch,
+	});
+	const pending = await loginWithSso(client, credentials);
+	expect(pending.encryptedUserKey).toBeUndefined();
+	const account = await setupSsoAccount(client, pending, password);
+	expect(account.encryptedUserKey).toMatch(/^2\./);
+	expect(body).toHaveLength(1);
+	expect(body[0]).toMatchObject({ kdf: 0, kdfIterations: 100000 });
+	expect(body[0]!.masterPasswordHash).not.toBe(password);
+	const keys = body[0]!.keys as Record<string, unknown>;
+	expect(keys.publicKey).toMatch(/^[A-Za-z0-9+/]+=*$/);
+	expect(String(keys.encryptedPrivateKey)).toMatch(/^2\./);
+	const recovered = await unlockAccount(account, password);
+	let privateDer: Buffer | undefined;
+	try {
+		expect(recovered).toHaveLength(64);
+		privateDer = decrypt(String(keys.encryptedPrivateKey), recovered);
+		const publicDer = createPublicKey(createPrivateKey({ key: privateDer, format: 'der', type: 'pkcs8' }))
+			.export({ format: 'der', type: 'spki' });
+		expect(Buffer.from(publicDer).toString('base64')).toBe(String(keys.publicKey));
+	} finally {
+		recovered.fill(0);
+		privateDer?.fill(0);
 	}
 });

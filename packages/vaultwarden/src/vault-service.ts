@@ -260,10 +260,34 @@ export class VaultService {
 		});
 	}
 	async moveItem(id: string, organizationId: string, collectionIds: string[]): Promise<VaultItem> {
-		if (!collectionIds.length) throw new Error('At least one collection ID is required when moving an item.');
-		const existing = this.wire(id);
+		let existing = this.wire(id);
 		if (existing.organizationId) throw new Error('Only personal items can be moved to an organization.');
 		this.validateCollections(organizationId, collectionIds);
+		if (!existing.key && Array.isArray(existing.attachments)) {
+			const legacyAttachments = existing.attachments.map(object).filter(attachment => !attachment.key);
+			if (legacyAttachments.length) {
+				try {
+					for (const attachment of legacyAttachments) {
+						const attachmentId = text(attachment.id);
+						const downloaded = await this.getAttachment(id, attachmentId);
+						try {
+							await this.createAttachment(id, downloaded.fileName, downloaded.contents);
+						} finally {
+							downloaded.contents.fill(0);
+						}
+						await this.deleteAttachment(id, attachmentId);
+					}
+					const refreshed = await this.client.sync(this.accessToken);
+					this.snapshot.ciphers = refreshed.ciphers;
+					existing = this.wire(id);
+				} catch (error) {
+					throw new Error(
+						'Legacy attachment migration failed; the item was not shared. Sync and inspect its attachments before retrying.',
+						{ cause: error },
+					);
+				}
+			}
+		}
 		const owner = this.ownerKey({ organizationId });
 		const key = existing.key ? decrypt(text(existing.key), this.userKey) : randomBytes(64);
 		try {
@@ -280,7 +304,7 @@ export class VaultService {
 				for (const value of existing.attachments) {
 					const attachment = object(value);
 					if (!attachment.key) {
-						throw new Error('Legacy attachments without individual keys must be migrated before moving this item.');
+						throw new Error('Legacy attachment migration completed without an individual attachment key.');
 					}
 					const attachmentKey = decrypt(text(attachment.key), this.userKey);
 					try {

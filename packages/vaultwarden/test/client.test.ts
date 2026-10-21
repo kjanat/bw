@@ -26,6 +26,8 @@ test('requires TLS except loopback and preserves path prefixes', () => {
 	expect(serverUrl('https://example.com/vault/')).toBe(
 		'https://example.com/vault',
 	);
+	expect(serverUrl('vault.example/path/')).toBe('https://vault.example/path');
+	expect(serverUrl('bitwarden.com')).toBe('https://bitwarden.com');
 	expect(serverUrl('http://127.0.0.1:1234')).toBe('http://127.0.0.1:1234');
 	for (
 		const value of [

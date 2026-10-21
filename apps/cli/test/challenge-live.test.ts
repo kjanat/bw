@@ -293,6 +293,26 @@ live('real Vaultwarden: authentication, external imports, and REST compatibility
 					await official(['config', 'server', `https://127.0.0.1:${proxy.port}`]);
 					const referenceSession =
 						(await official(['login', email, '--passwordenv', 'BW_PASSWORD', '--raw', '--nointeraction'])).trim();
+					if (process.env.VW_TEST_SKIP_IMPORTS === '1') {
+						const filters = [
+							['--folderid', folderId],
+							['--folderid', 'null'],
+							['--organizationid', 'null'],
+							['--organizationid', 'notnull'],
+							['--collectionid', 'null'],
+							['--collectionid', 'notnull'],
+							['--search', 'REST', '--folderid', folderId],
+							['--search', 'no matching item', '--folderid', 'null'],
+						];
+						const ids = (source: string) =>
+							(JSON.parse(source) as Record<string, unknown>[]).map(item => String(item.id)).sort();
+						for (const filter of filters) {
+							const own = await run(['list', 'items', ...filter, '--session', restSession]);
+							if (own.code) throw new Error(`Custom CLI list filter failed (${filter.join(' ')}): ${own.stderr}`);
+							const native = await official(['list', 'items', ...filter], referenceSession);
+							expect(ids(own.stdout), `list items ${filter.join(' ')}`).toEqual(ids(native));
+						}
+					}
 					const prefix = `csv${randomUUID().replaceAll('-', '').slice(0, 8)}`;
 					const csvCases: { format: string; rows: string[][] }[] = [
 						{
@@ -379,6 +399,831 @@ live('real Vaultwarden: authentication, external imports, and REST compatibility
 							]],
 						},
 					];
+					csvCases.push({
+						format: 'encryptrcsv',
+						rows: [
+							[
+								'Label',
+								'Notes',
+								'Text',
+								'Entry Type',
+								'Username',
+								'Password',
+								'Site URL',
+								'Name on card',
+								'Card Number',
+								'CVV',
+								'Expiry',
+							],
+							[
+								`${prefix} Encryptr login`,
+								'login note',
+								'extra login text',
+								'Password',
+								'alice',
+								'  encryptr-secret  ',
+								'https://example.com',
+								'',
+								'',
+								'',
+								'',
+							],
+							[
+								`${prefix} Encryptr card`,
+								'card note',
+								'extra card text',
+								'Credit Card',
+								'',
+								'',
+								'',
+								'Alice Example',
+								'4111111111111111',
+								'123',
+								'06/30',
+							],
+							[`${prefix} Encryptr note`, 'note body', 'extra note text', 'Secure Note', '', '', '', '', '', '', ''],
+							[`${prefix} Encryptr empty login`, '', 'note from text', 'Password', '', '', '', '', '', '', ''],
+						],
+					});
+					csvCases.push({
+						format: 'passkeepcsv',
+						rows: [['title', 'username', 'password', 'site', 'description', 'password2', 'category'], [
+							`${prefix} PassKeep`,
+							'alice',
+							'  passkeep-secret  ',
+							'https://example.com/passkeep',
+							'PassKeep note',
+							'backup-secret',
+							`${prefix} PassKeep/Logins`,
+						]],
+					});
+					csvCases.push({
+						format: 'passwordwallettxt',
+						rows: [[
+							`${prefix} PasswordWallet`,
+							'https://example.com/passwordwallet',
+							'alice',
+							'  passwordwallet-secret  ',
+							'line one¬line two',
+							`${prefix} PasswordWallet/Logins`,
+						]],
+					});
+					csvCases.push({
+						format: 'passpackcsv',
+						rows: [['Tags', 'Entry Name', 'User ID', 'Password', 'URL', 'Notes', 'Shared Notes', 'Extra Fields'], [
+							JSON.stringify({ tags: [JSON.stringify({ tag: `${prefix} Passpack folder` })] }),
+							`${prefix} Passpack login`,
+							'alice',
+							'  passpack-secret  ',
+							'https://example.com/passpack',
+							'Private note',
+							'Shared note',
+							JSON.stringify({ extraFields: [JSON.stringify({ name: 'Answer', data: 'custom value' })] }),
+						]],
+					});
+					csvCases.push({
+						format: 'ascendocsv',
+						rows: [[
+							`${prefix} Ascendo`,
+							'User Name',
+							'alice',
+							'Password',
+							'  ascendo-secret  ',
+							'Website',
+							'https://example.com/ascendo',
+							'Ascendo note',
+						]],
+					});
+					csvCases.push({
+						format: 'blackberrycsv',
+						rows: [
+							['name', 'grouping', 'fav', 'extra', 'url', 'username', 'password'],
+							[
+								`${prefix} BlackBerry`,
+								'password',
+								'1',
+								'BlackBerry note',
+								'https://example.com/blackberry',
+								'alice',
+								'secret',
+							],
+							[`${prefix} BlackBerry note`, 'note', '0', 'Secure note', '', '', ''],
+							[`${prefix} BlackBerry list`, 'list', '0', '', '', '', ''],
+						],
+					});
+					csvCases.push({
+						format: 'blurcsv',
+						rows: [['label', 'domain', 'email', 'username', 'password'], [
+							'null',
+							`https://www.${prefix}.blur.example/path`,
+							'',
+							'legacy user',
+							'  blur-secret  ',
+						]],
+					});
+					csvCases.push({
+						format: 'codebookcsv',
+						rows: [[
+							'Category',
+							'Favorite',
+							'Entry',
+							'Note',
+							'Username',
+							'Email',
+							'Password',
+							'TOTP',
+							'Website',
+							'Phone',
+							'PIN',
+						], [
+							`${prefix} Codebook`,
+							'True',
+							'Account',
+							'Codebook note',
+							'alice',
+							'alice@example.com',
+							'  codebook-secret  ',
+							'JBSWY3DPEHPK3PXP',
+							'https://example.com/codebook',
+							'123456',
+							'4321',
+						]],
+					});
+					csvCases.push({
+						format: 'avastcsv',
+						rows: [['name', 'web', 'login', 'password'], [
+							`${prefix} Avast`,
+							'https://example.com/avast',
+							'alice',
+							'  avast-secret  ',
+						]],
+					});
+					csvCases.push({
+						format: 'buttercupcsv',
+						rows: [[
+							'!group_id',
+							'!group_name',
+							'!type',
+							'title',
+							'username',
+							'password',
+							'URL',
+							'note',
+							'id',
+							'Recovery Code',
+						], [
+							'g1',
+							`${prefix} Buttercup`,
+							'login',
+							`${prefix} Buttercup entry`,
+							'alice',
+							'  buttercup-secret  ',
+							'https://example.com/buttercup',
+							'Buttercup notes',
+							'id1',
+							'backup',
+						]],
+					});
+					csvCases.push({
+						format: 'padlockcsv',
+						rows: [
+							['Name', 'Tags', 'username', 'website', 'password', 'Recovery'],
+							[
+								`${prefix} Padlock`,
+								`${prefix} Padlock,${prefix} Shared`,
+								'alice',
+								'example.com/padlock',
+								'secret',
+								'backup',
+							],
+						],
+					});
+					csvCases.push({
+						format: 'yoticsv',
+						rows: [['Name', 'User name', 'Password', 'URL'], [
+							`${prefix} Yoti`,
+							'alice',
+							'  yoti-secret  ',
+							'https://example.com/yoti',
+						]],
+					});
+					csvCases.push({
+						format: 'saferpasscsv',
+						rows: [['url', 'notes', 'username', 'password'], [
+							`https://www.${prefix}.saferpass.example/login`,
+							'SaferPass note',
+							'alice',
+							'saferpass-secret',
+						]],
+					});
+					csvCases.push({
+						format: 'securesafecsv',
+						rows: [['Title', 'Comment', 'Username', 'Password', 'Web URL'], [
+							`${prefix} SecureSafe`,
+							'SecureSafe note',
+							'alice',
+							'securesafe-secret',
+							'https://example.com/securesafe',
+						]],
+					});
+					csvCases.push({
+						format: 'meldiumcsv',
+						rows: [['DisplayName', 'Notes', 'UserName', 'Password', 'Url'], [
+							`${prefix} Meldium`,
+							'Meldium note',
+							'alice',
+							'meldium-secret',
+							'https://example.com/meldium',
+						]],
+					});
+					csvCases.push({
+						format: 'truekeycsv',
+						rows: [[
+							'kind',
+							'name',
+							'title',
+							'favorite',
+							'memo',
+							'note',
+							'login',
+							'password',
+							'url',
+							'cardholder',
+							'number',
+							'expiryDate',
+							'document_content',
+							'Reference',
+						], [
+							'login',
+							`${prefix} True Key login`,
+							'',
+							'true',
+							'True Key login note',
+							'',
+							'alice',
+							'  truekey-secret  ',
+							'https://example.com/truekey',
+							'',
+							'',
+							'',
+							'',
+							'',
+						], [
+							'cc',
+							'',
+							`${prefix} True Key card`,
+							'false',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'Alice Example',
+							'4111111111111111',
+							'2030-06-01',
+							'',
+							'',
+						], [
+							'note',
+							'',
+							`${prefix} True Key note`,
+							'false',
+							'',
+							'Caption',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'Document body',
+							'note reference',
+						]],
+					});
+					csvCases.push({
+						format: 'splashidcsv',
+						rows: [
+							[
+								'Web Logins',
+								`${prefix} SplashID login`,
+								'alice',
+								'secret',
+								'https://example.com/splashid',
+								'recovery: 123',
+								'owner: Alice',
+								'tail note',
+								`${prefix} SplashID folder`,
+							],
+							[
+								'Secure Note',
+								`${prefix} SplashID note`,
+								'Note body',
+								'ignored',
+								'tail note',
+								`${prefix} SplashID folder`,
+							],
+						],
+					});
+					csvCases.push({
+						format: 'remembearcsv',
+						rows: [[
+							'type',
+							'trash',
+							'name',
+							'notes',
+							'website',
+							'username',
+							'password',
+							'cardholder',
+							'number',
+							'verification',
+							'expiryMonth',
+							'expiryYear',
+							'pin',
+							'zipCode',
+						], [
+							'LoginItem',
+							'false',
+							`${prefix} RememBear login`,
+							'login notes',
+							'https://example.com/remembear',
+							'alice',
+							'remembear-secret',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'',
+						], [
+							'CreditCardItem',
+							'false',
+							`${prefix} RememBear card`,
+							'card notes',
+							'',
+							'',
+							'',
+							'Alice Example',
+							'4111111111111111',
+							'123',
+							'06',
+							'2030',
+							'9876',
+							'12345',
+						]],
+					});
+					csvCases.push({
+						format: 'upmcsv',
+						rows: [[`${prefix} UPM`, 'alice', 'secret', 'https://example.com/upm', 'UPM note']],
+					});
+					csvCases.push({
+						format: 'logmeoncecsv',
+						rows: [
+							['name', 'username', 'password', 'url', 'group'],
+							[
+								`${prefix} LogMeOnce`,
+								'alice',
+								'  logmeonce-secret  ',
+								'https://example.com/logmeonce',
+								`${prefix} LogMeOnce folder`,
+							],
+						],
+					});
+					csvCases.push({
+						format: 'mykicsv',
+						rows: [
+							['nickname', 'url', 'username', 'password', 'additionalInfo', 'twofaSecret', 'status', 'tags'],
+							[
+								`${prefix} Myki login`,
+								'www.example.com',
+								'alice',
+								'myki-secret',
+								'Account note',
+								'JBSWY3DPEHPK3PXP',
+								'active',
+								'personal',
+							],
+						],
+					});
+					csvCases.push({
+						format: 'mykicsv',
+						rows: [[
+							'nickname',
+							'status',
+							'tags',
+							'cardNumber',
+							'cardName',
+							'exp_month',
+							'exp_year',
+							'cvv',
+							'additionalInfo',
+						], [
+							`${prefix} Myki card`,
+							'active',
+							'personal',
+							'4111111111111111',
+							'Alice Example',
+							'06',
+							'30',
+							'123',
+							'Card note',
+						]],
+					});
+					csvCases.push({
+						format: 'msecurecsv',
+						rows: [
+							[
+								`${prefix} mSecure login|810974637`,
+								'Login',
+								`${prefix} mSecure folder`,
+								'',
+								'Website|2|https://example.com/msecure',
+								'Username|7|alice',
+								'Password|8|  msecure-secret  ',
+							],
+							[
+								`${prefix} mSecure card|155089404`,
+								'Credit Card',
+								`${prefix} mSecure folder`,
+								'',
+								'Card Number|12|4111111111111111',
+								'Expiration Date|11|06/2030',
+								'Security Code|9|123',
+								'Name on Card|0|Alice Example',
+								'PIN|9|1234',
+								'Issuing Bank|0|Visa',
+								'Phone Number|4|',
+								'Billing Address|0|',
+							],
+							[
+								`${prefix} mSecure note|155089405`,
+								'Secure Note',
+								`${prefix} mSecure folder`,
+								'',
+								'line one',
+								'line two',
+							],
+						],
+					});
+					csvCases.push({
+						format: 'passwordagentcsv',
+						rows: [[
+							`${prefix} Password Agent`,
+							'alice',
+							'  passwordagent-secret  ',
+							'Password Agent note',
+							'https://example.com/passwordagent',
+							'',
+							'',
+							'',
+							`${prefix} Password Agent/Logins`,
+						]],
+					});
+					csvCases.push({
+						format: 'dashlanecsv',
+						rows: [[
+							'username',
+							'username2',
+							'username3',
+							'title',
+							'password',
+							'note',
+							'url',
+							'category',
+							'otpSecret',
+						], [
+							'alice',
+							'alternate',
+							'',
+							`${prefix} Dashlane login`,
+							'  dashlane-secret  ',
+							'login note',
+							'https://example.com/dashlane',
+							`${prefix} Dashlane folder`,
+							'JBSWY3DPEHPK3PXP',
+						]],
+					});
+					csvCases.push({
+						format: 'dashlanecsv',
+						rows: [[
+							'type',
+							'account_name',
+							'account_holder',
+							'cc_number',
+							'code',
+							'expiration_month',
+							'expiration_year',
+							'routing_number',
+							'account_number',
+							'country',
+							'issuing_bank',
+						], [
+							'bank',
+							`${prefix} Dashlane bank`,
+							'Alice Example',
+							'',
+							'',
+							'',
+							'',
+							'123456789',
+							'account-123',
+							'US',
+							'Example Bank',
+						], [
+							'credit_card',
+							`${prefix} Dashlane card`,
+							'',
+							'4111111111111111',
+							'321',
+							'06',
+							'2030',
+							'',
+							'',
+							'US',
+							'',
+						]],
+					});
+					csvCases.push({
+						format: 'dashlanecsv',
+						rows: [
+							[
+								'type',
+								'number',
+								'name',
+								'issue_date',
+								'expiration_date',
+								'place_of_issue',
+								'state',
+							],
+							['card', 'ID12345', 'Alice Example', '2022-1-30', '2032-1-30', '', ''],
+							['passport', 'P123456', 'Alice Example', '2022-1-30', '2032-1-30', 'Netherlands', ''],
+							['license', 'L98765', 'Alice Example', '2022-8-10', '2032-10-10', '', 'CA'],
+							['social_security', '123-45-6789', 'Alice Example', '', '', '', ''],
+							['tax_number', 'TAX123', '', '', '', '', ''],
+						],
+					});
+					csvCases.push({
+						format: 'dashlanecsv',
+						rows: [[
+							'type',
+							'title',
+							'first_name',
+							'middle_name',
+							'last_name',
+							'login',
+							'date_of_birth',
+							'place_of_birth',
+							'email',
+							'email_type',
+							'item_name',
+							'phone_number',
+							'address',
+							'country',
+							'state',
+							'city',
+							'zip',
+							'address_recipient',
+							'address_building',
+							'address_apartment',
+							'address_floor',
+							'address_door_code',
+							'job_title',
+							'url',
+						], [
+							'name',
+							'Ms',
+							'Alice',
+							'Q',
+							'Example',
+							'alice',
+							'1990-01-02',
+							'Town',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'',
+						], [
+							'email',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'alice@example.com',
+							'personal',
+							`${prefix} email`,
+							'',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'',
+						], [
+							'number',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'',
+							`${prefix} phone`,
+							'+15551234567',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'',
+						], [
+							'address',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'',
+							'',
+							`${prefix} address`,
+							'',
+							'One Street',
+							'US',
+							'CA',
+							'Town',
+							'12345',
+							'Alice Example',
+							'1',
+							'2',
+							'3',
+							'1234',
+							'',
+							'',
+						]],
+					});
+					csvCases.push({
+						format: 'dashlanecsv',
+						rows: [['title', 'note'], [`${prefix} Dashlane note`, 'Dashlane secure note']],
+					});
+					csvCases.push({
+						format: 'enpasscsv',
+						rows: [
+							[
+								`${prefix} Enpass login`,
+								'Username',
+								'alice',
+								'E-mail',
+								'alice@example.com',
+								'*Password',
+								'  enpass-csv-secret  ',
+								'Website',
+								'https://example.com/enpass-csv',
+								'One-time code',
+								'ENPASS_CSV_TOTP',
+								'*Security answer',
+								'42',
+								'Enpass CSV login note',
+							],
+							[
+								`${prefix} Enpass card`,
+								'Cardholder',
+								'Alice Example',
+								'*Number',
+								'4111111111111111',
+								'Type',
+								'Visa',
+								'*CVC',
+								'123',
+								'Expiry date',
+								'08/2030',
+							],
+							[`${prefix} Enpass note`, 'Enpass CSV secure note'],
+						],
+					});
+					csvCases.push({
+						format: 'passwordagentcsv',
+						rows: [[
+							'0',
+							`${prefix} Password Agent alternate`,
+							'bob',
+							'alternate-secret',
+							'https://example.com/passwordagent-alt',
+							'Alternate note',
+							'',
+							'',
+							'',
+							`${prefix} Password Agent/Logins`,
+						]],
+					});
+					csvCases.push({
+						format: 'mykicsv',
+						rows: [[
+							'nickname',
+							'status',
+							'tags',
+							'firstName',
+							'middleName',
+							'lastName',
+							'email',
+							'firstAddressLine',
+							'secondAddressLine',
+							'title',
+							'gender',
+							'number',
+							'city',
+							'country',
+							'zipCode',
+							'additionalInfo',
+						], [
+							`${prefix} Myki identity`,
+							'active',
+							'personal',
+							'Alice',
+							'Q',
+							'Example',
+							'alice@example.com',
+							'One Street',
+							'Unit 2',
+							'Ms',
+							'Female',
+							'5551234',
+							'Town',
+							'Netherlands',
+							'1234 AB',
+							'Identity note',
+						]],
+					});
+					csvCases.push({
+						format: 'mykicsv',
+						rows: [[
+							'nickname',
+							'status',
+							'tags',
+							'idType',
+							'idNumber',
+							'idName',
+							'idIssuanceDate',
+							'idExpirationDate',
+							'idCountry',
+							'additionalInfo',
+						], [
+							`${prefix} Myki passport`,
+							'active',
+							'personal',
+							'Passport',
+							'P123456',
+							'Alice Q Example',
+							'03/07/2022',
+							'03/07/2028',
+							'Netherlands',
+							'Passport note',
+						]],
+					});
+					csvCases.push({
+						format: 'mykicsv',
+						rows: [['nickname', 'status', 'content'], [`${prefix} Myki note`, 'active', 'Myki secure note']],
+					});
+					csvCases.push({
+						format: 'mykicsv',
+						rows: [['nickname', 'status', 'tags', 'authToken', 'additionalInfo'], [
+							`${prefix} Myki 2FA`,
+							'active',
+							'personal',
+							'JBSWY3DPEHPK3PXP',
+							'Recovery note',
+						]],
+					});
 					for (const format of ['edgecsv', 'operacsv', 'vivaldicsv', 'bravecsv']) {
 						csvCases.push({ format, rows: csvCases.find(value => value.format === 'chromecsv')!.rows });
 					}
@@ -509,6 +1354,433 @@ live('real Vaultwarden: authentication, external imports, and REST compatibility
 						extension: 'csv',
 					}));
 					importCases.push({
+						format: 'avastjson',
+						extension: 'json',
+						contents: JSON.stringify({
+							logins: [{
+								custName: `${prefix} Avast JSON login`,
+								note: 'Avast JSON login note',
+								url: 'https://example.com/avast-json',
+								pwd: '  avast-json-secret  ',
+								loginName: 'alice',
+							}],
+							notes: [{ label: `${prefix} Avast JSON note`, text: 'Avast JSON secure note' }],
+							cards: [{
+								custName: `${prefix} Avast JSON card`,
+								note: 'Avast JSON card note',
+								holderName: 'Alice Example',
+								cardNumber: '4111111111111111',
+								cvv: '123',
+								expirationDate: { month: 6, year: 2030 },
+							}],
+						}),
+					});
+					importCases.push({
+						format: 'enpassjson',
+						extension: 'json',
+						contents: JSON.stringify({
+							folders: [
+								{ uuid: 'parent', title: `${prefix} Enpass`, parent_uuid: '' },
+								{ uuid: 'child', title: 'Social', parent_uuid: 'parent' },
+							],
+							items: [
+								{
+									title: `${prefix} Enpass login`,
+									template_type: 'login.default',
+									favorite: 1,
+									folders: ['child'],
+									note: 'Enpass login note',
+									fields: [
+										{ type: 'username', label: 'Username', value: 'enpass-user' },
+										{ type: 'password', label: 'Password', value: '  enpass-secret  ', sensitive: 1 },
+										{ type: 'totp', label: 'TOTP', value: 'ENPASS_TEST_SEED' },
+										{ type: 'url', label: 'Website', value: 'https://example.com/enpass' },
+										{ type: 'text', label: 'Recovery code', value: 'ENPASS_RECOVERY', sensitive: 1 },
+									],
+								},
+								{
+									title: `${prefix} Enpass note`,
+									template_type: 'note.default',
+									fields: [{ type: 'multiline', label: 'Details', value: 'private note detail' }],
+								},
+								{
+									title: `${prefix} Enpass card`,
+									template_type: 'creditcard.default',
+									fields: [
+										{ type: 'ccName', label: 'Name', value: 'Alice Example' },
+										{ type: 'ccNumber', label: 'Number', value: '4111111111111111' },
+										{ type: 'ccCvc', label: 'CVC', value: '321' },
+										{ type: 'ccExpiry', label: 'Expiry', value: '08/30' },
+									],
+								},
+							],
+						}),
+					});
+					importCases.push({
+						format: 'gnomejson',
+						extension: 'json',
+						search: prefix,
+						contents: JSON.stringify({
+							[`${prefix}/Browser`]: [
+								{
+									display_name: `https://${prefix}.example.test/login`,
+									secret: '  gnome-json-secret  ',
+									attributes: {
+										username_value: 'gnome-user',
+										'xdg:schema': 'org.gnome.Password',
+										account: 'primary',
+									},
+								},
+								{ display_name: 'not a URL', secret: 'ignored' },
+							],
+						}),
+					});
+					importCases.push({
+						format: 'passmanjson',
+						extension: 'json',
+						search: prefix,
+						contents: JSON.stringify([{
+							label: `${prefix} Passman login`,
+							username: 'passman-user',
+							email: 'passman@example.test',
+							password: '  passman-json-secret  ',
+							url: `https://${prefix}.example.test/passman`,
+							description: 'Passman description',
+							otp: { secret: 'PASSMAN_TEST_SEED' },
+							tags: [{ text: `${prefix}/Passman` }],
+							custom_fields: [
+								{ field_type: 'text', label: 'Recovery code', value: 'passman-recovery' },
+								{ field_type: 'password', label: 'Custom secret', value: 'passman-custom-secret' },
+							],
+						}]),
+					});
+					importCases.push({
+						format: 'passkyjson',
+						extension: 'json',
+						search: prefix,
+						contents: JSON.stringify({
+							encrypted: false,
+							passwords: [{
+								website: `https://${prefix}.example.test/passky`,
+								username: 'passky-user',
+								password: '  passky-json-secret  ',
+								message: 'Passky note',
+							}],
+						}),
+					});
+					importCases.push({
+						format: 'keeperjson',
+						extension: 'json',
+						search: prefix,
+						contents: JSON.stringify({
+							shared_folders: [{ path: `${prefix}\\Team` }],
+							records: [
+								{
+									$type: 'login',
+									uid: 'keeper-live-login',
+									title: `${prefix} Keeper login`,
+									login: 'keeper-user',
+									password: '  keeper-json-secret  ',
+									login_url: `https://${prefix}.example.test/keeper-json`,
+									notes: 'Keeper JSON login note',
+									custom_fields: {
+										'$oneTimeCode': ['KEEPER_JSON_TEST_SEED'],
+										'$text:Recovery code': 'keeper-json-recovery',
+									},
+									folders: [{ folder: `${prefix}/Keeper` }],
+								},
+								{
+									$type: 'bankCard',
+									title: `${prefix} Keeper card`,
+									custom_fields: {
+										'$text:cardholderName': 'Alice Example',
+										'$paymentCard': {
+											cardNumber: '4111111111111111',
+											cardSecurityCode: '321',
+											cardExpirationDate: '08/2031',
+										},
+									},
+								},
+							],
+						}),
+					});
+					importCases.push({
+						format: 'dashlanejson',
+						extension: 'json',
+						search: prefix,
+						contents: JSON.stringify({
+							AUTHENTIFIANT: [{
+								title: `${prefix} Dashlane login`,
+								login: 'dashlane-user',
+								email: 'dashlane@example.test',
+								password: '  dashlane-json-secret  ',
+								domain: `https://${prefix}.example.test/dashlane`,
+								note: 'Dashlane login note',
+							}],
+							ADDRESS: [{
+								addressName: `${prefix} Dashlane address`,
+								addressFull: '12 Example Road',
+								city: 'Amsterdam',
+								country: 'nl',
+							}],
+							IDENTITY: [{ fullName: `${prefix} Alice Example`, pseudo: 'dashlane-alice' }],
+							PAYMENTMEANS_CREDITCARD: [{
+								bank: 'Example Bank',
+								owner: 'Alice Example',
+								cardNumber: '4111111111111111',
+							}],
+						}),
+					});
+					importCases.push({
+						format: 'passwordxpcsv',
+						extension: 'csv',
+						search: prefix,
+						contents: writeCsv([
+							['Title', 'Username', 'URL', 'Password', 'Description', 'Account', 'Private'],
+							[`[${prefix}/PasswordXP]`, '', '', '', '', '', ''],
+							[
+								`${prefix} PasswordXP login`,
+								'passwordxp-user',
+								`https://${prefix}.example.test/passwordxp`,
+								'  passwordxp-secret  ',
+								'PasswordXP login note',
+								'checking',
+								'private',
+							],
+							[`${prefix} PasswordXP note`, '', '', '', 'PasswordXP note body', 'reference', ''],
+						]),
+					});
+					importCases.push({
+						format: 'delineaxml',
+						extension: 'xml',
+						search: prefix,
+						contents:
+							`<?xml version="1.0"?><Export><ImportFile><Folders><Folder><FolderPath>${prefix}/Delinea XML</FolderPath></Folder></Folders><Secrets>
+<Secret><SecretName>${prefix} Delinea XML login</SecretName><FolderPath>${prefix}/Delinea XML</FolderPath><SecretItems>
+<SecretItem><Slug>username</Slug><Value>delinea-xml-user</Value></SecretItem><SecretItem><Slug>password</Slug><Value>  delinea-xml-secret  </Value></SecretItem>
+<SecretItem><Slug>url</Slug><Value>https://${prefix}.example.test/delinea-xml</Value></SecretItem><SecretItem><Slug>notes</Slug><Value>Delinea XML login note</Value></SecretItem>
+<SecretItem><Slug>Recovery code</Slug><Value>delinea-xml-recovery</Value></SecretItem></SecretItems></Secret>
+<Secret><SecretName>${prefix} Delinea XML note</SecretName><SecretItems><SecretItem><Slug>password</Slug><Value>note-password</Value></SecretItem>
+<SecretItem><Slug>notes</Slug><Value>Delinea XML secure note</Value></SecretItem></SecretItems></Secret></Secrets></ImportFile></Export>`,
+					});
+					importCases.push({
+						format: 'netwrixpasswordsecure',
+						extension: 'csv',
+						search: prefix,
+						contents: [
+							'Organisationseinheit;Beschreibung;Benutzername;Passwort;Website;Informationen;One-Time Passwort;DataTags',
+							`${prefix}/Netwrix;${prefix} Netwrix login;netwrix-user;"  netwrix-secret  ";https://${prefix}.example.test/netwrix;Netwrix note;NETWRIX_LIVE_TEST;private-tag`,
+						].join('\r\n'),
+					});
+					importCases.push({
+						format: 'passwordbossjson',
+						extension: 'json',
+						search: prefix,
+						// bw 2026.10.0 rejects both known flat-array export shapes before upload.
+						compareNative: false,
+						contents: JSON.stringify([
+							{
+								itemType: 'Login',
+								itemTypeName: 'Login',
+								folder: `${prefix}/Password Boss`,
+								name: `${prefix} Password Boss login`,
+								email: 'passwordboss-user',
+								password: '  passwordboss-secret  ',
+								url: `https://${prefix}.example.test/passwordboss`,
+								notes: 'Password Boss login note',
+								customFields: [{ name: 'Recovery', value: 'passwordboss-recovery' }],
+								tags: [],
+							},
+							{
+								itemTypeName: 'CreditCard',
+								name: `${prefix} Password Boss card`,
+								cardNumber: '4111111111111111',
+								nameOnCard: 'Alice Example',
+								securityCode: '321',
+								expirationDate: '2031-08-31T23:59:59Z',
+							},
+						]),
+					});
+					importCases.push({
+						format: 'passworddragonxml',
+						extension: 'xml',
+						search: prefix,
+						contents: `<?xml version="1.0"?><PasswordManager><record><Category>${prefix}/Password Dragon</Category>
+<Account-Name>${prefix} Password Dragon login</Account-Name><User-Id>passworddragon-user</User-Id>
+<Password>  passworddragon-secret  </Password><URL>https://${prefix}.example.test/passworddragon</URL>
+<Notes>Password Dragon login note</Notes><Attribute-1>passworddragon-recovery</Attribute-1></record></PasswordManager>`,
+					});
+					importCases.push({
+						format: 'delineacsv',
+						extension: 'csv',
+						search: prefix,
+						contents: writeCsv([
+							['Secret Name', 'URL', 'Username', 'Password', 'Notes', 'Folder', 'Custom'],
+							[
+								`${prefix} Delinea login`,
+								`https://${prefix}.example.test/delinea`,
+								'delinea-user',
+								'  delinea-secret  ',
+								'Delinea login note',
+								`${prefix}/Delinea`,
+								'delinea-private-field',
+							],
+							[
+								`${prefix} Delinea note`,
+								'',
+								'',
+								'note-password',
+								'Delinea secure note',
+								`${prefix}/Delinea`,
+								'note-ref',
+							],
+						]),
+					});
+					importCases.push({
+						format: 'zohovaultcsv',
+						extension: 'csv',
+						search: prefix,
+						contents: writeCsv([
+							[
+								'Password Name',
+								'Secret Name',
+								'Favorite',
+								'Notes',
+								'Password URL',
+								'Secret URL',
+								'TOTP',
+								'login_totp',
+								'SecretData',
+								'CustomData',
+								'Folder Name',
+							],
+							[
+								`${prefix} Zoho login`,
+								'Fallback name',
+								'1',
+								'Zoho entry note',
+								`https://${prefix}.example.test/zoho`,
+								'',
+								'',
+								'ZOHO_TEST_SEED',
+								'Username: zoho-user\nPassword:  zoho-secret\nService: personal',
+								'Password: custom-password',
+								`${prefix}/Zoho`,
+							],
+							[
+								'',
+								`${prefix} Zoho note`,
+								'0',
+								'Zoho secure note',
+								'',
+								'',
+								'',
+								'',
+								'SecretType: note\nReference: zoho-note',
+								'',
+								`${prefix}/Zoho`,
+							],
+						]),
+					});
+					importCases.push({
+						format: 'roboformcsv',
+						extension: 'csv',
+						search: prefix,
+						contents: writeCsv([
+							[
+								'Name',
+								'Login',
+								'Pwd',
+								'Password',
+								'Url',
+								'URL',
+								'Folder',
+								'Note',
+								'Rf_fields',
+								'RfFieldsV2',
+							],
+							[
+								`${prefix} RoboForm legacy`,
+								'legacy-user',
+								'',
+								'legacy-secret',
+								'',
+								`https://${prefix}.example.test/robo-legacy`,
+								`/${prefix}/RoboForm`,
+								'RoboForm legacy note',
+								'Color:label:blue',
+								'',
+								'Recovery:code:rck:unused',
+							],
+							[
+								`${prefix} RoboForm V2`,
+								'main-user',
+								'main-secret',
+								'',
+								`https://${prefix}.example.test/robo-v2`,
+								'',
+								`${prefix}/RoboForm`,
+								'',
+								'',
+								'TOTP KEY$,Name,totp,text,ROBOFORM_TEST_SEED',
+								'User ID$,Name,user,text,alternate-user',
+								'User ID$,Name,user,text,main-user',
+								'Password$,Name,pwd,pwd,alternate-secret',
+								'Password$,Name,pwd,pwd,main-secret',
+							],
+						]),
+					});
+					importCases.push({
+						format: 'keepercsv',
+						extension: 'csv',
+						search: prefix,
+						contents: writeCsv([
+							[
+								`${prefix}/Keeper`,
+								`${prefix} Keeper login`,
+								'keeper-user',
+								'  keeper-secret  ',
+								`https://${prefix}.example.test/keeper`,
+								'Keeper note',
+								'Shared ignored',
+								'TFC:Keeper',
+								'KEEPER_TEST_SEED',
+								'Recovery code',
+								'keeper-recovery',
+							],
+						]),
+					});
+					importCases.push({
+						format: 'kasperskytxt',
+						extension: 'txt',
+						search: prefix,
+						contents: [
+							'Websites',
+							'',
+							'',
+							'---',
+							`Website name: ${prefix} Kaspersky login`,
+							'Login name: Web',
+							`Website URL: https://${prefix}.example.test/kaspersky`,
+							'Login: kaspersky-user',
+							'Password:   kaspersky-secret  ',
+							'Comment: Kaspersky login note',
+							'Applications',
+							'',
+							'',
+							'---',
+							`Application: ${prefix} Kaspersky app`,
+							'Login: app-user',
+							'Password: app-secret',
+							'Notes',
+							'',
+							'',
+							'---',
+							`Name: ${prefix} Kaspersky note`,
+							'Text: note body',
+						].join('\n'),
+					});
+					importCases.push({
 						format: 'keepass2xml',
 						extension: 'xml',
 						contents: `<?xml version="1.0" encoding="utf-8"?>
@@ -562,8 +1834,25 @@ live('real Vaultwarden: authentication, external imports, and REST compatibility
 					if (selected?.some(format => !importCases.some(value => value.format === format))) {
 						throw new Error('Unknown test import format.');
 					}
+					const shard = process.env.VW_TEST_IMPORT_SHARD;
+					const shardMatch = shard?.match(/^(\d+)\/(\d+)$/);
+					if (shard && (!shardMatch || Number(shardMatch[1]) >= Number(shardMatch[2]) || Number(shardMatch[2]) < 1)) {
+						throw new Error('VW_TEST_IMPORT_SHARD must use the form index/count.');
+					}
+					const shardFormats = shardMatch
+						? [...new Set(importCases.map(value => value.format))].filter((_, index) =>
+							index % Number(shardMatch[2]) === Number(shardMatch[1])
+						)
+						: undefined;
+					// The managed compatibility runner uses a disposable server and account.
+					// Keep imported records isolated by ID instead of spawning a CLI process
+					// to delete every item and folder after every importer case.
+					const importedItemIds = new Set<string>();
 					for (const [index, importCase] of importCases.entries()) {
+						if (process.env.VW_TEST_SKIP_IMPORTS === '1') continue;
 						if (selected && !selected.includes(importCase.format)) continue;
+						if (shardFormats && !shardFormats.includes(importCase.format)) continue;
+						console.log(`Comparing external import: ${importCase.format}`);
 						const search = importCase.search ?? prefix;
 						const input = join(dir, `external-${index}.${importCase.extension}`);
 						await writeFile(input, importCase.contents, { mode: 0o600 });
@@ -573,15 +1862,15 @@ live('real Vaultwarden: authentication, external imports, and REST compatibility
 							importCase.password,
 						);
 						if (imported.code) throw new Error(`External import failed (${importCase.format}): ${imported.stderr}`);
-						const own = (await (await call(`/list/object/items?search=${encodeURIComponent(search)}`)).json()).data
+						const own = ((await (await call(`/list/object/items?search=${encodeURIComponent(search)}`)).json()).data
 							.data as Record<
 								string,
 								unknown
-							>[];
+							>[]).filter(item => !importedItemIds.has(String(item.id)));
 						if (importCase.archived) {
 							own.push(
 								...(await (await call(`/list/object/items?archived=true&search=${encodeURIComponent(search)}`)).json())
-									.data.data,
+									.data.data.filter((item: Record<string, unknown>) => !importedItemIds.has(String(item.id))),
 							);
 							expect(own).toHaveLength(11);
 							expect(JSON.parse(imported.stdout).errors).toEqual([{ id: 'bad-ssh', reason: 'sshKeyParseFailed' }]);
@@ -592,44 +1881,38 @@ live('real Vaultwarden: authentication, external imports, and REST compatibility
 						>[];
 						const expected = project(own, ownFolders);
 						if (importCase.format === 'keepasskdbx') expect(own).toHaveLength(2);
-						for (const item of own) {
-							expect((await run(['delete', 'item', String(item.id), '--permanent', '--session', restSession])).code)
-								.toBe(0);
-						}
-						const ownFolderIds = new Set(own.map(item => item.folderId).filter(Boolean));
-						for (
-							const folder of ownFolders.filter(folder =>
-								String(folder.name).includes(search) || ownFolderIds.has(folder.id)
-							)
-						) {
-							expect((await run(['delete', 'folder', String(folder.id), '--session', restSession])).code).toBe(0);
-						}
+						for (const item of own) importedItemIds.add(String(item.id));
 						// The reference CLI requires a nonempty password before calling its SDK.
 						if (importCase.compareNative === false) continue;
 						const passwordArgs = importCase.password ? ['--passwordenv', 'BW_IMPORT_PASSWORD', '--nointeraction'] : [];
-						await official(
-							['import', importCase.format, input, ...credentials, ...passwordArgs],
-							referenceSession,
-							importCase.password,
-						);
-						const native = JSON.parse(await official(['list', 'items', '--search', search], referenceSession));
+						try {
+							await official(
+								['import', importCase.format, input, ...credentials, ...passwordArgs],
+								referenceSession,
+								importCase.password,
+							);
+						} catch (error) {
+							throw new Error(
+								`Reference import failed (${importCase.format}): ${error instanceof Error ? error.message : error}`,
+							);
+						}
+						const native =
+							(JSON.parse(await official(['list', 'items', '--search', search], referenceSession)) as Record<
+								string,
+								unknown
+							>[]).filter(item => !importedItemIds.has(String(item.id)));
 						if (importCase.archived) {
 							native.push(
-								...JSON.parse(await official(['list', 'items', '--archived', '--search', search], referenceSession)),
+								...(JSON.parse(
+									await official(['list', 'items', '--archived', '--search', search], referenceSession),
+								) as Record<string, unknown>[]).filter(item => !importedItemIds.has(String(item.id))),
 							);
 						}
 						const nativeFolders = JSON.parse(await official(['list', 'folders'], referenceSession));
 						expect(project(native, nativeFolders)).toEqual(expected);
-						const nativeFolderIds = new Set(
-							native.map((item: Record<string, unknown>) => item.folderId).filter(Boolean),
-						);
-						for (const item of native) await official(['delete', 'item', item.id, '--permanent'], referenceSession);
-						for (
-							const folder of nativeFolders.filter((folder: Record<string, unknown>) =>
-								String(folder.name).includes(search) || nativeFolderIds.has(folder.id)
-							)
-						) await official(['delete', 'folder', folder.id], referenceSession);
+						for (const item of native) importedItemIds.add(String(item.id));
 					}
+					if (selected || shardFormats) return;
 					const reservation = createServer();
 					await new Promise<void>(resolve => reservation.listen(0, '127.0.0.1', resolve));
 					const address = reservation.address();

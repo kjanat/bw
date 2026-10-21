@@ -1,6 +1,7 @@
 import {
 	constants,
 	createPrivateKey,
+	generateKeyPairSync,
 	privateDecrypt,
 	publicEncrypt,
 	createPublicKey,
@@ -123,6 +124,42 @@ export function encrypt(value: Uint8Array, key: Uint8Array): string {
 		.update(ciphertext)
 		.digest();
 	return `2.${iv.toString('base64')}|${ciphertext.toString('base64')}|${mac.toString('base64')}`;
+}
+
+/** Create the locally generated material needed to initialize a new account. */
+export async function createAccountKeyMaterial(password: string, email: string, kdf: Kdf): Promise<{
+	userKey: Buffer;
+	encryptedUserKey: string;
+	masterPasswordHash: string;
+	publicKey: string;
+	encryptedPrivateKey: string;
+}> {
+	const pair = generateKeyPairSync('rsa', { modulusLength: 2048 });
+	const privateKey = Buffer.from(pair.privateKey.export({ format: 'der', type: 'pkcs8' }));
+	const publicKey = pair.publicKey.export({ format: 'der', type: 'spki' });
+	const userKey = randomBytes(64);
+	let master: Buffer | undefined;
+	try {
+		master = await deriveMasterKey(password, email, kdf);
+		const stretched = stretchKey(master);
+		try {
+			return {
+				userKey,
+				encryptedUserKey: encrypt(userKey, stretched),
+				masterPasswordHash: await masterPasswordHash(master, password),
+				publicKey: publicKey.toString('base64'),
+				encryptedPrivateKey: encrypt(privateKey, userKey),
+			};
+		} finally {
+			stretched.fill(0);
+		}
+	} catch (error) {
+		userKey.fill(0);
+		throw error;
+	} finally {
+		master?.fill(0);
+		privateKey.fill(0);
+	}
 }
 
 /** Vaultwarden organization keys use RSA OAEP EncString types 3 (SHA256) or 4 (SHA1). */

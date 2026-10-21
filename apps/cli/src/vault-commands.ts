@@ -128,11 +128,15 @@ export function vaultCommands(runtime: VaultRuntime) {
 		command(name).description(
 			name === 'share' ? 'Deprecated alias for move' : 'Move a personal item to an organization',
 		)
-			.arg('id', arg.string()).arg('organizationId', arg.string()).arg('encodedJson', input())
+			.arg('id', arg.string()).arg('organizationId', arg.string()).arg('encodedJson', input().optional())
 			.flag('session', session()).action(async ({ args, flags, out }) => {
 				out.json(
 					await runtime.run(flags.session, true, vault =>
-						vault.moveItem(args.id, args.organizationId, decodeStringArray(args.encodedJson))),
+						vault.moveItem(
+							args.id,
+							args.organizationId,
+							args.encodedJson?.trim() ? decodeStringArray(args.encodedJson) : [],
+						)),
 				);
 			});
 	const move = moveCommand('move');

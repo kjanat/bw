@@ -122,6 +122,106 @@ test('bulk JSON import remaps folder relations and encrypts every item with a ne
 		vault.dispose();
 	}
 });
+test('unified Keeper import selects JSON and CSV exports and sends both through Vaultwarden bulk import', async () => {
+	const names: string[] = [];
+	const vault = fixture((_path, init) => {
+		const body = JSON.parse(String(init.body));
+		for (const cipher of body.ciphers as JsonObject[]) {
+			const itemKey = decrypt(String(cipher.key), key);
+			try {
+				names.push(String(transformItem(cipher, itemKey, 'decrypt').name));
+			} finally {
+				itemKey.fill(0);
+			}
+		}
+		return new Response(null, { status: 204 });
+	});
+	try {
+		const jsonResult = await vault.importVault(
+			'keeper',
+			JSON.stringify({
+				records: [{ title: 'Keeper JSON generic', login: 'alice', password: 'json-secret' }],
+			}),
+		);
+		const csvResult = await vault.importVault(
+			'keeper',
+			'Personal,Keeper CSV generic,bob,csv-secret,https://keeper.example.test,Imported by test',
+		);
+		expect(jsonResult.items).toBe(1);
+		expect(csvResult.items).toBe(1);
+		expect(names).toEqual(['Keeper JSON generic', 'Keeper CSV generic']);
+	} finally {
+		vault.dispose();
+	}
+});
+test('Password Boss JSON and Password Dragon XML dispatch through encrypted Vaultwarden imports', async () => {
+	const imported: JsonObject[] = [], folders: string[] = [];
+	const vault = fixture((_path, init) => {
+		const body = JSON.parse(String(init.body)) as JsonObject;
+		for (const folder of body.folders as JsonObject[]) folders.push(decrypt(String(folder.name), key).toString());
+		for (const cipher of body.ciphers as JsonObject[]) {
+			const cipherKey = decrypt(String(cipher.key), key);
+			try {
+				imported.push(transformItem(cipher, cipherKey, 'decrypt'));
+			} finally {
+				cipherKey.fill(0);
+			}
+		}
+		return new Response(null, { status: 204 });
+	});
+	try {
+		const passwordBoss = await vault.importVault(
+			'passwordbossjson',
+			JSON.stringify([{
+				itemType: 'Login',
+				itemTypeName: 'Login',
+				name: 'Password Boss import',
+				folder: 'Password Boss folder',
+				username: 'boss-user',
+				password: 'boss-secret',
+				url: 'https://boss.example.test',
+				notes: 'boss note',
+				customFields: [{ name: 'Recovery', value: 'boss-recovery' }],
+			}]),
+		);
+		const passwordDragon = await vault.importVault(
+			'passworddragonxml',
+			`<PasswordManager><record><Category>Password Dragon folder</Category><Account-Name>Password Dragon import</Account-Name>
+<User-Id>dragon-user</User-Id><Password>dragon-secret</Password><URL>dragon.example.test</URL>
+<Notes>dragon note</Notes><Attribute-1>dragon-recovery</Attribute-1></record></PasswordManager>`,
+		);
+		expect(passwordBoss).toMatchObject({ items: 1, folders: 1 });
+		expect(passwordDragon).toMatchObject({ items: 1, folders: 1 });
+		expect(imported.map(value => ({
+			name: value.name,
+			notes: value.notes,
+			username: (value.login as JsonObject).username,
+			password: (value.login as JsonObject).password,
+			uris: ((value.login as JsonObject).uris as JsonObject[]).map(uri => ({ uri: uri.uri, match: uri.match })),
+			fields: value.fields,
+		}))).toEqual([
+			{
+				name: 'Password Boss import',
+				notes: 'boss note',
+				username: 'boss-user',
+				password: 'boss-secret',
+				uris: [{ uri: 'https://boss.example.test', match: null }],
+				fields: [{ name: 'Recovery', value: 'boss-recovery', type: 0 }],
+			},
+			{
+				name: 'Password Dragon import',
+				notes: 'dragon note',
+				username: 'dragon-user',
+				password: 'dragon-secret',
+				uris: [{ uri: 'http://dragon.example.test', match: null }],
+				fields: [{ name: 'Attribute-1', value: 'dragon-recovery', type: 0 }],
+			},
+		]);
+		expect(folders).toEqual(['Password Boss folder', 'Password Dragon folder']);
+	} finally {
+		vault.dispose();
+	}
+});
 test('organization import includes full collection membership arrays required by Vaultwarden 1.36', async () => {
 	let calls = 0;
 	const vault = fixture((path, init) => {
