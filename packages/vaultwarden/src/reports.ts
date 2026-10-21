@@ -56,6 +56,9 @@ export class PasswordExposureClient {
 		if (typeof password !== 'string' || password.length === 0) {
 			throw new Error('A non-empty password is required for exposure checking.');
 		}
+		// HIBP's range protocol requires SHA-1. Only the five-character prefix is sent;
+		// this digest is never used for authentication or password storage.
+		// codeql[js/insufficient-password-hash]
 		const hash = createHash('sha1').update(password, 'utf8').digest('hex').toUpperCase();
 		const prefix = hash.slice(0, 5);
 		const suffix = hash.slice(5);
@@ -173,11 +176,10 @@ export async function passwordHealth(
 				exposedError: null,
 			};
 			if (exposure) {
-				const hash = createHash('sha256').update(password).digest('hex');
-				let request = pending.get(hash);
+				let request = pending.get(password);
 				if (!request) {
 					request = exposure.count(password);
-					pending.set(hash, request);
+					pending.set(password, request);
 				}
 				try {
 					const found = await request;
