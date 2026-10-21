@@ -22,6 +22,38 @@ test('account revisions accept integer timestamps and deletion signals, preservi
 		} else await expect(api.accountRevisionDate('synthetic-token')).rejects.toThrow('Invalid account revision');
 	}
 });
+test('cipher-type writes use and cache the Vaultwarden release version', async () => {
+	for (const [version, supported] of [['1.36.0', false], ['1.37.4', true]] as const) {
+		let requests = 0;
+		const api = new VaultwardenClient('https://vault.example/base', {
+			services: { api: 'https://api.example/prefix' },
+			fetch: transport(url => {
+				requests++;
+				if (url.endsWith('/config')) return json({ server: { name: 'Vaultwarden' } });
+				expect(url).toBe('https://api.example/prefix/version');
+				return json(version);
+			}),
+		});
+		if (supported) await api.assertCipherTypeSupported(6);
+		else {await expect(api.assertCipherTypeSupported(6)).rejects.toThrow(
+				'bank account requires Vaultwarden 1.37.4 or newer; this server reports 1.36.0',
+			);}
+		if (supported) await api.assertCipherTypeSupported(8);
+		expect(requests).toBe(2);
+	}
+});
+test('cipher-type compatibility checks do not apply Vaultwarden release limits to Bitwarden', async () => {
+	const requests: string[] = [];
+	const api = new VaultwardenClient('https://vault.example', {
+		fetch: transport(url => {
+			requests.push(url);
+			return json({ server: { name: 'Bitwarden' } });
+		}),
+	});
+	await api.assertCipherTypeSupported(6);
+	await api.assertCipherTypeSupported(8);
+	expect(requests).toEqual(['https://vault.example/api/config']);
+});
 test('requires TLS except loopback and preserves path prefixes', () => {
 	expect(serverUrl('https://example.com/vault/')).toBe(
 		'https://example.com/vault',

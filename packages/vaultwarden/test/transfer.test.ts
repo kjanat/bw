@@ -166,7 +166,9 @@ test('JSON import accepts and encrypts bank account, driver license, and passpor
 		{ type: 7, name: 'License', driversLicense: { licenseNumber: 'license-number' } },
 		{ type: 8, name: 'Passport', passport: { passportNumber: 'passport-number' } },
 	];
-	const vault = fixture((_path, init) => {
+	const vault = fixture((path, init) => {
+		if (path.endsWith('/api/config')) return Response.json({ server: { name: 'Vaultwarden' } });
+		if (path.endsWith('/api/version')) return Response.json('1.37.4');
 		const body = JSON.parse(String(init.body));
 		expect(body.ciphers).toHaveLength(3);
 		for (const [index, cipher] of body.ciphers.entries()) {
@@ -187,6 +189,26 @@ test('JSON import accepts and encrypts bank account, driver license, and passpor
 			collections: 0,
 			attachments: 0,
 		});
+	} finally {
+		vault.dispose();
+	}
+});
+test('JSON import rejects newer cipher types on Vaultwarden 1.36 before posting an import', async () => {
+	const requests: string[] = [];
+	const vault = fixture((path, init) => {
+		requests.push(`${init.method ?? 'GET'} ${new URL(path).pathname}`);
+		if (path.endsWith('/api/config')) return Response.json({ server: { name: 'Vaultwarden' } });
+		if (path.endsWith('/api/version')) return Response.json('1.36.0');
+		throw new Error(`Unexpected request: ${path}`);
+	});
+	try {
+		await expect(
+			vault.importVault(
+				'bitwardenjson',
+				JSON.stringify({ items: [{ type: 6, name: 'Bank', bankAccount: { accountNumber: 'bank-number' } }] }),
+			),
+		).rejects.toThrow('bank account requires Vaultwarden 1.37.4 or newer; this server reports 1.36.0');
+		expect(requests).toEqual(['GET /api/config', 'GET /api/version']);
 	} finally {
 		vault.dispose();
 	}

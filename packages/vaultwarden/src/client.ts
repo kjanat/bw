@@ -1,4 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import {
+	minimumVaultwardenVersionForCipherType,
+	UnsupportedVaultwardenCapabilityError,
+	vaultwardenVersionAtLeast,
+} from '#capabilities';
 import { normalizeEmail, type Kdf } from '#crypto';
 
 export type JsonObject = { [key: string]: unknown };
@@ -122,6 +127,8 @@ export class VaultwardenClient {
 	readonly server: string;
 	readonly services: Readonly<ServiceUrls>;
 	private readonly transport: typeof fetch;
+	private serverVersionRequest?: Promise<string>;
+	private serverIsVaultwardenRequest?: Promise<boolean>;
 	constructor(
 		server: string,
 		options: { fetch?: typeof fetch; deviceId?: string; services?: ServiceUrls } = {},
@@ -134,6 +141,57 @@ export class VaultwardenClient {
 		this.deviceId = options.deviceId ?? randomUUID();
 	}
 	readonly deviceId: string;
+	/** The release version reported by Vaultwarden's public /api/version endpoint. */
+	serverVersion(): Promise<string> {
+		this.serverVersionRequest ??= this.loadServerVersion();
+		return this.serverVersionRequest;
+	}
+	/** Refuse writes for item kinds that the connected Vaultwarden release cannot store. */
+	async assertCipherTypeSupported(type: number): Promise<void> {
+		const minimumVersion = minimumVaultwardenVersionForCipherType(type);
+		if (!minimumVersion) return;
+		if (!(await this.serverIsVaultwarden())) return;
+		const serverVersion = await this.serverVersion();
+		if (!vaultwardenVersionAtLeast(serverVersion, minimumVersion)) {
+			throw new UnsupportedVaultwardenCapabilityError('cipher-type', {
+				itemType: type,
+				minimumVersion,
+				serverVersion,
+			});
+		}
+	}
+	private serverIsVaultwarden(): Promise<boolean> {
+		this.serverIsVaultwardenRequest ??= this.loadServerIdentity();
+		return this.serverIsVaultwardenRequest;
+	}
+	private async loadServerIdentity(): Promise<boolean> {
+		const response = await this.requestRaw('/api/config');
+		let config: unknown;
+		try {
+			config = await response.json();
+		} catch {
+			throw new Error('Server returned an invalid configuration response.');
+		}
+		const server = field(object(config), 'server');
+		return typeof server === 'object'
+			&& server !== null
+			&& !Array.isArray(server)
+			&& typeof field(server as JsonObject, 'name') === 'string'
+			&& (field(server as JsonObject, 'name') as string).toLowerCase() === 'vaultwarden';
+	}
+	private async loadServerVersion(): Promise<string> {
+		const response = await this.requestRaw('/api/version');
+		let version: unknown;
+		try {
+			version = await response.json();
+		} catch {
+			throw new Error('Vaultwarden returned an invalid server version.');
+		}
+		if (typeof version !== 'string' || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)) {
+			throw new Error('Vaultwarden returned an invalid server version.');
+		}
+		return version;
+	}
 	private async requestRaw(
 		path: string,
 		init: RequestInit = {},

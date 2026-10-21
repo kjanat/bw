@@ -440,9 +440,12 @@ single live run on several adapters without repeating account setup.
 
 Both clients decrypted the same synthetic per-item-key passwords over HTTPS,
 including secrets and folders written by the new CLI and an organization-owned
-item. Live tests cover the original five item types; bank account, driver license,
-and passport currently have local codec, JSON-import, template, and response tests
-but still need live cross-client verification. Stale-edit rejection and
+item. Live protocol tests cover the original five item types and exercise bank
+account, driver license, and passport creation/readback on Vaultwarden 1.37.4,
+plus rejection before mutation on 1.36.0, under both PBKDF2 and Argon2id. The
+library identifies Vaultwarden through `/api/config` and gates these writes and
+imports using the release returned by `/api/version`. The newer types have not
+yet been compared independently with `bw`. Stale-edit rejection and
 trash/archive/restore/permanent-delete transitions. Collection CRUD, assignment,
 member confirmation, binary attachments, and item moves are also live tested.
 A separately registered and confirmed account can unwrap the organization key;
@@ -516,7 +519,9 @@ Outstanding work includes the remaining import adapters, transfer edge cases,
 legacy Send access protocols, remaining local API parity, live verification of
 legacy attachment migration during moves, additional authentication flows,
 global flag parity, newer item/encryption types, and an automated multi-version
-compatibility matrix.
+compatibility matrix. The newer cipher types now have live protocol coverage on
+both verified Vaultwarden releases under PBKDF2 and Argon2id; independent `bw`
+parity for those types remains outstanding.
 
 Before claiming an operation is supported, implement it in the library, exercise
 it against disposable Vaultwarden, and add CLI coverage where applicable. Mocked

@@ -525,6 +525,7 @@ export class VaultService {
 		}
 	}
 	async createItem(input: VaultItem): Promise<VaultItem> {
+		await this.client.assertCipherTypeSupported(input.type);
 		if (this.isRestrictedItem(input)) {
 			throw new Error('Creating this item type is restricted by organizational policy.');
 		}
@@ -539,6 +540,7 @@ export class VaultService {
 	}
 	async editItem(id: string, input: VaultItem): Promise<VaultItem> {
 		const existing = this.wire(id);
+		await this.client.assertCipherTypeSupported(input.type);
 		if (existing.edit === false) throw new Error('You do not have permission to edit this item');
 		if (existing.deletedDate) throw new Error('You may not edit a deleted item. Use the restore command first.');
 		if (this.isRestrictedItem(existing as VaultItem)) {

@@ -663,13 +663,21 @@ for (
 						[8, 'passport', { passportNumber: 'synthetic-passport', givenName: 'Fixture', issuingCountry: 'NL' }],
 					] as const
 				) {
-					const value = JSON.parse(
-						await checked([
+					const result = await run(
+						[
 							'create',
 							'item',
 							encode({ type, name: `Type ${type}`, notes: 'typed notes', [section]: fields }),
-						]),
+						],
+						session,
+						password,
 					);
+					if (type >= 6 && result.code !== 0) {
+						expect(result.stderr).toContain('requires Vaultwarden 1.37.4 or newer');
+						continue;
+					}
+					if (result.code !== 0) throw new Error(`CLI operation failed: ${result.stderr}`);
+					const value = JSON.parse(result.stdout);
 					expect(value[section]).toMatchObject(fields);
 					expect(JSON.parse(await checked(['get', 'item', value.id]))[section]).toMatchObject(fields);
 					if (type >= 6) newerItems.push({ id: value.id, type, section, fields });

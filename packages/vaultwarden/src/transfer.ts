@@ -514,6 +514,12 @@ export async function importVault(
 			?? document[options.organizationId ? 'folders' : 'collections'] ?? [],
 	);
 	if (rawItems.length === 0 && groups.length === 0) throw new Error('Nothing to import.');
+	for (const item of rawItems) {
+		if (typeof item.type !== 'number' || ![1, 2, 3, 4, 5, 6, 7, 8].includes(item.type)) {
+			throw new Error('Unsupported imported item type.');
+		}
+		await vault.client.assertCipherTypeSupported(item.type);
+	}
 	if (rawItems.length > 0) {
 		const middle = Math.floor(rawItems.length / 2);
 		const samples = [rawItems[0]!, rawItems[middle]!, rawItems[rawItems.length - 1]!];
@@ -544,9 +550,6 @@ export async function importVault(
 	const ciphers: JsonObject[] = rawItems.map((raw, index) => {
 		const item = structuredClone(raw);
 		if (item.deletedDate) throw new Error('Import contains a deleted item.');
-		if (typeof item.type !== 'number' || ![1, 2, 3, 4, 5, 6, 7, 8].includes(item.type)) {
-			throw new Error('Unsupported imported item type.');
-		}
 		item.name = typeof item.name === 'string' && item.name ? item.name : '--';
 		if (
 			(format === 'bitwardenjson' || format === 'bitwardenzip')
