@@ -213,10 +213,13 @@ export class VaultService {
 		if (input.organizationId && input.organizationId !== organizationId) {
 			throw new Error('Collection organization does not match.');
 		}
+		const current = id && (input.groups == null || input.users == null)
+			? await this.getOrganizationCollection(organizationId, id)
+			: undefined;
 		const body = {
 			name: encrypt(Buffer.from(input.name), this.ownerKey({ organizationId })),
-			groups: input.groups ?? null,
-			users: input.users ?? (id ? null : this.defaultCollectionUsers(organizationId)),
+			groups: input.groups ?? current?.groups ?? [],
+			users: input.users ?? current?.users ?? (id ? [] : this.defaultCollectionUsers(organizationId)),
 			externalId: input.externalId ?? undefined,
 		};
 		if (body.groups !== null && !Array.isArray(body.groups) || body.users !== null && !Array.isArray(body.users)) {

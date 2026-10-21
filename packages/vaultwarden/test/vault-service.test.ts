@@ -742,21 +742,30 @@ test('moving a legacy item migrates its attachment bytes and keys before sharing
 		orgKey.fill(0);
 	}
 });
-test('collection rename sends null memberships without an extra details request', async () => {
+test('collection rename preserves memberships when the request omits them', async () => {
 	const { snapshot, orgKey } = organizationSnapshot();
 	const vault = service((path, init) => {
+		if (path.endsWith('/api/organizations/org/collections/collection/details')) {
+			expect(init.method).toBe('GET');
+			return Response.json({
+				id: 'collection',
+				name: encrypt(Buffer.from('Old'), orgKey),
+				groups: [{ id: 'group' }],
+				users: [{ id: 'member', readOnly: true, hidePasswords: true, manage: false }],
+			});
+		}
 		expect(path).toEndWith('/api/organizations/org/collections/collection');
 		expect(init.method).toBe('PUT');
 		const body = JSON.parse(String(init.body));
-		expect(body.users).toBeNull();
-		expect(body.groups).toBeNull();
+		expect(body.users).toEqual([{ id: 'member', readOnly: true, hidePasswords: true, manage: false }]);
+		expect(body.groups).toEqual([{ id: 'group' }]);
 		expect(body.externalId).toBeUndefined();
 		expect(decrypt(body.name, orgKey).toString()).toBe('New');
 		return Response.json({
 			id: 'collection',
 			name: body.name,
-			users: [{ id: 'member', readOnly: true, hidePasswords: true, manage: false }],
-			groups: [],
+			users: body.users,
+			groups: body.groups,
 		});
 	}, snapshot);
 	try {
@@ -771,8 +780,8 @@ test('new organization collections grant the current member manage access by def
 		expect(path).toEndWith('/api/organizations/org/collections');
 		expect(init.method).toBe('POST');
 		const body = JSON.parse(String(init.body));
+		expect(body.groups).toEqual([]);
 		expect(body.users).toEqual([{ id: 'membership', readOnly: false, hidePasswords: false, manage: true }]);
-		expect(body.groups).toBeNull();
 		return Response.json({ id: 'created-collection', name: encrypt(Buffer.from('Created'), orgKey) });
 	}, snapshot);
 	try {

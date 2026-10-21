@@ -4,11 +4,18 @@ import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
-const { servers: compatibilityTargets, referenceCliVersion, referenceUnsupportedServers, mailpitImage } = await Bun
+const {
+	servers: compatibilityTargets,
+	supportedItemTypes: itemTypesByServer,
+	referenceCliVersion,
+	referenceUnsupportedServers,
+	mailpitImage,
+} = await Bun
 	.file(
 		new URL('./fixtures/compatibility-targets.json', import.meta.url),
 	).json() as {
 		servers: Record<string, string>;
+		supportedItemTypes: Record<string, number[]>;
 		referenceCliVersion: string;
 		referenceUnsupportedServers: string[];
 		mailpitImage: string;
@@ -21,6 +28,8 @@ const image = compatibilityTargets[version]!;
 if (!/^vaultwarden\/server@sha256:[a-f0-9]{64}$/.test(image)) {
 	throw new Error('Compatibility image must use a pinned digest.');
 }
+const supportedItemTypes = itemTypesByServer[version];
+if (!supportedItemTypes?.length) throw new Error(`Missing supported item types for Vaultwarden ${version}.`);
 const reference = process.env.VW_TEST_BW;
 const smtpEnabled = process.env.VW_TEST_SMTP === '1';
 const ssoEnabled = process.env.VW_TEST_SSO === '1';
@@ -250,6 +259,7 @@ try {
 		PATH: process.env.PATH,
 		VW_TEST_SERVER: server,
 		VW_TEST_BW: compareReference ? reference : undefined,
+		VW_TEST_SUPPORTED_ITEM_TYPES: supportedItemTypes.join(','),
 		VW_TEST_IMPORT_FORMAT: process.env.VW_TEST_IMPORT_FORMAT,
 		VW_TEST_IMPORT_SHARD: undefined as string | undefined,
 		VW_TEST_SKIP_IMPORTS: undefined as string | undefined,
