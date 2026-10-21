@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push: { branches: [master] }
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Build, types, lint and unit tests
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: "26" }
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with: { bun-version: "1.4.3" }
+      - name: Install completion test shells
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends --yes fish zsh;
+          command -v pwsh python3
+      - uses: kjanat/runner@master
+      - run: runner i -s build check-types lint test
+
+  compatibility:
+    name: Vaultwarden ${{ matrix.server }} / Node ${{ matrix.node }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        server: ["1.36.0", "1.37.4"]
+        node: ["24", "26"]
+    steps:
+      - parallel:
+          - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+            with: { persist-credentials: false }
+          - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+            with: { node-version: "${{ matrix.node }}" }
+          - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+            with: { bun-version: "1.4.3" }
+          - uses: kjanat/runner@master
+          - uses: kjanat/envctl@master
+      - name: Install independent reference CLI
+        if: matrix.server == '1.37.4'
+        env: { RUNNER_DIR: "${{ runner.temp }}" }
+        run: run bunx npm@12 install --prefix "${RUNNER_TEMP}/reference-cli" --no-audit --no-fund --ignore-scripts --min-release-age-exclude '@bitwarden/cli'
+          '@bitwarden/cli@2026.10.0'
+      - run: runner install --frozen
+      - name: Exercise both KDFs, transfers, organizations, Sends, authentication and REST
+        env:
+          VW_TEST_VERSION: ${{ matrix.server }}
+          VW_TEST_BW: ${{ runner.temp }}/reference-cli/node_modules/.bin/bw
+        run: run test:compat
+      - name: Verify delivered email codes under both KDFs
+        env:
+          VW_TEST_VERSION: ${{ matrix.server }}
+          VW_TEST_SMTP: "1"
+          VW_TEST_CASE: email two-factor
+        run: run test:compat
+      - name: Verify OIDC SSO under both KDFs
+        env:
+          VW_TEST_VERSION: ${{ matrix.server }}
+          VW_TEST_SSO: "1"
+        run: run test:compat

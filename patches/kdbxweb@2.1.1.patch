@@ -1,0 +1,26 @@
+diff --git a/dist/kdbxweb.js b/dist/kdbxweb.js
+index 7d330745e3ebc4c99c09a573824ae3bb08583565..651bac15672d706783ea401a39425c14eff69dcb 100644
+--- a/dist/kdbxweb.js
++++ b/dist/kdbxweb.js
+@@ -5372,7 +5372,7 @@ function parse(xml) {
+     const parser = createDOMParser();
+     let doc;
+     // eslint-disable-next-line no-control-regex
+-    xml = xml.replace(/[\x00-\x09\x0B-\x0C\x0E-\x1F]/g, '');
++    xml = xml.replace(/[\x00-\x08\x0B-\x0C\x0E-\x1F]/g, '');
+     try {
+         doc = parser.parseFromString(xml, 'application/xml');
+     }
+diff --git a/lib/utils/xml-utils.ts b/lib/utils/xml-utils.ts
+index 2d208bd92ef07d5ec30daf26a83f1c72dc9f1c38..5019ee1e00117e320013205e2618b15498c61566 100644
+--- a/lib/utils/xml-utils.ts
++++ b/lib/utils/xml-utils.ts
+@@ -61,7 +61,7 @@ export function parse(xml: string): Document {
+ 
+     let doc;
+     // eslint-disable-next-line no-control-regex
+-    xml = xml.replace(/[\x00-\x09\x0B-\x0C\x0E-\x1F]/g, '');
++    xml = xml.replace(/[\x00-\x08\x0B-\x0C\x0E-\x1F]/g, '');
+     try {
+         doc = parser.parseFromString(xml, 'application/xml');
+     } catch (e) {

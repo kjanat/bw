@@ -1,6 +1,14 @@
 import { expect, test } from 'bun:test';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { generateKeyPairSync, randomBytes, randomUUID, createPublicKey, publicEncrypt, constants } from 'node:crypto';
+import {
+	generateKeyPairSync,
+	createHash,
+	randomBytes,
+	randomUUID,
+	createPublicKey,
+	publicEncrypt,
+	constants,
+} from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { withStore } from '#store';
@@ -9,13 +17,17 @@ import {
 	masterPasswordHash,
 	stretchKey,
 	encrypt,
+	encryptAttachment,
+	encryptItem,
 	decryptSharedKey,
 	type Kdf,
 } from '@kjanat/vaultwarden';
 
 // Explicit opt-in. Only disposable loopback instances may be mutated by this test.
 const server = process.env.VW_TEST_SERVER;
-const live = server ? test : test.skip;
+// A focused importer comparison runs its own end-to-end login and server flow;
+// do not repeat the unrelated expensive KDF fixtures in that mode.
+const live = server && !process.env.VW_TEST_IMPORT_FORMAT ? test : test.skip;
 for (
 	const kdf of [
 		{ type: 0, iterations: 600000 },
@@ -23,7 +35,7 @@ for (
 	] as Kdf[]
 ) {
 	live(
-		`real Vaultwarden: ${kdf.type === 0 ? 'PBKDF2' : 'Argon2id'} login, sync, item keys, sessions, lock, logout`,
+		`real Vaultwarden: ${kdf.type === 0 ? 'PBKDF2' : 'Argon2id'} protocol and CLI compatibility`,
 		async () => {
 			const url = new URL(server!);
 			if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1') {
@@ -102,6 +114,12 @@ for (
 			});
 			expect(tokenResponse.status).toBe(200);
 			const auth = (await tokenResponse.json()) as { access_token: string };
+			expect(
+				(await post('/api/settings/domains', {
+					equivalentDomains: [['example.com', 'alias.test']],
+					excludedGlobalEquivalentDomains: [],
+				}, auth.access_token)).status,
+			).toBe(200);
 			const enc = (s: string) => encrypt(Buffer.from(s), itemKey);
 			const orgKey = randomBytes(64);
 			const organizationResponse = await post('/api/organizations', {
@@ -119,10 +137,23 @@ for (
 			}, auth.access_token);
 			expect(organizationResponse.status).toBe(200);
 			const organization = await organizationResponse.json() as { id: string };
+			// The reference device-approval command uses organization routes, not personal auth requests.
+			const organizationApprovals = await fetch(`${server}/api/organizations/${organization.id}/auth-requests`, {
+				headers: { Authorization: `Bearer ${auth.access_token}` },
+			});
+			expect(organizationApprovals.status).toBe(404);
+			const personalApprovals = await fetch(`${server}/api/auth-requests`, {
+				headers: { Authorization: `Bearer ${auth.access_token}` },
+			});
+			expect(personalApprovals.status).toBe(200);
+			expect((await personalApprovals.json()).data).toEqual([]);
 			const profileResponse = await fetch(`${server}/api/accounts/profile`, {
 				headers: { Authorization: `Bearer ${auth.access_token}` },
 			});
-			const profile = (await profileResponse.json()) as { id: string };
+			const profile = (await profileResponse.json()) as {
+				id: string;
+				organizations: { id: string; organizationUserId: string }[];
+			};
 			const created = await post(
 				'/api/ciphers',
 				{
@@ -138,7 +169,11 @@ for (
 					login: {
 						username: enc('fixture-user'),
 						password: enc('fixture-secret'),
-						uris: [{ uri: enc('https://example.com'), match: null }],
+						uris: [{
+							uri: enc('https://example.com'),
+							uriChecksum: enc(createHash('sha256').update('https://example.com').digest('base64')),
+							match: null,
+						}],
 					},
 					fields: [],
 				},
@@ -197,7 +232,13 @@ for (
 				},
 			});
 			const tlsServer = `https://127.0.0.1:${proxy.port}`;
-			async function run(args: string[], session?: string, secret = password, input?: string) {
+			async function run(
+				args: string[],
+				session?: string,
+				secret = password,
+				input?: string,
+				apiOptions?: { directory: string; clientId: string; clientSecret: string },
+			) {
 				const child = Bun.spawn(
 					[
 						'node',
@@ -207,9 +248,10 @@ for (
 					{
 						env: {
 							PATH: process.env.PATH,
-							VW_APPDATA_DIR: dir,
+							VW_APPDATA_DIR: apiOptions?.directory ?? dir,
 							NODE_EXTRA_CA_CERTS: ca,
 							VW_PASSWORD: secret,
+							...(apiOptions ? { VW_CLIENTID: apiOptions.clientId, VW_CLIENTSECRET: apiOptions.clientSecret } : {}),
 							...(session ? { VW_SESSION: session } : {}),
 						},
 						stdin: 'pipe',
@@ -228,8 +270,22 @@ for (
 			}
 			try {
 				expect((await run(['config', 'server', tlsServer])).code).toBe(0);
-				expect((await run(['login', email])).code).toBe(0);
-				expect((await run(['sync'])).code).toBe(0);
+				const firstLogin = await run(['login', email, '--raw']);
+				if (firstLogin.code) throw new Error(`Initial login failed: ${firstLogin.stderr}`);
+				expect(firstLogin.stdout.trim()).toMatch(/^[A-Za-z0-9+/]{43}=$/);
+				expect((await run(['get', 'password', item.id], firstLogin.stdout.trim())).stdout).toBe('fixture-secret');
+				expect(await run(['get', 'password', item.id, '--quiet'], firstLogin.stdout.trim())).toEqual({
+					code: 0,
+					stdout: '',
+					stderr: '',
+				});
+				expect((await run(['login', '--check'])).code).toBe(0);
+				expect((await run(['unlock', '--check'], firstLogin.stdout.trim())).code).toBe(0);
+
+				expect((await run(['sync', '--force'])).code).toBe(0);
+				const lastSync = await run(['sync', '--last']);
+				expect(lastSync.code).toBe(0);
+				expect(lastSync.stdout.trim()).toBe(JSON.parse((await run(['status'])).stdout).lastSync);
 				await withStore(dir, async (state, save) => {
 					state.account!.expiresAt = 0;
 					await save();
@@ -255,7 +311,7 @@ for (
 				expect(list.code).toBe(0);
 				expect(JSON.parse(list.stdout)[0].name).toBe('Compatibility fixture');
 				expect((await run(['get', 'password', item.id], session)).stdout).toBe(
-					'fixture-secret\n',
+					'fixture-secret',
 				);
 				const encode = (data: unknown) => Buffer.from(JSON.stringify(data)).toString('base64');
 				const checked = async (args: string[], input?: string) => {
@@ -271,6 +327,9 @@ for (
 				expect(JSON.parse(await checked(['list', 'organizations']))[0].name).toBe('Compatibility organization');
 				const collections = JSON.parse(await checked(['list', 'collections']));
 				expect(collections[0].name).toBe('Organization collection');
+				expect(JSON.parse(await checked(['get', 'folder', 'PRIVATE FOL'])).id).toBe(folder.id);
+				expect(JSON.parse(await checked(['get', 'collection', 'GANIZATION COL'])).id).toBe(collections[0].id);
+				expect(JSON.parse(await checked(['get', 'organization', 'PATIBILITY ORG'])).id).toBe(organization.id);
 				const sharedItem = JSON.parse(
 					await checked([
 						'create',
@@ -295,6 +354,22 @@ for (
 					]),
 				);
 				expect(collection.name).toBe('Managed collection');
+				const organizationProfile = profile.organizations.find(value => value.id === organization.id);
+				expect(organizationProfile?.organizationUserId).toBeTruthy();
+				const collectionDetails = await fetch(
+					`${server}/api/organizations/${organization.id}/collections/details`,
+					{ headers: { Authorization: `Bearer ${auth.access_token}` } },
+				);
+				expect(collectionDetails.status).toBe(200);
+				const detail = ((await collectionDetails.json()).data as Record<string, unknown>[]).find(
+					value => value.id === collection.id,
+				);
+				expect(detail?.users).toContainEqual({
+					id: organizationProfile!.organizationUserId,
+					readOnly: false,
+					hidePasswords: false,
+					manage: true,
+				});
 				expect(
 					JSON.parse(await checked(['get', 'org-collection', collection.id, '--organizationid', organization.id])).name,
 				).toBe('Managed collection');
@@ -310,7 +385,7 @@ for (
 						encode({ type: 1, name: 'Move fixture', login: { password: 'moved-secret' } }),
 					]),
 				);
-				const attachmentBytes = Buffer.alloc(131072, Buffer.from([0, 1, 2, 255, 128, 10, 13, 0, 42]));
+				const attachmentBytes = Buffer.alloc(2 * 1024 * 1024, Buffer.from([0, 1, 2, 255, 128, 10, 13, 0, 42]));
 				const uploadPath = join(dir, 'fixture.bin');
 				await writeFile(uploadPath, attachmentBytes, { mode: 0o600 });
 				const upload = JSON.parse(
@@ -319,7 +394,7 @@ for (
 				const attachmentId = upload.attachments[0].id;
 				expect(upload.attachments[0].fileName).toBe('fixture.bin');
 				const downloadPath = join(dir, 'download.bin');
-				await checked(['get', 'attachment', attachmentId, '--itemid', movable.id, '--output', downloadPath]);
+				await checked(['get', 'attachment', attachmentId, '--itemid', movable.id, '--output', downloadPath, '--quiet']);
 				const beforeMove = await readFile(downloadPath);
 				expect(beforeMove).toEqual(attachmentBytes);
 				expect((await stat(downloadPath)).mode & 0o777).toBe(0o600);
@@ -327,8 +402,81 @@ for (
 				expect(moved.organizationId).toBe(organization.id);
 				expect(moved.login.password).toBe('moved-secret');
 				const movedDownload = join(dir, 'moved.bin');
-				await checked(['get', 'attachment', 'fixture.bin', '--itemid', movable.id, '--output', movedDownload]);
+				await checked(['get', 'attachment', 'FIXTURE', '--itemid', 'MOVE FIXTURE', '--output', movedDownload]);
 				expect(await readFile(movedDownload)).toEqual(attachmentBytes);
+				const legacyItem = JSON.parse(
+					await checked([
+						'create',
+						'item',
+						encode({
+							type: 1,
+							name: 'Legacy attachment move',
+							login: { username: 'legacy-user', password: 'legacy-move-secret' },
+						}),
+					]),
+				);
+				const beforeLegacyUpdate = await fetch(`${server}/api/sync?excludeDomains=false`, {
+					headers: { Authorization: `Bearer ${auth.access_token}` },
+				});
+				expect(beforeLegacyUpdate.status).toBe(200);
+				const beforeLegacyCiphers = (await beforeLegacyUpdate.json()).ciphers as Record<string, unknown>[];
+				const currentLegacyCipher = beforeLegacyCiphers.find(cipher => cipher.id === legacyItem.id);
+				if (!currentLegacyCipher) throw new Error('Could not read the legacy attachment fixture cipher.');
+				const legacyPlain = {
+					type: 1,
+					name: 'Legacy attachment move',
+					login: { username: 'legacy-user', password: 'legacy-move-secret' },
+				};
+				const legacyUpdate = await fetch(`${server}/api/ciphers/${legacyItem.id}`, {
+					method: 'PUT',
+					headers: {
+						Authorization: `Bearer ${auth.access_token}`,
+						'Content-Type': 'application/json',
+					},
+					body: JSON.stringify({
+						...currentLegacyCipher,
+						...encryptItem(legacyPlain, userKey),
+						encryptedFor: profile.id,
+						encryptedByKeyId: null,
+						key: null,
+						lastKnownRevisionDate: currentLegacyCipher.revisionDate,
+					}),
+				});
+				expect(legacyUpdate.status).toBe(200);
+				const legacyAttachmentBytes = Buffer.from('legacy attachment bytes encrypted with the account key');
+				const legacyFileName = encrypt(Buffer.from('legacy-move.bin'), userKey);
+				const legacyForm = new FormData();
+				legacyForm.set('key', '');
+				legacyForm.set(
+					'data',
+					new Blob([new Uint8Array(encryptAttachment(legacyAttachmentBytes, userKey))]),
+					legacyFileName,
+				);
+				const legacyUpload = await fetch(`${server}/api/ciphers/${legacyItem.id}/attachment`, {
+					method: 'POST',
+					headers: { Authorization: `Bearer ${auth.access_token}` },
+					body: legacyForm,
+				});
+				expect(legacyUpload.status).toBe(200);
+				const legacyWire = (await legacyUpload.json()).attachments[0];
+				expect(legacyWire.key).toBe('');
+				await checked(['sync']);
+				const migratedLegacyItem = JSON.parse(
+					await checked(['move', legacyItem.id, organization.id, encode([collection.id])]),
+				);
+				expect(migratedLegacyItem.organizationId).toBe(organization.id);
+				expect(migratedLegacyItem.login.password).toBe('legacy-move-secret');
+				const legacyDownloadPath = join(dir, 'legacy-move.bin');
+				await checked([
+					'get',
+					'attachment',
+					'legacy-move.bin',
+					'--itemid',
+					legacyItem.id,
+					'--output',
+					legacyDownloadPath,
+				]);
+				expect(await readFile(legacyDownloadPath)).toEqual(legacyAttachmentBytes);
 				const binaryChild = Bun.spawn([
 					'node',
 					new URL('../dist/main.js', import.meta.url).pathname,
@@ -350,6 +498,8 @@ for (
 				]);
 				expect(binaryCode).toBe(0);
 				expect(Buffer.from(binaryOutput).equals(attachmentBytes)).toBe(true);
+				expect(await run(['get', 'attachment', attachmentId, '--itemid', movable.id, '--raw', '--quiet'], session))
+					.toEqual({ code: 0, stdout: '', stderr: '' });
 				await checked(['edit', 'item-collections', movable.id, encode([collections[0].id])]);
 				expect(JSON.parse(await checked(['get', 'item', movable.id])).collectionIds).toEqual([collections[0].id]);
 				const renamedCollection = JSON.parse(
@@ -465,6 +615,8 @@ for (
 						}),
 					]),
 				);
+				expect(createdItem.object).toBe('item');
+				expect(createdItem.key).toBeUndefined();
 				expect(createdItem.name).toBe('Created by vw');
 				expect(JSON.parse(await checked(['list', 'items', '--folderid', folder.id])).length).toBe(1);
 				const editedItem = JSON.parse(
@@ -479,6 +631,8 @@ for (
 						}),
 					]),
 				);
+				expect(editedItem.object).toBe('item');
+				expect(editedItem.key).toBeUndefined();
 				expect(editedItem.login.password).toBe('edited-secret');
 				const stale = await run([
 					'edit',
@@ -489,6 +643,7 @@ for (
 				expect(stale.code).toBe(1);
 				expect(JSON.parse(await checked(['get', 'item', createdItem.id])).name).toBe('Edited by vw');
 				expect((await checked(['get', 'totp', createdItem.id])).trim()).toMatch(/^\d{6}$/);
+				const newerItems: { id: string; type: number; section: string; fields: Record<string, unknown> }[] = [];
 				for (
 					const [type, section, fields] of [
 						[2, 'secureNote', { type: 0 }],
@@ -499,18 +654,34 @@ for (
 							publicKey: 'synthetic-public-key',
 							keyFingerprint: 'synthetic-fingerprint',
 						}],
+						[6, 'bankAccount', {
+							accountNumber: 'synthetic-bank-number',
+							accountType: 'checking',
+							bankName: 'Fixture Bank',
+						}],
+						[7, 'driversLicense', { licenseNumber: 'synthetic-license', firstName: 'Fixture', issuingState: 'NH' }],
+						[8, 'passport', { passportNumber: 'synthetic-passport', givenName: 'Fixture', issuingCountry: 'NL' }],
 					] as const
 				) {
-					const value = JSON.parse(
-						await checked([
+					const result = await run(
+						[
 							'create',
 							'item',
 							encode({ type, name: `Type ${type}`, notes: 'typed notes', [section]: fields }),
-						]),
+						],
+						session,
+						password,
 					);
+					if (type >= 6 && result.code !== 0) {
+						expect(result.stderr).toContain('requires Vaultwarden 1.37.4 or newer');
+						continue;
+					}
+					if (result.code !== 0) throw new Error(`CLI operation failed: ${result.stderr}`);
+					const value = JSON.parse(result.stdout);
 					expect(value[section]).toMatchObject(fields);
 					expect(JSON.parse(await checked(['get', 'item', value.id]))[section]).toMatchObject(fields);
-					await checked(['delete', 'item', value.id, '--permanent']);
+					if (type >= 6) newerItems.push({ id: value.id, type, section, fields });
+					else await checked(['delete', 'item', value.id, '--permanent']);
 				}
 				const organizationImport = join(dir, 'organization-import.json');
 				await writeFile(
@@ -546,6 +717,117 @@ for (
 				expect(importedNote.collectionIds).toContain(importedCollection.id);
 				await checked(['delete', 'item', importedNote.id, '--permanent']);
 				await checked(['delete', 'org-collection', importedCollection.id, '--organizationid', organization.id]);
+				const keyResponse = await post('/api/accounts/api-key', { masterPasswordHash: hash }, auth.access_token);
+				expect(keyResponse.status).toBe(200);
+				const issuedKey = await keyResponse.json() as { apiKey: string };
+				const apiDir = join(dir, 'api-profile');
+				const apiOptions = { directory: apiDir, clientId: `user.${profile.id}`, clientSecret: issuedKey.apiKey };
+				const apiRun = (args: string[], token?: string, secret = password) =>
+					run(args, token, secret, undefined, apiOptions);
+				expect((await apiRun(['config', 'server', tlsServer])).code).toBe(0);
+				expect((await apiRun(['login', '--check'])).code).toBe(1);
+				const wrongApi = await run(['login', '--apikey', '--nointeraction'], undefined, password, undefined, {
+					...apiOptions,
+					clientSecret: 'incorrect-api-secret',
+				});
+				expect(wrongApi.code).toBe(1);
+				expect(wrongApi.stderr.includes(issuedKey.apiKey)).toBe(false);
+				const apiLogin = await apiRun(['login', '--apikey', '--nointeraction']);
+				if (apiLogin.code) throw new Error(`API login failed: ${apiLogin.stderr}`);
+				expect(JSON.parse((await apiRun(['status'])).stdout)).toMatchObject({ status: 'locked', userEmail: email });
+				expect((await apiRun(['login', '--check'])).code).toBe(0);
+				await withStore(apiDir, async (state) => {
+					expect(state.vault).toBeDefined();
+					expect(state.lastSync).toBeDefined();
+				});
+				await withStore(apiDir, async (state, save) => {
+					state.account!.expiresAt = 0;
+					await save();
+				});
+				expect((await apiRun(['sync'])).code).toBe(0);
+				await withStore(apiDir, async (state, save) => {
+					state.account!.accessToken = 'expired-api-token';
+					await save();
+				});
+				expect((await apiRun(['sync'])).code).toBe(0);
+				const masterFile = join(dir, 'master-password.txt');
+				await writeFile(masterFile, `${password}\r\nignored-second-line`, { mode: 0o600 });
+				const apiUnlocked = await apiRun(
+					['unlock', '--passwordfile', masterFile, '--raw'],
+					undefined,
+					'incorrect-environment-value',
+				);
+				if (apiUnlocked.code) throw new Error(`API unlock failed: ${apiUnlocked.stderr}`);
+				const apiSession = apiUnlocked.stdout.trim();
+				expect((await apiRun(['unlock', '--check'], apiSession)).code).toBe(0);
+				expect((await apiRun(['unlock', '--check'])).code).toBe(1);
+				expect((await apiRun(['get', 'password', item.id], apiSession)).stdout).toBe('fixture-secret');
+				await withStore(apiDir, async (state, save) => {
+					state.account!.encryptedUserKey = 'outdated-local-key-wrapper';
+					state.account!.expiresAt = 0;
+					await save();
+				});
+				const changedKey = await apiRun(['sync']);
+				expect(changedKey.code).toBe(1);
+				expect(changedKey.stderr).toContain('key settings changed');
+				expect((await apiRun(['get', 'password', item.id], apiSession)).code).toBe(1);
+				expect((await apiRun(['sync'])).code).toBe(0);
+				const newApiSession = (await apiRun(['unlock', password, '--raw'])).stdout.trim();
+				expect((await apiRun(['get', 'password', item.id], newApiSession)).stdout).toBe('fixture-secret');
+				await withStore(apiDir, async state => {
+					expect(state.account?.auth).toBe('api-key');
+					expect('refreshToken' in state.account!).toBe(false);
+					expect(JSON.stringify(state).includes(password)).toBe(false);
+					expect(JSON.stringify(state).includes(newApiSession)).toBe(false);
+				});
+				expect((await stat(join(apiDir, 'state.json'))).mode & 0o777).toBe(0o600);
+				expect((await apiRun(['lock'])).code).toBe(0);
+				expect((await apiRun(['sync'])).code).toBe(0);
+				expect((await apiRun(['logout'])).code).toBe(0);
+				await withStore(apiDir, async state => {
+					expect(state.account).toBeUndefined();
+					expect(JSON.stringify(state).includes(issuedKey.apiKey)).toBe(false);
+				});
+				const textSend = JSON.parse(
+					await checked([
+						'send',
+						'Synthetic Send payload',
+						'--name',
+						'CLI text Send',
+						'--hidden',
+						'--fullObject',
+						'--passwordenv',
+						'VW_PASSWORD',
+						'--maxAccessCount',
+						'20',
+					]),
+				);
+				expect(textSend.text).toMatchObject({ text: 'Synthetic Send payload', hidden: true });
+				expect(textSend.passwordSet).toBe(true);
+				expect(JSON.parse(await checked(['send', 'list'])).length).toBe(1);
+				expect(await checked(['send', 'get', textSend.id, '--text'])).toBe('Synthetic Send payload');
+				const receiveText = await run(['receive', textSend.accessUrl, '--passwordenv', 'VW_PASSWORD']);
+				if (receiveText.code) throw new Error(`Receive failed: ${receiveText.stderr}`);
+				expect(receiveText.stdout).toBe('Synthetic Send payload');
+				expect((await run(['receive', textSend.accessUrl, '--password', 'incorrect-send-password'])).code).toBe(1);
+				const editedSend = JSON.parse(
+					await checked([
+						'send',
+						'edit',
+						encode({ ...textSend, name: 'Edited text Send', notes: 'Private Send notes' }),
+					]),
+				);
+				expect(editedSend.name).toBe('Edited text Send');
+				expect(editedSend.passwordSet).toBe(true);
+				const fileSend = JSON.parse(
+					await checked(['send', uploadPath, '--file', '--fullObject', '--name', 'CLI file Send']),
+				);
+				expect(fileSend.file.fileName).toBe('fixture.bin');
+				const sendDestination = join(dir, 'send-file.bin');
+				const receiveFile = await run(['receive', fileSend.accessUrl, '--output', sendDestination]);
+				if (receiveFile.code) throw new Error(`Receive file failed: ${receiveFile.stderr}`);
+				expect(await readFile(sendDestination)).toEqual(attachmentBytes);
+				expect((await stat(sendDestination)).mode & 0o777).toBe(0o600);
 				if (process.env.VW_TEST_BW) {
 					const officialDir = join(dir, 'official');
 					async function official(args: string[], token?: string) {
@@ -556,6 +838,8 @@ for (
 								BITWARDENCLI_APPDATA_DIR: officialDir,
 								BW_NOINTERACTION: 'true',
 								BW_PASSWORD: password,
+								BW_CLIENTID: apiOptions.clientId,
+								BW_CLIENTSECRET: issuedKey.apiKey,
 								NODE_EXTRA_CA_CERTS: ca,
 								...(token ? { BW_SESSION: token } : {}),
 							},
@@ -582,6 +866,302 @@ for (
 					if (login.code !== 0) {
 						throw new Error(`Official bw login failed: ${login.stderr}`);
 					}
+					const missingObjectId = 'abcdef01-0000-0000-0000-000000000099';
+					const lookupFolders: { id: string }[] = [];
+					for (const name of ['Lookup Bucket', 'Lookup Bucket Archive', missingObjectId]) {
+						lookupFolders.push(JSON.parse(await checked(['create', 'folder', encode({ name })])));
+					}
+					expect((await official(['sync', '--force'], login.stdout.trim())).code).toBe(0);
+					for (const item of newerItems) {
+						const reference = await official(['get', 'item', item.id], login.stdout.trim());
+						if (reference.code) throw new Error(`Reference item ${item.type} read failed: ${reference.stderr}`);
+						expect(JSON.parse(reference.stdout)).toMatchObject({ type: item.type, [item.section]: item.fields });
+					}
+					for (
+						const [query, expectedId] of [
+							['Fixture Bank', newerItems.find(item => item.type === 6)!.id],
+							['Fixture NH', newerItems.find(item => item.type === 7)!.id],
+							['Fixture NL', newerItems.find(item => item.type === 8)!.id],
+						] as const
+					) {
+						const listed = JSON.parse(await checked(['list', 'items', '--search', query])) as { id: string }[];
+						const reference = await official(['list', 'items', '--search', query], login.stdout.trim());
+						if (reference.code) throw new Error(`Reference item search failed: ${reference.stderr}`);
+						const referenceIds = (JSON.parse(reference.stdout) as { id: string }[]).map(item => item.id);
+						expect(listed.map(item => item.id)).toEqual(referenceIds);
+						expect(referenceIds).toContain(expectedId);
+					}
+					for (
+						const [kind, query] of [
+							['folder', 'BUCKET ARCH'],
+							['folder', lookupFolders[0]!.id.toUpperCase()],
+							['collection', 'GANIZATION COL'],
+							['organization', 'PATIBILITY ORG'],
+						]
+					) {
+						const reference = await official(['get', kind!, query!], login.stdout.trim());
+						expect(reference.code).toBe(0);
+						expect(JSON.parse(await checked(['get', kind!, query!])).id).toBe(JSON.parse(reference.stdout).id);
+					}
+					for (const query of ['Lookup Bucket', missingObjectId]) {
+						const ours = await run(['get', 'folder', query], session);
+						const reference = await official(['get', 'folder', query], login.stdout.trim());
+						expect(ours.code).toBe(1);
+						expect(reference.code).toBe(1);
+					}
+					for (const value of lookupFolders) await checked(['delete', 'folder', value.id]);
+					const fingerprint = await checked(['get', 'fingerprint', 'me']);
+					const referenceFingerprint = await official(['get', 'fingerprint', 'me'], login.stdout.trim());
+					expect(referenceFingerprint.code).toBe(0);
+					expect(fingerprint).toBe(referenceFingerprint.stdout);
+					expect(await checked(['get', 'fingerprint', profile.id])).toBe(fingerprint);
+					const uriFixtures = [
+						['Domain', 'https://account.example.com/path', 0],
+						['Host', 'https://host.example.net:8443/a', 1],
+						['Prefix', 'https://start.example.org/a', 2],
+						['Exact', 'https://exact.example.net/a', 3],
+						['Regex', '^https://regex[.]example[.]net/[a-z]+$', 4],
+						['Never', 'https://never.example.net', 5],
+						['Private', 'https://alice.github.io', 0],
+						['Unicode', 'https://测试.com', 0],
+						['Google', 'https://accounts.google.com', 0],
+					];
+					const lookupFile = join(dir, 'lookup-fixture.json');
+					await writeFile(
+						lookupFile,
+						JSON.stringify({
+							encrypted: false,
+							folders: [],
+							items: [
+								...uriFixtures.map(([name, uri, match]) => ({
+									type: 1,
+									name: `URI ${name}`,
+									login: { password: 'uri-secret', uris: [{ uri, match }] },
+								})),
+								{
+									type: 1,
+									name: 'Lookup Café',
+									notes: 'Client project',
+									login: { username: 'alice@company.com', password: 'lookup-secret' },
+								},
+								{ type: 2, name: 'Lookup Café', notes: 'Other note', secureNote: { type: 0 } },
+							],
+						}),
+						{ mode: 0o600 },
+					);
+					await checked(['import', 'bitwardenjson', lookupFile]);
+					const lookupItems = JSON.parse(await checked(['list', 'items'])).filter((value: { name: string }) =>
+						value.name.startsWith('URI ') || value.name.startsWith('Lookup ')
+					);
+					expect(
+						(await post('/api/settings/domains', {
+							equivalentDomains: [['example.com', 'alias.test']],
+							excludedGlobalEquivalentDomains: [],
+						}, auth.access_token)).status,
+					).toBe(200);
+					await checked(['sync']);
+					expect((await official(['sync'], login.stdout.trim())).code).toBe(0);
+					const ids = (source: string) => JSON.parse(source).map((value: { id: string }) => value.id).sort();
+					for (
+						const filter of [
+							['--folderid', 'null'],
+							['--organizationid', 'notnull'],
+							['--collectionid', 'null'],
+							['--collectionid', 'notnull'],
+							['--folderid', folder.id, '--organizationid', 'notnull'],
+							['--search', 'Shared', '--folderid', folder.id, '--organizationid', 'notnull'],
+						]
+					) {
+						const reference = await official(['list', 'items', ...filter], login.stdout.trim());
+						if (reference.code) {
+							throw new Error(`Official list filter failed (${filter.join(' ')}): ${reference.stderr}`);
+						}
+						expect(
+							ids(await checked(['list', 'items', ...filter])),
+							`list items ${filter.join(' ')}`,
+						).toEqual(ids(reference.stdout));
+					}
+					for (
+						const url of [
+							'https://www.example.com/other',
+							'http://host.example.net:8443/b',
+							'https://host.example.net/b',
+							'https://start.example.org/abc',
+							'https://start.example.org/b',
+							'https://exact.example.net/a',
+							'https://exact.example.net/a/',
+							'HTTPS://REGEX.EXAMPLE.NET/path',
+							'https://never.example.net',
+							'https://bob.github.io',
+							'https://xn--0zwm56d.com',
+							'https://script.google.com',
+							'https://mail.google.com',
+						]
+					) {
+						const reference = await official(['list', 'items', '--url', url], login.stdout.trim());
+						if (reference.code) throw new Error(`Official URL filter failed: ${reference.stderr}`);
+						expect(ids(await checked(['list', 'items', '--url', url])), `URL filter: ${url}`).toEqual(
+							ids(reference.stdout),
+						);
+					}
+					// bw's CLI deliberately excludes domain settings from sync; vw honors the server groups.
+					const aliases = ids(await checked(['list', 'items', '--url', 'https://alias.test/path']));
+					expect(aliases).toEqual(ids(await checked(['list', 'items', '--url', 'https://www.example.com/other'])));
+					expect(aliases).toHaveLength(3);
+					const referenceAliases = await official(
+						['list', 'items', '--url', 'https://alias.test/path'],
+						login.stdout.trim(),
+					);
+					expect(referenceAliases.code).toBe(0);
+					expect(ids(referenceAliases.stdout)).toEqual([]);
+					const lookupLogin = lookupItems.find((value: { name: string; type: number }) =>
+						value.name === 'Lookup Café' && value.type === 1
+					);
+					for (const query of ['cafe alice', 'project company', lookupLogin.id.slice(0, 8)]) {
+						const reference = await official(['get', 'password', query], login.stdout.trim());
+						expect(reference.code).toBe(0);
+						expect(await checked(['get', 'password', query])).toBe(reference.stdout);
+					}
+					expect((await run(['get', 'item', 'lookup cafe'], session)).code).toBe(1);
+					expect((await official(['get', 'item', 'lookup cafe'], login.stdout.trim())).code).toBe(1);
+					expect(ids(await checked(['list', 'items', '--search', 'cafe alice']))).toEqual([lookupLogin.id]);
+					for (const value of lookupItems) await checked(['delete', 'item', value.id, '--permanent']);
+					expect((await official(['sync'], login.stdout.trim())).code).toBe(0);
+					const healthInputs = [
+						['password', 'person'],
+						['password11', 'person'],
+						['Weakpass2', 'person'],
+						['GoodPass3!', 'person'],
+						['VeryStrong123@#', 'person'],
+						['asdfjkhkjwer!', 'asdfjkhkjwer@example.com'],
+						['asdfjkhkjwer!', 'unrelated'],
+						['password', 'other'],
+						['🔑Unicode-example-19', 'unicode'],
+						['Xy7$'.repeat(100), 'oversized'],
+						['', 'empty'],
+						['password', 'archived'],
+						['password', 'trashed'],
+					];
+					const healthFile = join(dir, 'health-fixture.json');
+					await writeFile(
+						healthFile,
+						JSON.stringify({
+							encrypted: false,
+							folders: [],
+							items: [
+								...healthInputs.map(([secret, username], index) => ({
+									type: 1,
+									name: `Health ${index}`,
+									login: { password: secret, username },
+								})),
+								{ type: 2, name: 'Health note', secureNote: { type: 0 } },
+							],
+						}),
+						{ mode: 0o600 },
+					);
+					await checked(['import', 'bitwardenjson', healthFile]);
+					const healthItems = JSON.parse(await checked(['list', 'items'])).filter((value: { name: string }) =>
+						value.name.startsWith('Health ')
+					);
+					await checked([
+						'archive',
+						'item',
+						healthItems.find((value: { name: string }) => value.name === 'Health 11').id,
+					]);
+					await checked([
+						'delete',
+						'item',
+						healthItems.find((value: { name: string }) => value.name === 'Health 12').id,
+					]);
+					const localHealth = JSON.parse(await checked(['report', 'password-health', '--no-check-exposed']));
+					expect(localHealth.some((value: { name: string }) => value.name === 'Health 11')).toBe(true);
+					for (const name of ['Health 10', 'Health 12', 'Health note']) {
+						expect(localHealth.some((value: { name: string }) => value.name === name)).toBe(false);
+					}
+					expect((await official(['sync'], login.stdout.trim())).code).toBe(0);
+					const referenceHealth = await official(
+						['report', 'password-health', '--no-check-exposed'],
+						login.stdout.trim(),
+					);
+					if (referenceHealth.code) throw new Error(`Official report failed: ${referenceHealth.stderr}`);
+					const byId = (a: { id: string }, b: { id: string }) => a.id.localeCompare(b.id);
+					expect([...localHealth].sort(byId)).toEqual(JSON.parse(referenceHealth.stdout).sort(byId));
+					let exposureRequests = 0;
+					let exposureFailure = false;
+					const exposureApi = Bun.serve({
+						hostname: '127.0.0.1',
+						port: 0,
+						fetch(request) {
+							exposureRequests++;
+							expect(request.headers.has('Authorization')).toBe(false);
+							expect(request.headers.get('Add-Padding')).toBe('true');
+							expect(new URL(request.url).pathname).toMatch(/^\/range\/[A-F0-9]{5}$/);
+							if (exposureFailure) return new Response('Synthetic upstream failure', { status: 503 });
+							const rows = [['password', 37], ['edited-secret', 4]].map(([value, count]) => {
+								const hash = createHash('sha1').update(String(value)).digest('hex').toUpperCase();
+								return new URL(request.url).pathname.endsWith(hash.slice(0, 5))
+									? `${hash.slice(5)}:${count}`
+									: undefined;
+							}).filter(Boolean);
+							return new Response([...rows, `${'0'.repeat(35)}:0`].join('\r\n'));
+						},
+					});
+					try {
+						await checked(['report', 'password-health', '--no-check-exposed', '--hibp-url', exposureApi.url.origin]);
+						expect(exposureRequests).toBe(0);
+						const exposedHealth = JSON.parse(
+							await checked(['report', 'password-health', '--hibp-url', exposureApi.url.origin]),
+						);
+						const exposed = exposedHealth.find((value: { name: string }) => value.name === 'Health 0');
+						expect(exposed).toMatchObject({ exposed: true, exposedCount: 37, exposedError: null, reuseCount: 3 });
+						expect(await checked(['get', 'exposed', createdItem.id, '--hibp-url', exposureApi.url.origin])).toBe('4');
+						exposureFailure = true;
+						const failedHealth = JSON.parse(
+							await checked(['report', 'password-health', '--hibp-url', exposureApi.url.origin]),
+						);
+						expect(
+							failedHealth.every((value: { exposedCount: number | null; exposedError: string | null }) =>
+								value.exposedCount === null && value.exposedError !== null
+							),
+						).toBe(true);
+						expect((await run(['get', 'exposed', createdItem.id, '--hibp-url', exposureApi.url.origin], session)).code)
+							.toBe(1);
+					} finally {
+						exposureApi.stop(true);
+					}
+					for (const value of healthItems) await checked(['delete', 'item', value.id, '--permanent']);
+					expect((await official(['sync'], login.stdout.trim())).code).toBe(0);
+					const officialSend = await official(['send', 'get', textSend.id], login.stdout.trim());
+					if (officialSend.code) throw new Error(`Official Send read failed: ${officialSend.stderr}`);
+					expect(JSON.parse(officialSend.stdout).text.text).toBe('Synthetic Send payload');
+					const officialReceive = await official(['receive', textSend.accessUrl, '--passwordenv', 'BW_PASSWORD']);
+					if (officialReceive.code) throw new Error(`Official Send receive failed: ${officialReceive.stderr}`);
+					expect(officialReceive.stdout.trim()).toBe('Synthetic Send payload');
+					const officialSendFile = join(dir, 'official-send-file.bin');
+					const officialFileReceive = await official(['receive', fileSend.accessUrl, '--output', officialSendFile]);
+					if (officialFileReceive.code) {
+						throw new Error(`Official Send file receive failed: ${officialFileReceive.stderr}`);
+					}
+					expect(await readFile(officialSendFile)).toEqual(attachmentBytes);
+					const officialCreated = await official([
+						'send',
+						'From official bw',
+						'--name',
+						'Official text Send',
+						'--password',
+						password,
+						'--fullObject',
+					], login.stdout.trim());
+					if (officialCreated.code) throw new Error(`Official Send create failed: ${officialCreated.stderr}`);
+					const fromOfficial = JSON.parse(officialCreated.stdout);
+					const receivedOfficial = await run(['receive', fromOfficial.accessUrl, '--passwordenv', 'VW_PASSWORD']);
+					if (receivedOfficial.code) {
+						throw new Error(`Official-created Send receive failed: ${receivedOfficial.stderr}`);
+					}
+					expect(receivedOfficial.stdout).toBe('From official bw');
+					await checked(['sync']);
+					expect(JSON.parse(await checked(['send', 'get', fromOfficial.id])).text.text).toBe('From official bw');
+					await checked(['send', 'delete', fromOfficial.id]);
 					const result = await official(
 						['get', 'password', item.id],
 						login.stdout.trim(),
@@ -616,20 +1196,32 @@ for (
 					// Exercise both directions with independent bw serialization and KDF handling.
 					const filePassword = join(dir, 'transfer-password.txt');
 					await writeFile(filePassword, 'Synthetic-export-password-456!\n', { mode: 0o600 });
+					const baseExportNames = ['Compatibility fixture', 'Edited by vw'];
+					const fullExportNames = [...baseExportNames, ...newerItems.map(item => `Type ${item.type}`)];
 					const originalItems = new Set(JSON.parse(await checked(['list', 'items'])).map((v: { id: string }) => v.id));
 					const originalFolders = new Set(
 						JSON.parse(await checked(['list', 'folders'])).map((v: { id: string }) => v.id),
 					);
-					async function verifyImported(withAttachment = false) {
+					async function verifyImported(
+						withAttachment = false,
+						expectedNames: string[] = fullExportNames,
+					) {
 						await checked(['sync']);
 						const added = JSON.parse(await checked(['list', 'items'])).filter((v: { id: string }) =>
 							!originalItems.has(v.id)
 						);
-						expect(added.length).toBe(2);
+						expect(added.map((v: { name: string }) => v.name).sort()).toEqual([...expectedNames].sort());
 						expect(added.find((v: { name: string }) => v.name === 'Edited by vw').login.password).toBe('edited-secret');
 						expect(added.find((v: { name: string }) => v.name === 'Compatibility fixture').login.password).toBe(
 							'fixture-secret',
 						);
+						for (const item of newerItems) {
+							if (!expectedNames.includes(`Type ${item.type}`)) continue;
+							expect(added.find((value: { name: string }) => value.name === `Type ${item.type}`)).toMatchObject({
+								type: item.type,
+								[item.section]: item.fields,
+							});
+						}
 						if (withAttachment) {
 							const copy = added.find((v: { name: string }) => v.name === 'Compatibility fixture');
 							expect(copy.attachments.length).toBe(1);
@@ -652,6 +1244,7 @@ for (
 						}
 					}
 					for (const format of ['json', 'csv', 'encrypted_json', 'password'] as const) {
+						const expectedNames = format === 'csv' ? baseExportNames : fullExportNames;
 						const transferFormat = format === 'password' ? 'encrypted_json' : format;
 						const importFormat = format === 'csv' ? 'bitwardencsv' : 'bitwardenjson';
 						const ours = join(dir, `vw-${format}.export`);
@@ -670,7 +1263,7 @@ for (
 							...(format === 'password' ? ['--passwordfile', filePassword] : []),
 						], login.stdout.trim());
 						if (imported.code) throw new Error(`Official import ${format} failed: ${imported.stderr}`);
-						await verifyImported();
+						await verifyImported(false, expectedNames);
 						// Refresh bw after deleting the imported copies, then export its authoritative cache.
 						expect((await official(['sync'], login.stdout.trim())).code).toBe(0);
 						const theirs = join(dir, `bw-${format}.export`);
@@ -691,8 +1284,8 @@ for (
 								...(format === 'password' ? ['--passwordfile', filePassword] : []),
 							]),
 						);
-						expect(result.items).toBe(2);
-						await verifyImported();
+						expect(result.items).toBe(expectedNames.length);
+						await verifyImported(false, expectedNames);
 					}
 					const attached = JSON.parse(
 						await checked(['create', 'attachment', '--file', uploadPath, '--itemid', item.id]),
@@ -709,13 +1302,67 @@ for (
 						expect(restored.attachments).toBe(1);
 						await verifyImported(true);
 					}
+					const noCollectionItems = [] as { id: string }[];
+					for (const name of ['Move without collection: vw', 'Move without collection: bw']) {
+						noCollectionItems.push(JSON.parse(
+							await checked([
+								'create',
+								'item',
+								encode({ type: 1, name, login: { username: 'move-user', password: 'move-secret' } }),
+							]),
+						));
+					}
+					expect((await official(['sync', '--force'], login.stdout.trim())).code).toBe(0);
+					const movedWithoutCollection = JSON.parse(
+						await checked(['move', noCollectionItems[0]!.id, organization.id]),
+					);
+					expect(movedWithoutCollection.organizationId).toBe(organization.id);
+					expect(movedWithoutCollection.collectionIds).toEqual([]);
+					expect((await official(['sync', '--force'], login.stdout.trim())).code).toBe(0);
+					const referenceMoveWithoutCollection = await official(
+						['move', noCollectionItems[1]!.id, organization.id],
+						login.stdout.trim(),
+					);
+					expect(referenceMoveWithoutCollection.code).toBe(1);
+					expect(referenceMoveWithoutCollection.stderr).toContain('`requestJson` was not provided.');
+					await checked(['sync']);
 					await checked(['delete', 'attachment', attached.attachments[0].id, '--itemid', item.id]);
+					expect((await official(['logout'])).code).toBe(0);
+					const referenceApiLogin = await official(['login', '--apikey']);
+					if (referenceApiLogin.code) throw new Error(`Official API login failed: ${referenceApiLogin.stderr}`);
+					const referenceApiUnlock = await official(['unlock', '--passwordenv', 'BW_PASSWORD', '--raw']);
+					if (referenceApiUnlock.code) throw new Error(`Official API unlock failed: ${referenceApiUnlock.stderr}`);
+					expect((await official(['get', 'password', item.id], referenceApiUnlock.stdout.trim())).stdout.trim()).toBe(
+						'fixture-secret',
+					);
 				}
 				expect(
 					(
 						await run(['list', 'items', '--search', 'no match'], session)
 					).stdout.trim(),
 				).toBe('[]');
+				const removedPassword = JSON.parse(await checked(['send', 'remove-password', textSend.id]));
+				expect(removedPassword.passwordSet).toBe(false);
+				expect((await run(['send', 'receive', textSend.accessUrl])).stdout).toBe('Synthetic Send payload');
+				for (
+					const [name, patch] of [
+						['access-limit', { maxAccessCount: 1 }],
+						['expired', { expirationDate: '2000-01-01T00:00:00Z' }],
+						['disabled', { disabled: true }],
+					] as const
+				) {
+					const limited = JSON.parse(
+						await checked(['send', 'create', encode({ type: 0, name, text: { text: name }, ...patch })]),
+					);
+					const first = await run(['receive', limited.accessUrl]);
+					expect(first.code).toBe(name === 'access-limit' ? 0 : 1);
+					if (name === 'access-limit') expect((await run(['receive', limited.accessUrl])).code).toBe(1);
+					await checked(['send', 'delete', limited.id]);
+				}
+				await checked(['send', 'delete', textSend.id]);
+				await checked(['send', 'delete', fileSend.id]);
+				expect(JSON.parse(await checked(['send', 'list']))).toEqual([]);
+				expect((await run(['receive', textSend.accessUrl])).code).toBe(1);
 				await checked(['archive', 'item', createdItem.id]);
 				expect(JSON.parse(await checked(['list', 'items', '--archived']))[0].id).toBe(createdItem.id);
 				await checked(['restore', 'item', createdItem.id]);
@@ -746,7 +1393,7 @@ for (
 				expect((await stat(join(dir, 'state.json'))).mode & 0o777).toBe(0o600);
 				proxy.stop(true);
 				expect((await run(['get', 'password', item.id], session)).stdout).toBe(
-					'fixture-secret\n',
+					'fixture-secret',
 				);
 				expect((await run(['lock'])).code).toBe(0);
 				expect((await run(['get', 'password', item.id], session)).code).toBe(1);
@@ -762,6 +1409,6 @@ for (
 				await rm(dir, { recursive: true, force: true });
 			}
 		},
-		240000,
+		600000,
 	);
 }

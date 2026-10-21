@@ -1,0 +1,15 @@
+{"uuid":"login","title":"1PIF compatibility login","typeName":"webforms.WebForm","location":"fallback.example.com","openContents":{"faveIndex":1},"secureContents":{"notesPlain":"first\r\nsecond","passwordHistory":[{"value":"previous synthetic password","time":1700000000}],"URLs":[{"url":"example.com/a,b"},{"url":"https://second.example.com"}],"fields":[{"designation":"username","name":"username","value":"alice"},{"designation":"password","name":"password","value":"  synthetic-password  "}],"sections":[{"fields":[{"n":"TOTP_fixture","v":"otpauth://totp/Example?secret=JBSWY3DPEHPK3PXP","t":"OTP"},{"n":"custom","v":"synthetic-hidden","t":"Private","k":"concealed"},{"n":"long","v":"first\nsecond","t":"Multiline"},{"n":"old","v":"previous synthetic password","t":"password"}]}]}}
+***5642bee8-a5ff-11dc-8314-0800200c9a66***
+{"uuid":"card","title":"1PIF compatibility card","typeName":"wallet.financial.CreditCard","secureContents":{"sections":[{"fields":[{"n":"ccnum","v":"4111111111111111","t":"number"},{"n":"cvv","v":"123","t":"code"},{"n":"cardholder","v":"Alice Example","t":"holder"},{"n":"expiry","v":"203006","t":"expires"},{"n":"type","v":"visa","t":"brand"}]}]}}
+***5642bee8-a5ff-11dc-8314-0800200c9a66***
+{"uuid":"identity","title":"1PIF compatibility identity","typeName":"identities.Identity","secureContents":{"sections":[{"fields":[{"n":"firstname","v":"Alice","t":"first name"},{"n":"lastname","v":"Example","t":"last name"},{"n":"address","v":{"street":"Test street 1","city":"Test city","country":"nl","zip":"1234AB"},"t":"home"},{"n":"birthdate","v":946684800,"t":"Birthday","k":"date"}]}]}}
+***5642bee8-a5ff-11dc-8314-0800200c9a66***
+{"uuid":"note","title":"1PIF compatibility note","typeName":"securenotes.SecureNote","secureContents":{"notesPlain":"  synthetic notes\t \n","fields":[{"name":"Reference","value":"text"}]}}
+***5642bee8-a5ff-11dc-8314-0800200c9a66***
+{"uuid":"opvault-login","hmac":"synthetic-format-marker","overview":{"title":"1PIF compatibility opvault login","URLs":[{"u":"https://opvault.example.com"}]},"details":{"password":"opvault-synthetic","fields":[{"designation":"username","name":"username","value":"opvault-user"}]}}
+***5642bee8-a5ff-11dc-8314-0800200c9a66***
+{"uuid":"opvault-card","hmac":"synthetic-format-marker","overview":{"title":"1PIF compatibility opvault card"},"details":{"ccnum":"format-marker","sections":[{"fields":[{"n":"ccnum","v":"5555555555554444","t":"number"},{"n":"expiry","v":"203101","t":"expires"}]}]}}
+***5642bee8-a5ff-11dc-8314-0800200c9a66***
+{"uuid":"opvault-identity","hmac":"synthetic-format-marker","overview":{"title":"1PIF compatibility opvault identity"},"details":{"firstname":"format-marker","sections":[{"fields":[{"n":"firstname","v":"Bob","t":"first"},{"n":"email","v":"bob@example.com","t":"email"}]}]}}
+***5642bee8-a5ff-11dc-8314-0800200c9a66***
+{"uuid":"trashed","trashed":true,"title":"1PIF compatibility trashed must not import"}

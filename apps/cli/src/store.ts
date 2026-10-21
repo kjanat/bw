@@ -2,11 +2,12 @@ import { chmod, lstat, mkdir, open, readFile, rename, rm } from 'node:fs/promise
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from 'node:crypto';
-import type { Account, JsonObject } from '@kjanat/vaultwarden';
+import type { Account, JsonObject, ServiceUrls } from '@kjanat/vaultwarden';
 
 export interface State {
 	version: 1;
 	server?: string;
+	services?: ServiceUrls;
 	deviceId: string;
 	account?: Account;
 	vault?: JsonObject;

@@ -1,15 +1,36 @@
-import { randomBytes, randomUUID } from 'node:crypto';
-import { zipSync, unzipSync } from 'fflate';
-import { decrypt, encrypt, deriveKdfKey, stretchKey, type Kdf } from '#crypto';
-import { object, text, parseKdf, type JsonObject } from '#client';
+import { type JsonObject, object, parseKdf, text } from '#client';
+import { parseClipperzHtml } from '#clipperz-html';
+import { decrypt, deriveKdfKey, encrypt, type Kdf, stretchKey } from '#crypto';
+import { parseCsv, writeCsv } from '#csv';
+import { externalCsvFormats, isExternalCsvFormat, parseExternalCsv } from '#csv-import';
+import { parseDelineaXml } from '#delinea-xml';
+import { encryptItem } from '#item-codec';
+import { externalJsonFormats, isExternalJsonFormat, parseExternalJson } from '#json-import';
+import { parseKdbx } from '#kdbx';
+import { parseKeePassXml } from '#keepass-xml';
+import { type ImportRecordError, parseOnePassword1Pux } from '#onepassword';
+import { parseOnePassword1Pif, parseOnePasswordCsv } from '#onepassword-legacy';
+import { parsePasswordDepot17Xml } from '#password-depot-xml';
+import { parsePasswordDragonXml } from '#password-dragon-xml';
+import { parsePasswordSafeXml } from '#passwordsafe-xml';
+import { parseSafeInCloudXml } from '#safeincloud-xml';
+import { parseStickyPasswordXml } from '#stickypassword-xml';
+import { parseKasperskyTxt } from '#text-import';
 import { decryptOwnedItem } from '#vault';
-import { transformItem } from '#item-codec';
 import type { VaultService } from '#vault-service';
+import { unzipSync, zipSync } from 'fflate';
+import { randomBytes, randomUUID } from 'node:crypto';
 
 export interface TransferOptions {
 	organizationId?: string;
 	password?: string;
+	/** Source path used by bw-compatible format autodetection (currently unified Keeper). */
+	fileName?: string;
+	/** Optional KeePass key-file bytes; used only by keepasskdbx imports. */
+	keyFile?: Uint8Array;
 	kdf?: Kdf;
+	/** Called when ZIP export cannot download/decrypt an attachment and skips it. */
+	onAttachmentSkipped?: (itemId: string, attachmentId: string) => void;
 }
 export class ImportFailure extends Error {
 	readonly serverMayHaveChanged = true;
@@ -19,16 +40,40 @@ export interface ImportResult {
 	folders: number;
 	collections: number;
 	attachments: number;
+	/** Records skipped before upload, identified by source UID rather than vault contents. */
+	errors?: ImportRecordError[];
 }
 export const importFormats = [
 	'bitwardenjson',
 	'bitwardencsv',
 	'bitwardenzip',
-	'chromecsv',
-	'firefoxcsv',
+	'kasperskytxt',
+	...externalCsvFormats,
+	...externalJsonFormats,
+	'keepass2xml',
+	'keepasskdbx',
+	'1password1pux',
+	'1password1pif',
+	'1passwordmaccsv',
+	'1passwordwincsv',
+	'delineaxml',
+	'passworddragonxml',
+	'safeincloudxml',
+	'pwsafexml',
+	'stickypasswordxml',
+	'clipperzhtml',
+	'keeper',
+	'passworddepot17xml',
 ] as const;
 export type ImportFormat = typeof importFormats[number];
 export type ExportFormat = 'json' | 'csv' | 'encrypted_json' | 'zip';
+export function resolveImportFormat(format: ImportFormat, fileName?: string): ImportFormat {
+	if (format !== 'keeper') return format;
+	const path = fileName?.toLowerCase();
+	if (path?.endsWith('.csv')) return 'keepercsv';
+	if (path?.endsWith('.json')) return 'keeperjson';
+	throw new Error('Cannot determine Keeper file type. Use a .csv or .json file.');
+}
 function records(value: unknown): JsonObject[] {
 	if (!Array.isArray(value)) throw new Error('Invalid vault export structure.');
 	return value.map(object);
@@ -59,6 +104,9 @@ function selectFields(item: JsonObject, encrypted = false): JsonObject {
 			'card',
 			'identity',
 			'sshKey',
+			'bankAccount',
+			'driversLicense',
+			'passport',
 			'passwordHistory',
 			'creationDate',
 			'revisionDate',
@@ -70,70 +118,13 @@ function selectFields(item: JsonObject, encrypted = false): JsonObject {
 	result.collectionIds = item.organizationId ? item.collectionIds ?? [] : null;
 	return result;
 }
-/** RFC 4180 records, including quoted newlines and doubled quotes. */
-export function parseCsv(input: string): string[][] {
-	const rows: string[][] = [];
-	let row: string[] = [];
-	let field = '';
-	let quoted = false;
-	let closed = false;
-	input = input.replace(/^\uFEFF/, '');
-	for (let i = 0; i < input.length; i++) {
-		const char = input[i]!;
-		if (quoted) {
-			if (char === '"') {
-				if (input[i + 1] === '"') {
-					field += '"';
-					i++;
-				} else {
-					quoted = false;
-					closed = true;
-				}
-			} else field += char;
-			continue;
-		}
-		if (char === '"') {
-			if (field || closed) throw new Error('Invalid CSV quoting.');
-			quoted = true;
-			continue;
-		}
-		if (char === ',') {
-			row.push(field);
-			field = '';
-			closed = false;
-			continue;
-		}
-		if (char === '\r' || char === '\n') {
-			if (char === '\r' && input[i + 1] === '\n') i++;
-			row.push(field);
-			rows.push(row);
-			row = [];
-			field = '';
-			closed = false;
-			continue;
-		}
-		if (closed) throw new Error('Invalid CSV quoting.');
-		field += char;
-	}
-	if (quoted) throw new Error('Unterminated CSV field.');
-	if (field || row.length || closed) {
-		row.push(field);
-		rows.push(row);
-	}
-	return rows;
-}
-function csvCell(value: unknown): string {
-	const v = value == null ? '' : String(value);
-	return /[",\r\n]/.test(v) ? `"${v.replaceAll('"', '""')}"` : v;
-}
-export function writeCsv(rows: unknown[][]): string {
-	return rows.map(row => row.map(csvCell).join(',')).join('\r\n');
-}
-function csvDocument(source: string, format: string, organization = false): JsonObject {
+export { parseCsv, writeCsv } from '#csv';
+function csvDocument(source: string, organization = false): JsonObject {
 	const rows = parseCsv(source);
 	if (!rows.length) throw new Error('CSV is empty.');
 	const header = rows.shift()!;
 	if (new Set(header).size !== header.length) throw new Error('Duplicate CSV headers.');
+	if (!header.includes('name')) throw new Error('Missing Bitwarden CSV name column.');
 	const groups: JsonObject[] = [];
 	const ids = new Map<string, string>();
 	const items: JsonObject[] = [];
@@ -151,10 +142,9 @@ function csvDocument(source: string, format: string, organization = false): Json
 		if (row.length !== header.length) throw new Error('CSV row has an unexpected number of fields.');
 		const values: Record<string, string> = Object.create(null);
 		header.forEach((key, i) => values[key] = row[i]!);
-		if (format === 'bitwardencsv' && !header.includes('name')) throw new Error('Missing Bitwarden CSV name column.');
 		const name = values.name || values.title || values.url || values.login_uri || '--';
 		const type = values.type?.toLowerCase() === 'note' ? 2 : 1;
-		const group = values.folder ?? (format === 'lastpasscsv' ? values.grouping : undefined) ?? '';
+		const group = values.folder ?? '';
 		const collections = organization
 			? (values.collections ? parseCsv(values.collections)[0] ?? [] : group ? [group] : [])
 			: [];
@@ -318,13 +308,22 @@ async function sourceForExport(vault: VaultService, organizationId?: string): Pr
 function zipItemName(name: string): string {
 	return name.replace(/[/\\><:"|?*]/g, '_').replace(/__+/g, '_');
 }
-function officialZipAttachments(items: JsonObject[], zip: Record<string, Uint8Array>): JsonObject[] {
+export function officialZipAttachments(items: JsonObject[], zip: Record<string, Uint8Array>): JsonObject[] {
 	const result: JsonObject[] = [];
+	const names = new Map<string, number>();
+	const folderItems = new Map<string, JsonObject[]>();
+	for (const item of items) {
+		const name = text(item.name);
+		const count = names.get(name) ?? 0;
+		names.set(name, count + 1);
+		const folder = `${zipItemName(name)}${count ? `_${count}` : ''}`;
+		folderItems.set(folder, [...(folderItems.get(folder) ?? []), item]);
+	}
 	for (const path of Object.keys(zip)) {
 		if (!path.startsWith('attachments/') || path.endsWith('/')) continue;
 		const parts = path.split('/');
 		if (parts.length !== 3 || !parts[1] || !parts[2]) throw new Error('Unsupported ZIP attachment layout.');
-		const matches = items.filter(item => typeof item.name === 'string' && zipItemName(item.name) === parts[1]);
+		const matches = folderItems.get(parts[1]) ?? [];
 		// The official format loses original IDs and names when sanitized names collide.
 		// Refuse an ambiguous restoration instead of associating a file with the wrong secret.
 		if (matches.length !== 1) throw new Error('ZIP attachment item names are ambiguous or missing.');
@@ -339,6 +338,7 @@ export async function exportVault(
 	options: TransferOptions = {},
 ): Promise<Buffer> {
 	if (!['json', 'csv', 'encrypted_json', 'zip'].includes(format)) throw new Error('Unsupported export format.');
+	if (format === 'zip' && options.organizationId) throw new Error('Zip export not supported for organization.');
 	const source = await sourceForExport(vault, options.organizationId);
 	const owner = scopeKey(keys, options.organizationId);
 	const items = records(source.ciphers).filter(item =>
@@ -385,21 +385,45 @@ export async function exportVault(
 	}
 	if (format !== 'zip') return Buffer.from(JSON.stringify(document, null, 2));
 	const archive: Record<string, Uint8Array> = Object.create(null);
-	archive['data.json'] = Buffer.from(JSON.stringify(document, null, 2));
-	const manifest: { itemId: string; attachmentId: string; fileName: string; path: string }[] = [];
-	for (const item of items) {
-		for (const attachment of records(item.attachments ?? [])) {
-			const downloaded = await vault.getAttachment(text(item.id), text(attachment.id));
-			const name = downloaded.fileName.replace(/[\\/<>:"|?*\p{Cc}]/gu, '_') || 'attachment';
-			const path = `attachments/${text(item.id)}/${text(attachment.id)}_${name}`;
-			archive[path] = downloaded.contents;
-			manifest.push({ itemId: text(item.id), attachmentId: text(attachment.id), fileName: downloaded.fileName, path });
-		}
-	}
-	archive['vw-manifest.json'] = Buffer.from(JSON.stringify({ version: 1, attachments: manifest }));
+	const data = Buffer.from(JSON.stringify(document, null, 2));
+	archive['data.json'] = data;
+	archive['attachments/'] = new Uint8Array();
 	try {
+		const itemNames = new Map<string, number>();
+		for (const encryptedItem of items) {
+			const item = decryptOwnedItem(encryptedItem, owner);
+			const itemName = text(item.name);
+			const itemNameCount = itemNames.get(itemName) ?? 0;
+			itemNames.set(itemName, itemNameCount + 1);
+			let folderName = zipItemName(itemName);
+			if (itemNameCount) folderName += `_${itemNameCount}`;
+			const attachmentNames = new Map<string, number>();
+			for (const attachment of records(item.attachments ?? [])) {
+				let contents: Buffer | undefined;
+				try {
+					const downloaded = await vault.getAttachment(text(item.id), text(attachment.id));
+					contents = downloaded.contents;
+					const parts = downloaded.fileName.split('.');
+					let baseName = parts.length > 1 ? parts.slice(0, -1).join('') : downloaded.fileName;
+					const suffix = parts.length > 1 ? `.${parts.at(-1)}` : '';
+					baseName = baseName.replace(/[\\/<>:"|?*.]/g, '_').replace(/__+/g, '_');
+					let name = `${baseName}${suffix}`;
+					const nameCount = attachmentNames.get(name) ?? 0;
+					attachmentNames.set(name, nameCount + 1);
+					if (nameCount) name = `${baseName}_${nameCount}${suffix}`;
+					const path = `attachments/${folderName}/${name}`;
+					archive[path] = contents;
+					contents = undefined;
+				} catch {
+					options.onAttachmentSkipped?.(text(item.id), text(attachment.id));
+				} finally {
+					contents?.fill(0);
+				}
+			}
+		}
 		return Buffer.from(zipSync(archive, { level: 6 }));
 	} finally {
+		data.fill(0);
 		for (const [path, value] of Object.entries(archive)) if (path.startsWith('attachments/')) value.fill(0);
 	}
 }
@@ -411,7 +435,15 @@ export async function importVault(
 	options: TransferOptions = {},
 ): Promise<ImportResult> {
 	if (!importFormats.includes(format)) throw new Error('Unsupported import format.');
-	let source = format === 'bitwardenzip' ? '' : typeof input === 'string' ? input : Buffer.from(input).toString('utf8');
+	if (format === 'keeper') {
+		return importVault(vault, keys, resolveImportFormat(format, options.fileName), input, options);
+	}
+	if (format === 'keepasskdbx' && typeof input === 'string') throw new Error('KDBX input must be binary bytes.');
+	let source = format === 'bitwardenzip' || format === 'keepasskdbx' || format === '1password1pux'
+		? ''
+		: typeof input === 'string'
+		? input
+		: Buffer.from(input).toString('utf8');
 	let zip: Record<string, Uint8Array> | undefined;
 	let manifest: JsonObject | undefined;
 	if (format === 'bitwardenzip') {
@@ -436,7 +468,43 @@ export async function importVault(
 	}
 	const owner = scopeKey(keys, options.organizationId);
 	const document = await decryptExportDocument(
-		format.endsWith('csv') ? csvDocument(source, format, !!options.organizationId) : json(source),
+		format === '1password1pux'
+			? parseOnePassword1Pux(input, !!options.organizationId)
+			: format === '1password1pif'
+			? parseOnePassword1Pif(source, !!options.organizationId)
+			: format === '1passwordmaccsv' || format === '1passwordwincsv'
+			? parseOnePasswordCsv(format, source, !!options.organizationId)
+			: format === 'keepasskdbx'
+			? await parseKdbx(input as Uint8Array, {
+				password: options.password,
+				keyFile: options.keyFile,
+				organization: !!options.organizationId,
+			})
+			: isExternalCsvFormat(format)
+			? parseExternalCsv(format, source, !!options.organizationId)
+			: isExternalJsonFormat(format)
+			? parseExternalJson(format, source, !!options.organizationId)
+			: format === 'kasperskytxt'
+			? parseKasperskyTxt(source)
+			: format === 'bitwardencsv'
+			? csvDocument(source, !!options.organizationId)
+			: format === 'keepass2xml'
+			? parseKeePassXml(source, !!options.organizationId)
+			: format === 'delineaxml'
+			? parseDelineaXml(source, !!options.organizationId)
+			: format === 'passworddragonxml'
+			? parsePasswordDragonXml(source, !!options.organizationId)
+			: format === 'safeincloudxml'
+			? parseSafeInCloudXml(source)
+			: format === 'pwsafexml'
+			? parsePasswordSafeXml(source, !!options.organizationId)
+			: format === 'stickypasswordxml'
+			? parseStickyPasswordXml(source, !!options.organizationId)
+			: format === 'clipperzhtml'
+			? parseClipperzHtml(source)
+			: format === 'passworddepot17xml'
+			? parsePasswordDepot17Xml(source, !!options.organizationId)
+			: json(source),
 		owner,
 		options.password,
 	);
@@ -445,26 +513,51 @@ export async function importVault(
 		document[options.organizationId ? 'collections' : 'folders']
 			?? document[options.organizationId ? 'folders' : 'collections'] ?? [],
 	);
+	if (rawItems.length === 0 && groups.length === 0) throw new Error('Nothing to import.');
+	for (const item of rawItems) {
+		if (typeof item.type !== 'number' || ![1, 2, 3, 4, 5, 6, 7, 8].includes(item.type)) {
+			throw new Error('Unsupported imported item type.');
+		}
+		await vault.client.assertCipherTypeSupported(item.type);
+	}
+	if (rawItems.length > 0) {
+		const middle = Math.floor(rawItems.length / 2);
+		const samples = [rawItems[0]!, rawItems[middle]!, rawItems[rawItems.length - 1]!];
+		const hasPlaceholderLogin = (candidate: JsonObject) => {
+			if (candidate.type !== 1 || candidate.login == null || typeof candidate.login !== 'object') return false;
+			const login = object(candidate.login);
+			const password = login.password;
+			return (candidate.name == null || candidate.name === '--')
+				&& (typeof password !== 'string' || !password.trim());
+		};
+		if (samples.every(hasPlaceholderLogin)) throw new Error('Invalid vault export or import format.');
+	}
 	const groupIds = new Map<unknown, number>();
 	const encryptedGroups = groups.map((group, index) => {
 		if (group.id != null) {
 			if (groupIds.has(group.id)) throw new Error('Duplicate grouping ID.');
 			groupIds.set(group.id, index);
 		}
-		const name = text(group.name);
+		if (typeof group.name !== 'string') throw new Error('Imported group name must be a string.');
+		const name = group.name;
 		return {
 			name: encrypt(Buffer.from(name), owner),
-			...(options.organizationId ? { externalId: group.externalId ?? null } : {}),
+			// Older Vaultwarden imports deserialize the full collection request shape.
+			...(options.organizationId ? { externalId: group.externalId ?? null, groups: [], users: [] } : {}),
 		};
 	});
 	const relationships: { key: number; value: number }[] = [];
 	const ciphers: JsonObject[] = rawItems.map((raw, index) => {
 		const item = structuredClone(raw);
 		if (item.deletedDate) throw new Error('Import contains a deleted item.');
-		if (typeof item.type !== 'number' || ![1, 2, 3, 4, 5].includes(item.type)) {
-			throw new Error('Unsupported imported item type.');
-		}
 		item.name = typeof item.name === 'string' && item.name ? item.name : '--';
+		if (
+			(format === 'bitwardenjson' || format === 'bitwardenzip')
+			&& Array.isArray(item.passwordHistory)
+			&& item.passwordHistory.length > 5
+		) {
+			item.passwordHistory = item.passwordHistory.slice(0, 5);
+		}
 		item.organizationId = options.organizationId ?? null;
 		item.folderId = null;
 		const refs = options.organizationId
@@ -482,7 +575,7 @@ export async function importVault(
 		const key = randomBytes(64);
 		try {
 			return {
-				...transformItem(item, key, 'encrypt'),
+				...encryptItem(item, key),
 				key: encrypt(key, owner),
 				encryptedFor: text(object(vault.snapshot.profile).id),
 				lastKnownRevisionDate: null,
@@ -552,5 +645,8 @@ export async function importVault(
 		folders: options.organizationId ? 0 : encryptedGroups.length,
 		collections: options.organizationId ? encryptedGroups.length : 0,
 		attachments: importedAttachments,
+		...(Array.isArray(document.errors) && document.errors.length
+			? { errors: document.errors as ImportRecordError[] }
+			: {}),
 	};
 }

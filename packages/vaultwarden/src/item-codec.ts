@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { decrypt, encrypt } from '#crypto';
 import { object, type JsonObject } from '#client';
 
@@ -25,11 +26,53 @@ const sections: Record<string, string[]> = {
 		'licenseNumber',
 	],
 	sshKey: ['privateKey', 'publicKey', 'keyFingerprint'],
+	bankAccount: [
+		'bankName',
+		'nameOnAccount',
+		'accountType',
+		'accountNumber',
+		'routingNumber',
+		'branchNumber',
+		'pin',
+		'swiftCode',
+		'iban',
+		'bankContactPhone',
+	],
+	driversLicense: [
+		'firstName',
+		'middleName',
+		'lastName',
+		'dateOfBirth',
+		'licenseNumber',
+		'issuingCountry',
+		'issuingState',
+		'issueDate',
+		'expirationDate',
+		'issuingAuthority',
+		'licenseClass',
+	],
+	passport: [
+		'surname',
+		'givenName',
+		'dateOfBirth',
+		'sex',
+		'birthPlace',
+		'nationality',
+		'issuingCountry',
+		'passportNumber',
+		'passportType',
+		'nationalIdentificationNumber',
+		'issuingAuthority',
+		'issueDate',
+		'expirationDate',
+	],
 };
 /** One field map serves both directions so writes cannot accidentally leave known secrets in plaintext. */
 export function transformItem(input: JsonObject, key: Uint8Array, direction: 'encrypt' | 'decrypt'): JsonObject {
 	const item = structuredClone(input);
-	if (typeof item.type === 'number' && ![1, 2, 3, 4, 5].includes(item.type)) throw new Error('Unsupported item type.');
+	if (typeof item.type === 'number' && ![1, 2, 3, 4, 5, 6, 7, 8].includes(item.type)) {
+		throw new Error('Unsupported item type.');
+	}
 	const transform = (target: JsonObject, names: string[]) => {
 		for (const name of names) {
 			const value = target[name];
@@ -75,4 +118,29 @@ export function transformItem(input: JsonObject, key: Uint8Array, direction: 'en
 		for (const attachment of item.attachments) transform(object(attachment), ['fileName']);
 	}
 	return item;
+}
+
+/** Generate a fresh checksum for every URI before encryption, including when an edit changed its value. */
+export function encryptItem(input: JsonObject, key: Uint8Array): JsonObject {
+	const item = structuredClone(input);
+	if (item.login != null) {
+		const login = object(item.login);
+		if (Array.isArray(login.uris)) {
+			for (const value of login.uris) {
+				const uri = object(value);
+				if (typeof uri.uri === 'string') {
+					uri.uriChecksum = createHash('sha256').update(uri.uri, 'utf8').digest('base64');
+				} else if (uri.uri == null) delete uri.uriChecksum;
+			}
+		}
+	}
+	return transformItem(item, key, 'encrypt');
+}
+export function validUriChecksum(uri: JsonObject): boolean {
+	if (
+		typeof uri.uri !== 'string' || typeof uri.uriChecksum !== 'string' || !/^[A-Za-z0-9+/]{43}=$/.test(uri.uriChecksum)
+	) return false;
+	const checksum = Buffer.from(uri.uriChecksum, 'base64');
+	if (checksum.length !== 32 || checksum.toString('base64') !== uri.uriChecksum) return false;
+	return timingSafeEqual(checksum, createHash('sha256').update(uri.uri, 'utf8').digest());
 }
