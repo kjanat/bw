@@ -5,40 +5,54 @@ import type { RuntimeAdapter } from '@kjanat/dreamcli/runtime';
 interface OutputPolicy {
 	quiet: boolean;
 	response: boolean;
+	pretty: boolean;
 	commandName?: string;
 	args?: Record<string, unknown>;
+	responseErrorWritten?: boolean;
 	writeJson: (value: unknown, pretty?: boolean) => void;
 }
 const policies = new AsyncLocalStorage<OutputPolicy>();
 
 export function outputCommand(name: string) {
-	return command(name).flag(
-		'pretty',
-		flag.boolean().env('VW_PRETTY').describe('Format JSON with two-space indentation'),
-	);
+	return command(name)
+		.flag('pretty', flag.boolean().env('VW_PRETTY').describe('Format JSON with two-space indentation'))
+		.flag('raw', flag.boolean().env('VW_RAW').describe('Return raw message output'))
+		.flag('nointeraction', flag.boolean().env('VW_NOINTERACTION').describe('Do not prompt for interactive input'));
 }
 
 /** The policy follows one command execution, including raw writes outside DreamCLI. */
 export function outputIsQuiet(): boolean {
 	return policies.getStore()?.quiet ?? false;
 }
+export function outputIsResponse(): boolean {
+	return policies.getStore()?.response ?? false;
+}
 export function outputPolicyPlugin() {
 	return plugin({
 		beforeParse: ({ out }) => {
 			const policy = policies.getStore();
 			if (policy?.response) {
-				out.error = message => policy.writeJson({ success: false, message: responseError(message) }, false);
+				out.error = message => {
+					if (!policy.responseErrorWritten) {
+						policy.writeJson({ success: false, message: responseError(message) }, false);
+					}
+				};
 			}
 		},
 		beforeAction: ({ out, flags, command, args }) => {
 			const policy = policies.getStore();
 			if (policy) {
 				policy.quiet = command.name !== 'root' && out.verbosity === 'quiet';
+				policy.pretty = !!flags.pretty;
 				policy.commandName = command.name;
 				policy.args = args;
 				if (policy.response && command.name !== 'root') {
 					const writeResponse = (data: unknown) => policy.writeJson({ success: true, data }, !!flags.pretty);
-					out.error = message => policy.writeJson({ success: false, message: responseError(message) }, !!flags.pretty);
+					out.error = message => {
+						if (!policy.responseErrorWritten) {
+							policy.writeJson({ success: false, message: responseError(message) }, !!flags.pretty);
+						}
+					};
 					if (command.name !== 'sdk-version') {
 						out.log = value => writeResponse(responseMessage(command.name, args, flags, value));
 					}
@@ -53,26 +67,90 @@ function responseError(message: unknown): string {
 	return String(message).replace(/^Unexpected error: /, '');
 }
 
-function responseMessage(
+function organizationCollectionResponse(source: Record<string, unknown>): unknown {
+	const selections = (values: unknown) =>
+		Array.isArray(values)
+			? values.map(selection => {
+				const fields = selection && typeof selection === 'object' && !Array.isArray(selection)
+					? selection as Record<string, unknown>
+					: {};
+				return {
+					id: fields.id,
+					readOnly: fields.readOnly,
+					hidePasswords: fields.hidePasswords ?? false,
+					manage: fields.manage,
+				};
+			})
+			: values;
+	return {
+		object: 'org-collection',
+		id: source.id,
+		organizationId: source.organizationId,
+		name: source.name,
+		externalId: source.externalId,
+		groups: selections(source.groups),
+		users: selections(source.users),
+	};
+}
+
+export function responseMessage(
 	commandName: string,
 	args: Record<string, unknown>,
 	flags: Record<string, unknown>,
 	value: unknown,
 ): unknown {
+	const hasServerArgument = typeof args.url === 'string' && args.url.trim() !== '';
+	const configSetting = hasServerArgument
+		|| ['web-vault', 'api', 'identity', 'icons', 'notifications', 'events', 'key-connector'].some(key =>
+			flags[key] !== undefined
+		);
 	if (commandName === 'config') {
-		const setting = args.url !== undefined
-			|| ['web-vault', 'api', 'identity', 'icons', 'notifications', 'events', 'key-connector'].some(key =>
-				flags[key] !== undefined
-			);
-		if (setting) return { object: 'message', title: 'Saved setting `config`.', message: null, noColor: false };
+		if (configSetting) return { object: 'message', title: 'Saved setting `config`.', message: null, noColor: false };
 	}
-	if (commandName === 'generate' || typeof value === 'string') {
+	if (
+		commandName === 'generate'
+		|| commandName === 'encode'
+		|| (commandName === 'send' && !flags.fullObject)
+		|| (commandName === 'sync' && !!flags.last)
+		|| (commandName === 'config' && !configSetting)
+	) {
 		return { object: 'string', data: String(value) };
+	}
+	if (
+		commandName === 'export'
+		|| commandName === 'receive'
+		|| (commandName === 'get' && args.object === 'attachment')
+	) {
+		const path = String(value);
+		return { object: 'message', title: `Saved ${path}`, message: null, raw: path, noColor: false };
 	}
 	return { object: 'message', title: String(value), message: null, noColor: false };
 }
 
-function responseData(commandName: string, args: Record<string, unknown>, value: unknown): unknown {
+/** Route raw string results through the same response envelope as `out.log`. */
+export function writeResponseString(value: string): boolean {
+	const policy = policies.getStore();
+	if (!policy?.response) return false;
+	policy.writeJson({ success: true, data: { object: 'string', data: value } }, policy.pretty);
+	return true;
+}
+
+/** Emit the reference's successful no-data envelope; ordinary CLI mode stays silent. */
+export function outputSuccess(): void {
+	const policy = policies.getStore();
+	if (policy?.response) policy.writeJson({ success: true }, policy.pretty);
+}
+
+/** Emit a reference-compatible failure that carries useful machine-readable details. */
+export function outputResponseError(message: string, data?: unknown): boolean {
+	const policy = policies.getStore();
+	if (!policy?.response) return false;
+	policy.writeJson({ success: false, message, ...(data === undefined ? {} : { data }) }, policy.pretty);
+	policy.responseErrorWritten = true;
+	return true;
+}
+
+export function responseData(commandName: string, args: Record<string, unknown>, value: unknown): unknown {
 	if (commandName === 'status') {
 		const status = value && typeof value === 'object' ? value as Record<string, unknown> : {};
 		const template: Record<string, unknown> = {
@@ -81,6 +159,7 @@ function responseData(commandName: string, args: Record<string, unknown>, value:
 			status: status.status,
 		};
 		if (typeof status.userEmail === 'string') template.userEmail = status.userEmail;
+		if (typeof status.userId === 'string') template.userId = status.userId;
 		return { object: 'template', template };
 	}
 	if (commandName === 'get' && args.object === 'template') return { object: 'template', template: value };
@@ -89,6 +168,40 @@ function responseData(commandName: string, args: Record<string, unknown>, value:
 			? { object: 'send', ...value }
 			: value;
 		return { object: 'template', template };
+	}
+	if (
+		(commandName === 'create' || commandName === 'edit')
+		&& value && typeof value === 'object' && !Array.isArray(value)
+	) {
+		const source = value as Record<string, unknown>;
+		if (args.object === 'folder') return { object: 'folder', id: source.id, name: source.name };
+		if (args.object === 'org-collection') return organizationCollectionResponse(source);
+	}
+	if (commandName === 'get' && value && typeof value === 'object' && !Array.isArray(value)) {
+		const source = value as Record<string, unknown>;
+		if (args.object === 'folder') return { object: 'folder', id: source.id, name: source.name };
+		if (args.object === 'collection') {
+			return {
+				object: 'collection',
+				id: source.id,
+				organizationId: source.organizationId,
+				name: source.name,
+				externalId: source.externalId,
+			};
+		}
+		if (args.object === 'organization') {
+			return {
+				object: 'organization',
+				id: source.id,
+				name: source.name,
+				status: source.status,
+				type: source.type,
+				enabled: source.enabled,
+			};
+		}
+		if (args.object === 'org-collection') {
+			return organizationCollectionResponse(source);
+		}
 	}
 	if (commandName === 'get' && typeof value === 'string') return { object: 'string', data: value };
 	if (Array.isArray(value)) {
@@ -99,17 +212,49 @@ function responseData(commandName: string, args: Record<string, unknown>, value:
 				collections: 'collection',
 				organizations: 'organization',
 				'org-collections': 'collection',
-				'org-members': 'organizationUser',
+				'org-members': 'org-member',
 			} as Record<string, string>)[String(args.object)]
 			: undefined;
 		return {
 			object: 'list',
 			data: itemObject
-				? value.map(item =>
-					item && typeof item === 'object' && !Array.isArray(item) && !('object' in item)
-						? { object: itemObject, ...item }
-						: item
-				)
+				? value.map(item => {
+					if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
+					const source = item as Record<string, unknown>;
+					if (itemObject === 'folder') return { object: itemObject, id: source.id, name: source.name };
+					if (itemObject === 'collection') {
+						return {
+							object: itemObject,
+							id: source.id,
+							organizationId: source.organizationId,
+							name: source.name,
+							externalId: source.externalId,
+						};
+					}
+					if (itemObject === 'org-member' || itemObject === 'organization') {
+						if (itemObject === 'organization') {
+							return {
+								object: itemObject,
+								id: source.id,
+								name: source.name,
+								status: source.status,
+								type: source.type,
+								enabled: source.enabled,
+							};
+						}
+						return {
+							object: itemObject,
+							id: source.id,
+							email: source.email,
+							name: source.name,
+							status: source.status,
+							type: source.type,
+							twoFactorEnabled: source.twoFactorEnabled,
+						};
+					}
+					if ('object' in source) return source;
+					return { object: itemObject, ...item };
+				})
 				: value,
 		};
 	}
@@ -126,6 +271,7 @@ export function withOutputPolicy<T>(
 	const policy = {
 		quiet: false,
 		response,
+		pretty: false,
 		writeJson: (value: unknown, pretty = true) => {
 			if (!policy.quiet) adapter.stdout(JSON.stringify(value, null, pretty ? 2 : undefined) + '\n');
 		},

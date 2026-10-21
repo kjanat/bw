@@ -8,18 +8,8 @@ function dates(value: JsonObject, names: readonly string[]): void {
 		if (typeof value[name] === 'string') value[name] = new Date(value[name]).toISOString();
 	}
 }
-/** Match the CLI response models, rather than returning server wire metadata. */
-export function localApiObject(kind: string, value: JsonObject): JsonObject {
-	if (kind === 'folder') return { object: kind, ...pick(value, ['id', 'name']) };
-	if (kind === 'organization') return { object: kind, ...pick(value, ['id', 'name', 'status', 'type', 'enabled']) };
-	if (kind === 'org-member') {
-		return { object: kind, ...pick(value, ['id', 'email', 'name', 'status', 'type', 'twoFactorEnabled']) };
-	}
-	if (kind !== 'item') {
-		const result: JsonObject = { ...value, object: kind };
-		if (kind !== 'send') delete result.key;
-		return result;
-	}
+/** Project a decrypted item into the CLI response shape and enforce password visibility. */
+export function vaultItemResponse(value: JsonObject): JsonObject {
 	const result: JsonObject = {
 		object: 'item',
 		id: value.id ?? '',
@@ -47,6 +37,12 @@ export function localApiObject(kind: string, value: JsonObject): JsonObject {
 		? 'identity'
 		: value.type === 5
 		? 'sshKey'
+		: value.type === 6
+		? 'bankAccount'
+		: value.type === 7
+		? 'driversLicense'
+		: value.type === 8
+		? 'passport'
 		: undefined;
 	if (section && value[section] != null) {
 		const data = object(value[section]);
@@ -89,5 +85,18 @@ export function localApiObject(kind: string, value: JsonObject): JsonObject {
 			});
 		}
 	}
+	return result;
+}
+
+/** Build other list response models while sharing the CLI item serializer. */
+export function localApiObject(kind: string, value: JsonObject): JsonObject {
+	if (kind === 'folder') return { object: kind, ...pick(value, ['id', 'name']) };
+	if (kind === 'organization') return { object: kind, ...pick(value, ['id', 'name', 'status', 'type', 'enabled']) };
+	if (kind === 'org-member') {
+		return { object: kind, ...pick(value, ['id', 'email', 'name', 'status', 'type', 'twoFactorEnabled']) };
+	}
+	if (kind === 'item') return vaultItemResponse(value);
+	const result: JsonObject = { ...value, object: kind };
+	if (kind !== 'send') delete result.key;
 	return result;
 }

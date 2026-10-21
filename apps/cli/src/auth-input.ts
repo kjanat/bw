@@ -1,7 +1,9 @@
 import { readFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
 import { type ResolvedPromptConfig } from '@kjanat/dreamcli/prompt';
 import { cliPromptSession, secretPrompt } from '#prompts';
 import type { LoginChallenge, TwoFactorAnswer } from '@kjanat/vaultwarden';
+import { createWebAuthnToken, type VaultwardenWebAuthnOptions } from '#webauthn';
 
 async function terminalPrompt(config: ResolvedPromptConfig): Promise<unknown> {
 	return cliPromptSession().ask(config);
@@ -9,6 +11,56 @@ async function terminalPrompt(config: ResolvedPromptConfig): Promise<unknown> {
 async function inputPrompt(message: string): Promise<string | undefined> {
 	const value = await terminalPrompt({ kind: 'input', message });
 	return value === undefined ? undefined : String(value);
+}
+function openBrowser(url: string): void {
+	const [binary, args] = process.platform === 'win32'
+		? ['rundll32', ['url.dll,FileProtocolHandler', url]] as const
+		: process.platform === 'darwin'
+		? ['open', [url]] as const
+		: ['xdg-open', [url]] as const;
+	const child = spawn(binary, [...args], { stdio: 'ignore', detached: true });
+	child.on('error', () => {/* The URL remains available in the terminal for manual opening. */});
+	child.unref();
+}
+function duoAuthorizationUrl(value: string): URL {
+	const url = new URL(value);
+	if (
+		url.protocol !== 'https:' || url.username || url.password || (url.port && url.port !== '443')
+		|| url.pathname !== '/oauth/v1/authorize'
+		|| !/^api-[a-zA-Z0-9]+\.(?:duosecurity|duofederal)\.com$/.test(url.hostname)
+	) throw new Error('Vaultwarden returned an invalid Duo authorization URL.');
+	return url;
+}
+/** Extract the one-time Duo code/state from the Vaultwarden redirect without accepting another origin. */
+export function duoCallbackToken(input: string, authorizationUrl: string): string {
+	const authorization = duoAuthorizationUrl(authorizationUrl);
+	const request = authorization.searchParams.get('request');
+	const encodedClaims = request?.split('.')[1];
+	if (!encodedClaims || encodedClaims.length > 16_384) throw new Error('Duo authorization request is invalid.');
+	let redirectUri: URL;
+	try {
+		const claims = JSON.parse(Buffer.from(encodedClaims, 'base64url').toString('utf8')) as { redirect_uri?: unknown };
+		if (typeof claims.redirect_uri !== 'string') throw new Error();
+		redirectUri = new URL(claims.redirect_uri);
+	} catch {
+		throw new Error('Duo authorization request is invalid.');
+	}
+	let callback: URL;
+	try {
+		callback = new URL(input.trim());
+	} catch {
+		throw new Error('Paste the complete Vaultwarden Duo callback URL.');
+	}
+	if (
+		callback.origin !== redirectUri.origin || callback.pathname !== redirectUri.pathname
+		|| callback.searchParams.get('client') !== redirectUri.searchParams.get('client')
+	) throw new Error('Duo callback URL does not match this Vaultwarden login.');
+	const code = callback.searchParams.get('code');
+	const state = callback.searchParams.get('state');
+	if (!code || !state || code.length > 4096 || state.length > 4096) {
+		throw new Error('Duo callback URL is missing its authorization code or state.');
+	}
+	return `${code}|${state}`;
 }
 export async function answerLoginChallenge(
 	challenge: LoginChallenge,
@@ -18,8 +70,18 @@ export async function answerLoginChallenge(
 	if (noInteraction || !process.stdin.isTTY) {
 		throw new Error('Two-factor authentication is required. Supply --method and --code (or VW_2FA_TOKEN).');
 	}
-	const names: Record<number, string> = { 0: 'Authenticator (TOTP)', 1: 'Email code', 3: 'YubiKey OTP' };
-	const supported = challenge.providers.filter(provider => names[provider]);
+	const names: Record<number, string> = {
+		0: 'Authenticator (TOTP)',
+		1: 'Email code',
+		2: 'Duo (browser)',
+		3: 'YubiKey OTP',
+		7: 'Security key (WebAuthn)',
+	};
+	const supported = challenge.providers.filter(provider =>
+		names[provider]
+		&& (provider !== 2 || challenge.duoAuthUrl)
+		&& (provider !== 7 || (challenge.webAuthnOptions && challenge.webAuthnOrigin))
+	);
 	let provider = preferred;
 	if (provider === undefined) {
 		if (supported.length === 1) provider = supported[0];
@@ -35,10 +97,30 @@ export async function answerLoginChallenge(
 		}
 	}
 	if (provider === undefined || !supported.includes(provider)) {
-		throw new Error('No supported two-factor method selected. Supported methods: TOTP, email, and YubiKey OTP.');
+		throw new Error(
+			'No supported two-factor method selected. Supported methods: TOTP, email, Duo, YubiKey OTP, and WebAuthn.',
+		);
 	}
 	if (provider === 1) await challenge.requestEmail();
-	const token = await secretPrompt('Verification code:');
+	let token: string;
+	if (provider === 2) {
+		const authorizationUrl = duoAuthorizationUrl(challenge.duoAuthUrl!);
+		process.stderr.write('Complete Duo authentication in your browser, then paste the Vaultwarden callback URL.\n');
+		openBrowser(authorizationUrl.href);
+		const callback = await secretPrompt('Duo callback URL:');
+		if (!callback) throw new Error('A Duo callback URL is required.');
+		token = duoCallbackToken(callback, authorizationUrl.href);
+	} else if (provider === 7) {
+		process.stderr.write(
+			'Use your registered FIDO2 security key when prompted. A PIN may be requested by the system helper.\n',
+		);
+		token = await createWebAuthnToken(
+			challenge.webAuthnOptions as unknown as VaultwardenWebAuthnOptions,
+			challenge.webAuthnOrigin!,
+		);
+	} else {
+		token = await secretPrompt('Verification code:');
+	}
 	if (!token) throw new Error('A verification code is required.');
 	return { provider, token };
 }

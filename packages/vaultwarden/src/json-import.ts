@@ -25,18 +25,21 @@ const present = (value: unknown): string | null => {
 	if (typeof value === 'number' && Number.isFinite(value)) return String(value);
 	return null;
 };
-function brand(number: string | null): string | null {
-	if (!number) return null;
-	const value = number.replace(/\s/g, '');
-	if (/^4/.test(value)) return 'Visa';
-	if (/^5[1-5]/.test(value) || (Number(value.slice(0, 4)) >= 2221 && Number(value.slice(0, 4)) <= 2720)) {
+export function bwCardBrand(number: string | null): string | null {
+	if (number == null || number.trim() === '') return null;
+	if (/^4/.test(number)) return 'Visa';
+	if (
+		/^(5[1-5][0-9]{14}|2(22[1-9][0-9]{12}|2[3-9][0-9]{13}|[3-6][0-9]{14}|7[0-1][0-9]{13}|720[0-9]{12}))$/.test(number)
+	) {
 		return 'Mastercard';
 	}
-	if (/^3[47]/.test(value)) return 'Amex';
-	if (/^6(?:011|5|4[4-9])/.test(value)) return 'Discover';
-	if (/^35/.test(value)) return 'JCB';
-	if (/^3(?:0[0-5]|[68])/.test(value)) return 'Diners Club';
-	if (/^62/.test(value)) return 'UnionPay';
+	if (/^3[47]/.test(number)) return 'Amex';
+	if (/^(6011|622(12[6-9]|1[3-9][0-9]|[2-8][0-9]{2}|9[0-1][0-9]|92[0-5]|64[4-9])|65)/.test(number)) {
+		return 'Discover';
+	}
+	if (/^36/.test(number) || /^30[0-5]/.test(number)) return 'Diners Club';
+	if (/^35(2[89]|[3-8][0-9])/.test(number)) return 'JCB';
+	if (/^(4026|417500|4508|4844|491(3|7))/.test(number)) return 'Visa';
 	return null;
 }
 function item(name?: unknown): VaultItem {
@@ -186,7 +189,7 @@ function parseEnpassJson(source: string): JsonObject {
 					if (field.type === 'ccName' && !card.cardholderName) card.cardholderName = value;
 					else if (field.type === 'ccNumber' && !card.number) {
 						card.number = value;
-						card.brand = brand(value);
+						card.brand = bwCardBrand(value);
 					} else if (field.type === 'ccCvc' && !card.code) card.code = value;
 					else if (field.type === 'ccExpiry' && !card.expYear) {
 						const expiry = enpassCardExpiry(value);
@@ -510,7 +513,7 @@ function parseKeeperJson(source: string, organization: boolean): JsonObject {
 				cardholderName: take('$text:cardholderName') || null,
 				number: number || null,
 				code: take('$paymentCard/cardSecurityCode') || null,
-				brand: brand(number || null),
+				brand: bwCardBrand(number || null),
 			};
 			const expiration = take('$paymentCard/cardExpirationDate').split('/');
 			if (expiration.length === 2) Object.assign(result.card, { expMonth: expiration[0], expYear: expiration[1] });
@@ -758,7 +761,7 @@ function parseDashlaneJson(source: string): JsonObject {
 		for (const entry of rows(key)) addNote(entry, name);
 	}
 	for (const card of rows('PAYMENTMEANS_CREDITCARD')) {
-		const number = present(card.cardNumber), brandName = brand(number), bank = present(card.bank);
+		const number = present(card.cardNumber), brandName = bwCardBrand(number), bank = present(card.bank);
 		const result = item(bank ? `${bank}${brandName ? ` - ${brandName}` : ''}` : brandName);
 		result.type = 3;
 		delete result.login;
@@ -803,6 +806,7 @@ function parsePasswordBossJson(source: string, organization: boolean): JsonObjec
 		throw new Error('Invalid Password Boss JSON.');
 	}
 	const items: VaultItem[] = [], folders: JsonObject[] = [], folderIds = new Map<string, string>();
+	const legacyFolderNames = new Map<string, string>();
 	const addField = (target: VaultItem, name: string, rawValue: unknown, type = 0): void => {
 		if (rawValue == null || !String(rawValue).trim()) return;
 		const value = typeof rawValue === 'string' ? rawValue : String(rawValue);
@@ -841,25 +845,29 @@ function parsePasswordBossJson(source: string, organization: boolean): JsonObjec
 		if (!identifiers) return;
 		const isCard = legacy ? record.type === 'CreditCard' : record.itemTypeName === 'CreditCard';
 		const result = item(record.name);
+		let legacyUriKey: string | null = null;
 		result.notes = present(legacy ? identifiers.notes : record.notes);
-		addFolder(
-			legacy && typeof record.folder === 'string'
-				? (folders.find(folder => folder.id === record.folder)?.name ?? null)
-				: record.folder,
-			result,
-		);
+		if (legacy) {
+			if (typeof record.folder === 'string' && legacyFolderNames.has(record.folder)) {
+				if (organization) result.collectionIds = [record.folder];
+				else result.folderId = record.folder;
+			}
+		} else addFolder(record.folder, result);
 		if (isCard) {
 			result.type = 3;
 			delete result.login;
 			const number = present(identifiers.cardNumber);
-			result.card = { number, brand: brand(number) };
+			result.card = { number, brand: bwCardBrand(number) };
 			if (legacy) {
 				result.card.cardholderName = present(identifiers.nameOnCard);
 				result.card.code = present(identifiers.security_code);
 				const expiration = present(identifiers.expires);
 				if (expiration) {
 					const date = new Date(expiration);
-					if (!Number.isNaN(date.getTime())) {
+					if (legacy) {
+						result.card.expYear = String(date.getFullYear());
+						result.card.expMonth = String(date.getMonth() + 1);
+					} else if (!Number.isNaN(date.getTime())) {
 						result.card.expYear = String(date.getUTCFullYear());
 						result.card.expMonth = String(date.getUTCMonth() + 1);
 					}
@@ -884,8 +892,7 @@ function parsePasswordBossJson(source: string, organization: boolean): JsonObjec
 				) addField(result, key, value, type);
 			}
 		} else {
-			const username = present(identifiers.username) ?? present(identifiers.email);
-			result.login!.username = username;
+			result.login!.username = legacy ? null : present(identifiers.username) ?? present(identifiers.email);
 			result.login!.password = present(identifiers.password);
 			result.login!.totp = present(identifiers.totp);
 			result.login!.uris = uris(
@@ -915,16 +922,16 @@ function parsePasswordBossJson(source: string, organization: boolean): JsonObjec
 					'ort',
 					'adresse',
 				]);
-				const alternate = Object.entries(identifiers).find(([key, value]) =>
-					uriNames.has(key.toLowerCase()) && present(value)
-				);
-				if (alternate) result.login!.uris = uris(present(alternate[1]) ?? undefined);
+				const alternate = Object.entries(identifiers).find(([key, value]) => uriNames.has(key) && present(value));
+				if (alternate) {
+					legacyUriKey = alternate[0];
+					result.login!.uris = uris(present(alternate[1]) ?? undefined);
+				}
 			}
-			if (legacy && !present(identifiers.username)) result.login!.username = present(identifiers.email);
 		}
 		const customKey = legacy ? 'custom_fields' : 'customFields';
 		const customFields = identifiers[customKey];
-		if (customFields != null) {
+		if (!legacy && customFields != null) {
 			if (!Array.isArray(customFields)) throw new Error('Invalid Password Boss JSON custom fields.');
 			for (const field of customFields) {
 				if (!field || typeof field !== 'object' || Array.isArray(field)) {
@@ -941,11 +948,29 @@ function parsePasswordBossJson(source: string, organization: boolean): JsonObjec
 				: '';
 			result.notes = present(normalizedNotes);
 			for (const [key, value] of Object.entries(identifiers)) {
-				if (['notes', 'ignoreItemInSecurityScore', customKey].includes(key) || value == null || !String(value).trim()) {
+				if (key === customKey) {
+					if (value == null) continue;
+					if (!Array.isArray(value)) throw new Error('Invalid Password Boss JSON custom fields.');
+					for (const field of value) {
+						if (!field || typeof field !== 'object' || Array.isArray(field)) {
+							throw new Error('Invalid Password Boss JSON custom field.');
+						}
+						const entry = field as Record<string, unknown>;
+						addField(result, present(entry.name) ?? '', entry.value);
+					}
+					continue;
+				}
+				if (['notes', 'ignoreItemInSecurityScore'].includes(key) || value == null || !String(value).trim()) {
 					continue;
 				}
 				if (isCard && ['cardNumber', 'nameOnCard', 'security_code', 'expires', 'cardType'].includes(key)) continue;
-				if (!isCard && ['username', 'email', 'password', 'totp'].includes(key)) continue;
+				if (!isCard && ['password', 'totp'].includes(key)) continue;
+				if (!isCard && ['username', 'email'].includes(key)) {
+					if (!present(result.login!.username)) result.login!.username = String(value);
+					else addField(result, key, value);
+					continue;
+				}
+				if (!isCard && key === legacyUriKey) continue;
 				addField(result, key, value);
 			}
 		} else {
@@ -1034,16 +1059,10 @@ function parsePasswordBossJson(source: string, organization: boolean): JsonObjec
 				}
 				const value = folder as Record<string, unknown>;
 				const id = present(value.id), name = present(value.name);
-				if (id && name) {
-					folderIds.set(id, name);
-					const currentId = folderIds.get(name);
-					if (!currentId) {
-						folderIds.set(name, id);
-						folders.push({ id, name });
-					}
-				}
+				if (id && name) legacyFolderNames.set(id, name);
 			}
 		}
+		for (const [id, name] of legacyFolderNames) folders.push({ id, name });
 		for (const record of document.items) process(record, true);
 	} else throw new Error('Invalid Password Boss JSON.');
 	return { encrypted: false, items, [organization ? 'collections' : 'folders']: folders };
@@ -1337,7 +1356,7 @@ function parseProtonPassJson(source: string, organization: boolean): JsonObject 
 				result.card = {
 					cardholderName: present(content.cardholderName),
 					number: present(content.number),
-					brand: brand(present(content.number)),
+					brand: bwCardBrand(present(content.number)),
 					code: present(content.verificationNumber),
 					expMonth: expiry ? expiry.substring(5, 7).replace(/^0+/, '') : null,
 					expYear: expiry ? expiry.substring(0, 4) : null,
@@ -1487,7 +1506,7 @@ function parseFSecureFsk(source: string): JsonObject {
 			result.card = {
 				cardholderName: present(entry.username),
 				number,
-				brand: brand(number),
+				brand: bwCardBrand(number),
 				code: present(entry.creditCvv),
 				expMonth: null,
 				expYear: null,
@@ -1556,7 +1575,7 @@ export function parseExternalJson(format: ExternalJsonFormat, source: string, or
 			cardholderName: present(value.holderName),
 			number,
 			code: present(value.cvv),
-			brand: brand(number),
+			brand: bwCardBrand(number),
 		};
 		if (value.expirationDate && typeof value.expirationDate === 'object' && !Array.isArray(value.expirationDate)) {
 			const expiration = value.expirationDate as Record<string, unknown>;

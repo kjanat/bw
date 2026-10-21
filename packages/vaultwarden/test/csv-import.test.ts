@@ -1691,6 +1691,25 @@ test('LastPass form-fill identities can retain an accompanying card', () => {
 	expect(items(document)[0]).toMatchObject({ type: 3, card: { brand: 'Visa', expMonth: '6', expYear: '2030' } });
 	expect(items(document)[1]).toMatchObject({ type: 4, identity: { firstName: 'Alice', lastName: 'Example' } });
 });
+test('LastPass HTML exports extract CSV from preformatted text and decode entities', () => {
+	const document = parseExternalCsv(
+		'lastpasscsv',
+		'<!doctype html><html><body><pre>url,username,password,extra,name,grouping,fav\nhttps://example.com,alice,secret,&lt;notes&gt;,Tea &amp; Coffee,Personal,1</pre></body></html>',
+	);
+	expect(items(document)).toMatchObject([
+		{
+			name: 'Tea & Coffee',
+			favorite: true,
+			notes: '<notes>',
+			login: { username: 'alice', password: 'secret', uris: [{ uri: 'https://example.com' }] },
+		},
+	]);
+	expect(document.folders).toMatchObject([{ name: 'Personal' }]);
+});
+test('LastPass HTML exports without a preformatted CSV block are rejected', () => {
+	expect(() => parseExternalCsv('lastpasscsv', '<html><body>no export</body></html>'))
+		.toThrow('LastPass HTML export is missing its CSV data.');
+});
 test('external imports reject malformed headers and rows before sending data', async () => {
 	let calls = 0;
 	const client = new VaultwardenClient('https://example.com', {

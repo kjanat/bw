@@ -274,27 +274,26 @@ export function parseOnePassword1Pux(input: string | Uint8Array, organization = 
 		}
 		return ids.get(name)!;
 	};
-	for (const account of document.accounts.map(record)) {
-		for (const vault of array(account.vaults).map(record)) {
-			for (const source of array(vault.items)) {
-				try {
-					const { item, tag } = parseItem(record(source));
-					const id = tag != null ? folder(tag) : null;
-					if (tag) {
-						for (let end = tag.lastIndexOf('/'); end > 0; end = tag.lastIndexOf('/', end - 1)) {
-							folder(tag.slice(0, end));
-						}
+	const firstAccount = record(document.accounts[0]);
+	for (const vault of array(firstAccount.vaults).map(record)) {
+		for (const source of array(vault.items)) {
+			try {
+				const { item, tag } = parseItem(record(source));
+				const id = tag != null ? folder(tag) : null;
+				if (tag) {
+					for (let end = tag.lastIndexOf('/'); end > 0; end = tag.lastIndexOf('/', end - 1)) {
+						folder(tag.slice(0, end));
 					}
-					item.folderId = organization ? null : id;
-					item.collectionIds = organization && id ? [id] : [];
-					items.push(item);
-				} catch (error) {
-					const uuid = source && typeof source === 'object' ? (source as JsonObject).uuid : null;
-					errors.push({
-						id: typeof uuid === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(uuid) ? uuid : '',
-						reason: error instanceof SshImportError ? error.reason : 'error',
-					});
 				}
+				item.folderId = organization ? null : id;
+				item.collectionIds = organization && id ? [id] : [];
+				items.push(item);
+			} catch (error) {
+				const uuid = source && typeof source === 'object' ? (source as JsonObject).uuid : null;
+				errors.push({
+					id: typeof uuid === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(uuid) ? uuid : '',
+					reason: error instanceof SshImportError ? error.reason : 'error',
+				});
 			}
 		}
 	}

@@ -27,21 +27,22 @@
 		"test": "bun test"
 	},
 	"dependencies": {
-		"@noble/hashes": "2.4.0",
-		"@xmldom/xmldom": "0.9.12",
-		"fflate": "0.8.3",
-		"kdbxweb": "2.1.1",
-		"tldts": "7.4.19",
-		"zxcvbn": "4.4.2"
+		"@noble/hashes": "catalog:",
+		"@xmldom/xmldom": "catalog:",
+		"fflate": "catalog:",
+		"kdbxweb": "catalog:",
+		"parse5": "catalog:",
+		"tldts": "catalog:",
+		"zxcvbn": "catalog:"
 	},
 	"devDependencies": {
-		"@babel/eslint-parser": "8.0.1",
-		"@babel/preset-typescript": "8.0.1",
-		"@eslint/js": "10.0.1",
-		"@types/bun": "latest",
-		"@types/zxcvbn": "4.4.5",
+		"@babel/eslint-parser": "catalog:",
+		"@babel/preset-typescript": "catalog:",
+		"@eslint/js": "catalog:",
+		"@types/bun": "catalog:",
+		"@types/zxcvbn": "catalog:",
 		"@vw/typescript-config": "workspace:*",
-		"eslint": "10.9.1",
-		"typescript": "7.0.2"
+		"eslint": "catalog:",
+		"typescript": "catalog:"
 	}
 }

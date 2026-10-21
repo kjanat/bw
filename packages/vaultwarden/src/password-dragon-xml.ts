@@ -34,18 +34,20 @@ export function parsePasswordDragonXml(source: string, organization = false): Js
 		throw new Error('Invalid Password Dragon XML.', { cause: error });
 	}
 	if (!root) throw new Error('Invalid Password Dragon XML.');
-	const find = (element: Element, tag: string): Element | undefined => {
-		if (element.tagName === tag) return element;
+	const records: Element[] = [];
+	let hasManager = false;
+	const collectRecords = (element: Element): void => {
+		if (element.tagName === 'PasswordManager') hasManager = true;
 		for (let index = 0; index < element.childNodes.length; index++) {
 			const node = element.childNodes.item(index);
 			if (node?.nodeType !== 1) continue;
-			const match = find(node as Element, tag);
-			if (match) return match;
+			const childElement = node as Element;
+			if (element.tagName === 'PasswordManager' && childElement.tagName === 'record') records.push(childElement);
+			collectRecords(childElement);
 		}
-		return undefined;
 	};
-	const manager = find(root, 'PasswordManager');
-	if (!manager) throw new Error('Missing PasswordManager root node.');
+	collectRecords(root);
+	if (!hasManager) throw new Error('Missing PasswordManager root node.');
 	const folders: JsonObject[] = [], folderIds = new Map<string, string>(), items: VaultItem[] = [];
 	const addFolder = (raw: string, result: VaultItem): void => {
 		const name = raw.replace(/\\/g, '/').replace(/^\/+/, ''), id = folderIds.get(name) ?? randomUUID();
@@ -66,9 +68,10 @@ export function parsePasswordDragonXml(source: string, organization = false): Js
 		if (organization) result.collectionIds = [id];
 		else result.folderId = id;
 	};
-	for (const record of children(manager, 'record')) {
+	for (const record of records) {
 		const category = content(child(record, 'Category'));
-		const name = content(child(record, 'Account-Name')) || '--';
+		const accountName = content(child(record, 'Account-Name'));
+		const name = accountName.trim() ? accountName : '--';
 		const notes = content(child(record, 'Notes'));
 		const result: VaultItem = {
 			type: 1,
@@ -81,7 +84,7 @@ export function parsePasswordDragonXml(source: string, organization = false): Js
 				username: content(child(record, 'User-Id')).trim() ? content(child(record, 'User-Id')) : null,
 				password: content(child(record, 'Password')).trim() ? content(child(record, 'Password')) : null,
 				totp: null,
-				uris: [],
+				uris: null,
 			},
 		};
 		const url = content(child(record, 'URL'));
@@ -91,8 +94,15 @@ export function parsePasswordDragonXml(source: string, organization = false): Js
 			result.login!.uris = [{ uri: uri.slice(0, 1000), match: null }];
 		}
 		if (category.trim() && category !== 'Unfiled') addFolder(category, result);
-		for (let index = 1; index <= 10; index++) {
-			const key = `Attribute-${index}`, value = content(child(record, key));
+		const attributes: Element[] = [];
+		for (let index = 0; index < record.childNodes.length; index++) {
+			const node = record.childNodes.item(index);
+			if (node?.nodeType === 1 && /^Attribute-(?:[1-9]|10)$/.test((node as Element).tagName)) {
+				attributes.push(node as Element);
+			}
+		}
+		for (const attribute of attributes) {
+			const key = attribute.tagName, value = content(attribute);
 			if (!value.trim() || value === 'null') continue;
 			if (value.length > 200 || /[\r\n]/.test(value.trim())) {
 				result.notes = `${result.notes ?? ''}${key}: ${value.replace(/\r\n|\r/g, '\n')}\n`;

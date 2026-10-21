@@ -15,6 +15,9 @@ export interface VaultItem extends JsonObject {
 	card?: JsonObject | null;
 	identity?: JsonObject | null;
 	sshKey?: JsonObject | null;
+	bankAccount?: JsonObject | null;
+	driversLicense?: JsonObject | null;
+	passport?: JsonObject | null;
 	fields?: JsonObject[] | null;
 	passwordHistory?: JsonObject[] | null;
 	revisionDate?: string;

@@ -142,7 +142,14 @@ test('2FA errors expose provider IDs without echoing server error bodies', async
 	const api = new VaultwardenClient('https://example.com', {
 		fetch: transport(() =>
 			json(
-				{ TwoFactorProviders: [0, 1], error_description: 'sensitive response' },
+				{
+					TwoFactorProviders: [0, 1, 2, 7],
+					TwoFactorProviders2: {
+						'2': { AuthUrl: 'https://api-test.duosecurity.com/oauth/v1/authorize?request=token' },
+						'7': { challenge: 'cG93ZXJmdWw', rpId: 'example.com', allowCredentials: [] },
+					},
+					error_description: 'sensitive response',
+				},
 				400,
 			)
 		),
@@ -152,7 +159,15 @@ test('2FA errors expose provider IDs without echoing server error bodies', async
 		throw new Error('expected failure');
 	} catch (error) {
 		expect(error).toBeInstanceOf(ApiError);
-		expect((error as ApiError).twoFactorProviders).toEqual([0, 1]);
+		expect((error as ApiError).twoFactorProviders).toEqual([0, 1, 2, 7]);
+		expect((error as ApiError).twoFactorProviderData[2]).toEqual({
+			AuthUrl: 'https://api-test.duosecurity.com/oauth/v1/authorize?request=token',
+		});
+		expect((error as ApiError).twoFactorProviderData[7]).toEqual({
+			challenge: 'cG93ZXJmdWw',
+			rpId: 'example.com',
+			allowCredentials: [],
+		});
 		expect(String(error)).not.toContain('sensitive');
 	}
 });

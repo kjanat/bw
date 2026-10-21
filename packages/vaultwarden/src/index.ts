@@ -18,6 +18,7 @@ export * from '#search';
 export * from '#uri-match';
 export { encryptItem, validUriChecksum } from '#item-codec';
 export * from '#local-api';
+export { vaultItemResponse } from '#local-api-models';
 export { parseExternalCsv, externalCsvFormats, type ExternalCsvFormat } from '#csv-import';
 export { parseExternalJson, externalJsonFormats, type ExternalJsonFormat } from '#json-import';
 export { parseKasperskyTxt } from '#text-import';

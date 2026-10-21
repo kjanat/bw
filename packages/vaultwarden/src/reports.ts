@@ -82,7 +82,7 @@ export class PasswordExposureClient {
 				await response.body?.cancel();
 				throw new Error('Password exposure response exceeds the size limit.');
 			}
-			if (!response.body) throw new Error('Invalid password exposure response.');
+			if (!response.body) return 0;
 			const reader = response.body.getReader();
 			let size = 0;
 			const chunks: Uint8Array[] = [];
@@ -102,20 +102,7 @@ export class PasswordExposureClient {
 			} finally {
 				reader.releaseLock();
 			}
-			const source = Buffer.concat(chunks, size).toString('utf8');
-			let found = 0;
-			let rows = 0;
-			for (const row of source.split(/\r?\n/)) {
-				if (!row.trim()) continue;
-				const match = /^([A-Fa-f0-9]{35}):([0-9]+)$/.exec(row.trim());
-				if (!match) throw new Error('Invalid password exposure response.');
-				const count = Number(match[2]);
-				if (!Number.isSafeInteger(count) || count > 4294967295) throw new Error('Invalid password exposure response.');
-				rows++;
-				if (match[1]!.toUpperCase() === suffix) found = count;
-			}
-			if (!rows) throw new Error('Invalid password exposure response.');
-			return found;
+			return exposureCount(Buffer.concat(chunks, size).toString('utf8'), suffix);
 		} finally {
 			this.release();
 		}
@@ -136,6 +123,23 @@ export interface PasswordHealthOptions {
 	/** Defaults to true, like bw report password-health. Set false for an entirely offline report. */
 	checkExposed?: boolean;
 	exposure?: PasswordExposureClient;
+	/** Called after eligible logins are selected and before any exposure requests begin. */
+	onStart?: (loginCount: number) => void;
+}
+
+/** Match the pinned SDK: ignore unrelated rows and treat missing or invalid counts as zero. */
+function exposureCount(source: string, suffix: string): number {
+	for (const row of source.split(/\r?\n/)) {
+		const separator = row.indexOf(':');
+		if (separator < 0 || row.slice(0, separator).toUpperCase() !== suffix) continue;
+		const rawCount = row.slice(separator + 1).trim();
+		if (!/^\+?\d+$/.test(rawCount)) return 0;
+		const significant = (rawCount.startsWith('+') ? rawCount.slice(1) : rawCount).replace(/^0+/, '') || '0';
+		if (significant.length > 10) return 0;
+		const count = Number(significant);
+		return count <= 0xffff_ffff ? count : 0;
+	}
+	return 0;
 }
 /** Decrypted items are input only; result rows never include passwords, usernames, or hashes. */
 export async function passwordHealth(
@@ -145,6 +149,7 @@ export async function passwordHealth(
 	const logins = items.filter(item =>
 		item.type === 1 && !item.deletedDate && typeof item.login?.password === 'string' && item.login.password !== ''
 	);
+	options.onStart?.(logins.length);
 	const reuse = new Map<string, number>();
 	for (const item of logins) {
 		const password = text(object(item.login).password);
@@ -178,8 +183,10 @@ export async function passwordHealth(
 					const found = await request;
 					row.exposed = found > 0;
 					row.exposedCount = found > 0 ? found : null;
-				} catch {
-					row.exposedError = 'Password exposure check failed.';
+				} catch (error) {
+					// PasswordExposureClient maps transport and response failures to bounded,
+					// non-body-bearing messages. Preserve them like bw's SDK response does.
+					row.exposedError = error instanceof Error ? error.message : 'Password exposure check failed.';
 				}
 			}
 			return row;

@@ -2,7 +2,7 @@ import { test, expect } from 'bun:test';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { masterPassword, apiCredentials, loginEmail, answerLoginChallenge } from '#auth-input';
+import { masterPassword, apiCredentials, loginEmail, answerLoginChallenge, duoCallbackToken } from '#auth-input';
 
 test('master-password sources follow bw precedence and read only a file first line', async () => {
 	const dir = await mkdtemp(join(tmpdir(), 'vw-auth-input-'));
@@ -48,4 +48,20 @@ test('noninteractive challenges never send email or prompt for a code', async ()
 	))
 		.rejects.toThrow('Supply --method and --code');
 	expect(requests).toBe(0);
+});
+test('Duo callback extraction binds the browser redirect to Vaultwarden’s signed request redirect', () => {
+	const redirectUri = 'https://vault.example/duo-redirect-connector.html?client=cli';
+	const request = `header.${
+		Buffer.from(JSON.stringify({ redirect_uri: redirectUri })).toString('base64url')
+	}.signature`;
+	const authorizationUrl = `https://api-example.duosecurity.com/oauth/v1/authorize?request=${
+		encodeURIComponent(request)
+	}`;
+	expect(duoCallbackToken(`${redirectUri}&code=auth-code&state=login-state`, authorizationUrl)).toBe(
+		'auth-code|login-state',
+	);
+	expect(() => duoCallbackToken('https://attacker.example/callback?code=x&state=y', authorizationUrl)).toThrow(
+		'does not match',
+	);
+	expect(() => duoCallbackToken(`${redirectUri}&code=x`, authorizationUrl)).toThrow('missing');
 });

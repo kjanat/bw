@@ -150,7 +150,10 @@ for (
 			const profileResponse = await fetch(`${server}/api/accounts/profile`, {
 				headers: { Authorization: `Bearer ${auth.access_token}` },
 			});
-			const profile = (await profileResponse.json()) as { id: string };
+			const profile = (await profileResponse.json()) as {
+				id: string;
+				organizations: { id: string; organizationUserId: string }[];
+			};
 			const created = await post(
 				'/api/ciphers',
 				{
@@ -351,6 +354,22 @@ for (
 					]),
 				);
 				expect(collection.name).toBe('Managed collection');
+				const organizationProfile = profile.organizations.find(value => value.id === organization.id);
+				expect(organizationProfile?.organizationUserId).toBeTruthy();
+				const collectionDetails = await fetch(
+					`${server}/api/organizations/${organization.id}/collections/details`,
+					{ headers: { Authorization: `Bearer ${auth.access_token}` } },
+				);
+				expect(collectionDetails.status).toBe(200);
+				const detail = ((await collectionDetails.json()).data as Record<string, unknown>[]).find(
+					value => value.id === collection.id,
+				);
+				expect(detail?.users).toContainEqual({
+					id: organizationProfile!.organizationUserId,
+					readOnly: false,
+					hidePasswords: false,
+					manage: true,
+				});
 				expect(
 					JSON.parse(await checked(['get', 'org-collection', collection.id, '--organizationid', organization.id])).name,
 				).toBe('Managed collection');
@@ -596,6 +615,8 @@ for (
 						}),
 					]),
 				);
+				expect(createdItem.object).toBe('item');
+				expect(createdItem.key).toBeUndefined();
 				expect(createdItem.name).toBe('Created by vw');
 				expect(JSON.parse(await checked(['list', 'items', '--folderid', folder.id])).length).toBe(1);
 				const editedItem = JSON.parse(
@@ -610,6 +631,8 @@ for (
 						}),
 					]),
 				);
+				expect(editedItem.object).toBe('item');
+				expect(editedItem.key).toBeUndefined();
 				expect(editedItem.login.password).toBe('edited-secret');
 				const stale = await run([
 					'edit',
@@ -620,6 +643,7 @@ for (
 				expect(stale.code).toBe(1);
 				expect(JSON.parse(await checked(['get', 'item', createdItem.id])).name).toBe('Edited by vw');
 				expect((await checked(['get', 'totp', createdItem.id])).trim()).toMatch(/^\d{6}$/);
+				const newerItems: { id: string; type: number; section: string; fields: Record<string, unknown> }[] = [];
 				for (
 					const [type, section, fields] of [
 						[2, 'secureNote', { type: 0 }],
@@ -630,6 +654,13 @@ for (
 							publicKey: 'synthetic-public-key',
 							keyFingerprint: 'synthetic-fingerprint',
 						}],
+						[6, 'bankAccount', {
+							accountNumber: 'synthetic-bank-number',
+							accountType: 'checking',
+							bankName: 'Fixture Bank',
+						}],
+						[7, 'driversLicense', { licenseNumber: 'synthetic-license', firstName: 'Fixture', issuingState: 'NH' }],
+						[8, 'passport', { passportNumber: 'synthetic-passport', givenName: 'Fixture', issuingCountry: 'NL' }],
 					] as const
 				) {
 					const value = JSON.parse(
@@ -641,7 +672,8 @@ for (
 					);
 					expect(value[section]).toMatchObject(fields);
 					expect(JSON.parse(await checked(['get', 'item', value.id]))[section]).toMatchObject(fields);
-					await checked(['delete', 'item', value.id, '--permanent']);
+					if (type >= 6) newerItems.push({ id: value.id, type, section, fields });
+					else await checked(['delete', 'item', value.id, '--permanent']);
 				}
 				const organizationImport = join(dir, 'organization-import.json');
 				await writeFile(
@@ -696,7 +728,10 @@ for (
 				if (apiLogin.code) throw new Error(`API login failed: ${apiLogin.stderr}`);
 				expect(JSON.parse((await apiRun(['status'])).stdout)).toMatchObject({ status: 'locked', userEmail: email });
 				expect((await apiRun(['login', '--check'])).code).toBe(0);
-				expect((await apiRun(['sync'])).code).toBe(0);
+				await withStore(apiDir, async (state) => {
+					expect(state.vault).toBeDefined();
+					expect(state.lastSync).toBeDefined();
+				});
 				await withStore(apiDir, async (state, save) => {
 					state.account!.expiresAt = 0;
 					await save();
@@ -829,6 +864,25 @@ for (
 						lookupFolders.push(JSON.parse(await checked(['create', 'folder', encode({ name })])));
 					}
 					expect((await official(['sync', '--force'], login.stdout.trim())).code).toBe(0);
+					for (const item of newerItems) {
+						const reference = await official(['get', 'item', item.id], login.stdout.trim());
+						if (reference.code) throw new Error(`Reference item ${item.type} read failed: ${reference.stderr}`);
+						expect(JSON.parse(reference.stdout)).toMatchObject({ type: item.type, [item.section]: item.fields });
+					}
+					for (
+						const [query, expectedId] of [
+							['Fixture Bank', newerItems.find(item => item.type === 6)!.id],
+							['Fixture NH', newerItems.find(item => item.type === 7)!.id],
+							['Fixture NL', newerItems.find(item => item.type === 8)!.id],
+						] as const
+					) {
+						const listed = JSON.parse(await checked(['list', 'items', '--search', query])) as { id: string }[];
+						const reference = await official(['list', 'items', '--search', query], login.stdout.trim());
+						if (reference.code) throw new Error(`Reference item search failed: ${reference.stderr}`);
+						const referenceIds = (JSON.parse(reference.stdout) as { id: string }[]).map(item => item.id);
+						expect(listed.map(item => item.id)).toEqual(referenceIds);
+						expect(referenceIds).toContain(expectedId);
+					}
 					for (
 						const [kind, query] of [
 							['folder', 'BUCKET ARCH'],

@@ -1,5 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-import { ApiError, type VaultwardenClient, type SsoCredentials } from '#client';
+import { ApiError, type JsonObject, type VaultwardenClient, type SsoCredentials } from '#client';
 import { createAccountKeyMaterial } from '#crypto';
 import type { PasswordLoginOptions, TwoFactorAnswer, SsoAccount, SsoPendingAccount } from '#account';
 
@@ -88,8 +88,19 @@ export async function loginWithSso(
 	} catch (error) {
 		if (!(error instanceof ApiError) || !error.twoFactorProviders.length || !options.onTwoFactor) throw error;
 		const providers = Object.freeze([...error.twoFactorProviders]);
+		const webAuthnData = error.twoFactorProviderData[7];
+		const webAuthn = webAuthnData && typeof webAuthnData === 'object' && !Array.isArray(webAuthnData)
+			? webAuthnData as JsonObject
+			: undefined;
 		const answer = await options.onTwoFactor({
 			providers,
+			duoAuthUrl: (() => {
+				const value = error.twoFactorProviderData[2];
+				if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+				const url = (value as Record<string, unknown>).AuthUrl;
+				return typeof url === 'string' ? url : undefined;
+			})(),
+			...(webAuthn ? { webAuthnOptions: webAuthn, webAuthnOrigin: new URL(client.server).origin } : {}),
 			requestEmail: async () => {
 				if (!providers.includes(1)) throw new Error('Email two-factor authentication is unavailable.');
 				await client.sendSsoEmailLogin();

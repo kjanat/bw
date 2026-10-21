@@ -342,9 +342,11 @@ values are populated from the exported fields.
 
 `parseExternalCsv(format, text, organization?)` lets library callers inspect the
 native document before importing it. The normal import operation encrypts that
-document through the same bulk pipeline as Bitwarden JSON. LastPass HTML input
-and conversion into the newer dedicated bank/passport/license item types remain
-under audit; those secure-note records currently retain their complete text.
+document through the same bulk pipeline as Bitwarden JSON. LastPass HTML files
+extract and decode the CSV held in their `<pre>` block. Conversion into the
+newer dedicated bank/passport/license item types is opt-in in the reference
+client and remains a separate feature-flag parity case; default imports retain
+those secure-note records as complete text.
 
 ```sh
 node apps/cli/dist/main.js import keepass2xml ./keepass-backup.xml
@@ -473,7 +475,8 @@ Local API access uses this process's logged-in account and unlock state, with
 no separate per-request bearer token, following bw's local API model.
 
 The default bind is `localhost:8087`. `--hostname all` binds every interface;
-`--port 0` selects an available port. Origin headers are rejected by default,
+as in the [pinned `bw` implementation](https://github.com/bitwarden/clients/blob/ce5386b939062d9535cdf1a998101d25194908d0/apps/cli/src/commands/serve.command.ts),
+`--port 0` falls back to `8087`. Origin headers are rejected by default,
 including empty Origin values. Host headers must identify localhost, a loopback
 address, or the configured hostname with the listening port. The `all` binding
 accepts other Host values. `--disable-origin-protection` disables both guards,
@@ -628,8 +631,9 @@ node apps/cli/dist/main.js receive 'https://vault.example.com/#/send/ACCESS_ID/K
 ```
 
 The quick `send` command accepts text from stdin when its data argument is
-omitted, prints the access URL by default, and returns JSON with `--fullObject`.
-Text Sends support `--hidden`; both types support `--deleteInDays` (default 7,
+omitted and returns the decrypted Send object, including its access URL, like
+the pinned CLI response path. `--fullObject` remains accepted for command-line
+compatibility. Text Sends support `--hidden`; both types support `--deleteInDays` (default 7,
 maximum 31), `--maxAccessCount`, `--name`, `--notes`, and an optional password.
 JSON creation supports `expirationDate`, `disabled`, and `hideEmail` as well.
 Send edits preserve the key seed and existing password unless a new password is

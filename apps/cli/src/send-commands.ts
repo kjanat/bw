@@ -1,4 +1,4 @@
-import { outputCommand as command } from '#output';
+import { outputCommand as command, outputResponseError, outputSuccess } from '#output';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { basename } from 'node:path';
@@ -7,10 +7,10 @@ import { secretPrompt } from '#prompts';
 import {
 	decodeJson,
 	object,
-	text,
 	sendTemplate,
 	receiveSend,
 	SendPasswordRequired,
+	MultipleResultsError,
 	type SendInput,
 	type JsonObject,
 } from '@kjanat/vaultwarden';
@@ -19,6 +19,62 @@ import { writeAttachment, writeStdout } from '#files';
 
 const session = () => flag.string().env('VW_SESSION');
 const input = () => arg.string().stdin({ trim: true }).optional();
+function decodeSendJson(value: string): JsonObject {
+	try {
+		return decodeJson(value);
+	} catch {
+		throw new Error('Error parsing the encoded request data.');
+	}
+}
+function projectFields(value: unknown, fields: readonly string[]): JsonObject {
+	const source = value && typeof value === 'object' && !Array.isArray(value) ? object(value) : {};
+	return Object.fromEntries(fields.filter(field => source[field] !== undefined).map(field => [field, source[field]]));
+}
+export function sendResponseData(send: JsonObject, objectType = 'send'): JsonObject {
+	if (objectType === 'send-access') {
+		return {
+			object: objectType,
+			...projectFields(send, ['id', 'name', 'type']),
+			...(send.type === 0 && send.text != null
+				? { text: projectFields(send.text, ['text', 'hidden']) }
+				: {}),
+			...(send.type === 1 && send.file != null
+				? { file: projectFields(send.file, ['id', 'size', 'sizeName', 'fileName']) }
+				: {}),
+		};
+	}
+	return {
+		object: 'send',
+		...projectFields(send, [
+			'id',
+			'accessId',
+			'accessUrl',
+			'name',
+			'notes',
+			'key',
+			'type',
+			'maxAccessCount',
+			'accessCount',
+			'revisionDate',
+			'deletionDate',
+			'expirationDate',
+			'passwordSet',
+			'disabled',
+			'hideEmail',
+			'authType',
+		]),
+		emails: send.emails ?? [],
+		...(send.type === 0 && send.text != null
+			? { text: projectFields(send.text, ['text', 'hidden']) }
+			: {}),
+		...(send.type === 1 && send.file != null
+			? { file: projectFields(send.file, ['id', 'size', 'sizeName', 'fileName']) }
+			: {}),
+	};
+}
+export function quickSendResult(send: JsonObject, fullObject: boolean): JsonObject | string {
+	return fullObject ? sendResponseData(send) : String(send.accessUrl ?? '');
+}
 async function raw(contents: Uint8Array): Promise<void> {
 	await writeStdout(contents);
 }
@@ -26,7 +82,7 @@ export function receiveCommand() {
 	return command('receive').description('Read a Send without logging in; decrypt its fragment key locally')
 		.arg('url', arg.string()).flag('password', flag.string()).flag('passwordenv', flag.string())
 		.flag('passwordfile', flag.path({ mustExist: true })).flag('obj', flag.boolean())
-		.flag('output', flag.path()).flag('raw', flag.boolean())
+		.flag('output', flag.path())
 		.action(async ({ args, flags, out }) => {
 			if (
 				[flags.password !== undefined, flags.passwordenv !== undefined, flags.passwordfile !== undefined].filter(
@@ -43,11 +99,13 @@ export function receiveCommand() {
 			try {
 				result = await receiveSend(args.url, { password, download: !flags.obj });
 			} catch (error) {
-				if (!(error instanceof SendPasswordRequired) || password !== undefined || !process.stdin.isTTY) throw error;
+				if (!(error instanceof SendPasswordRequired) || password !== undefined) throw error;
+				if (flags.nointeraction) throw new Error('Password required');
+				if (!process.stdin.isTTY) throw error;
 				password = await secretPrompt('Send password:');
 				result = await receiveSend(args.url, { password, download: !flags.obj });
 			}
-			if (flags.obj) out.json(result.send);
+			if (flags.obj) out.json(sendResponseData(result.send, 'send-access'));
 			else if (result.contents) {
 				try {
 					if (flags.raw && !flags.output) await raw(result.contents);
@@ -81,43 +139,55 @@ export function sendCommands(runtime: VaultRuntime) {
 		.arg('encodedJson', input()).flag('session', session()).flag('file', flag.path({ mustExist: true }))
 		.flag('text', flag.string()).flag('hidden', flag.boolean())
 		.action(async ({ args, flags, out }) => {
-			const data = args.encodedJson ? decodeJson(args.encodedJson) : {};
+			if (!args.encodedJson) throw new Error('`requestJson` was not provided.');
+			const data = decodeSendJson(args.encodedJson);
 			if (data.text == null && flags.text !== undefined) data.text = { text: flags.text, hidden: flags.hidden };
 			if (data.type == null) data.type = flags.file ? 1 : 0;
-			out.json(await create(data, flags.session, flags.file));
+			out.json(sendResponseData(await create(data, flags.session, flags.file)));
 		});
 	const list = command('list').description('List decrypted Sends from the cache').flag('session', session())
-		.action(async ({ flags, out }) => out.json(await runtime.run(flags.session, false, vault => vault.sends.list())));
+		.action(async ({ flags, out }) =>
+			out.json(
+				(await runtime.run(flags.session, false, vault => vault.sends.list())).map(send => sendResponseData(send)),
+			)
+		);
 	const get = command('get').description('Read an owned Send by ID or unique search term').arg('id', arg.string())
 		.flag('session', session()).flag('text', flag.boolean())
 		.action(async ({ args, flags, out }) => {
-			const send = await runtime.run(flags.session, false, vault => vault.sends.get(args.id));
+			let send: JsonObject;
+			try {
+				send = await runtime.run(flags.session, false, vault => vault.sends.get(args.id, flags.text ? 0 : undefined));
+			} catch (error) {
+				if (error instanceof MultipleResultsError && outputResponseError(error.message, error.ids)) throw error;
+				throw error;
+			}
 			if (flags.text) {
-				if (send.type !== 0) throw new Error('This Send contains a file.');
 				await raw(Buffer.from(String(object(send.text).text)));
-			} else out.json(send);
+			} else out.json(sendResponseData(send));
 		});
 	const edit = command('edit').description('Edit Send metadata or text; file contents are immutable')
 		.arg('encodedJson', input()).flag('itemid', flag.string()).flag('session', session())
 		.action(async ({ args, flags, out }) => {
-			if (!args.encodedJson) throw new Error('Encoded Send JSON is required.');
-			const patch = decodeJson(args.encodedJson);
-			out.json(
-				await runtime.run(flags.session, true, vault => vault.sends.edit(flags.itemid ?? text(patch.id), patch)),
-			);
+			if (!args.encodedJson) throw new Error('`requestJson` was not provided.');
+			const patch = decodeSendJson(args.encodedJson);
+			const id = flags.itemid ?? (typeof patch.id === 'string' ? patch.id : undefined);
+			if (!id) throw new Error('`itemid` was not provided.');
+			out.json(sendResponseData(
+				await runtime.run(flags.session, true, vault => vault.sends.edit(id, patch)),
+			));
 		});
 	const remove = command('delete').description('Permanently delete a Send').arg('id', arg.string()).flag(
 		'session',
 		session(),
 	)
-		.action(async ({ args, flags, out }) => {
+		.action(async ({ args, flags }) => {
 			await runtime.run(flags.session, true, vault => vault.sends.delete(args.id));
-			out.log('Send deleted.');
+			outputSuccess();
 		});
 	const removePassword = command('remove-password').description('Remove password protection from a Send')
 		.arg('id', arg.string()).flag('session', session())
 		.action(async ({ args, flags, out }) =>
-			out.json(await runtime.run(flags.session, true, vault => vault.sends.removePassword(args.id)))
+			out.json(sendResponseData(await runtime.run(flags.session, true, vault => vault.sends.removePassword(args.id))))
 		);
 	const template = command('template').description('Print an editable Send JSON template').arg(
 		'object',
@@ -158,7 +228,8 @@ export function sendCommands(runtime: VaultRuntime) {
 				flags.session,
 				flags.file ? args.data : undefined,
 			);
-			if (flags.fullObject) out.json(result);
-			else out.log(text(result.accessUrl));
+			const output = quickSendResult(result, flags.fullObject);
+			if (typeof output === 'string') out.log(output);
+			else out.json(output);
 		});
 }

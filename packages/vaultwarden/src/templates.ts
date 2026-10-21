@@ -1,6 +1,6 @@
 import type { JsonObject } from '#client';
 
-export function template(name: string): JsonObject {
+export function template(name: string): unknown {
 	const templates: Record<string, JsonObject> = {
 		item: {
 			organizationId: null,
@@ -15,11 +15,28 @@ export function template(name: string): JsonObject {
 			reprompt: 0,
 		},
 		folder: { name: 'Folder name' },
+		collection: {
+			organizationId: '00000000-0000-0000-0000-000000000000',
+			name: 'Collection name',
+			externalId: null,
+		},
 		'org-collection': { name: 'Collection name', organizationId: null, groups: [], users: [], externalId: null },
 		'item.login': { uris: [], username: null, password: null, totp: null },
 		'item.login.uri': { match: null, uri: null },
 		'item.field': { name: null, value: null, type: 0, linkedId: null },
 		'item.card': { cardholderName: null, brand: null, number: null, expMonth: null, expYear: null, code: null },
+		'item.bankaccount': {
+			bankName: 'Acme Bank',
+			nameOnAccount: 'John Doe',
+			accountType: 'checking',
+			accountNumber: '000123456789',
+			routingNumber: '000000000',
+			branchNumber: '000',
+			pin: '1234',
+			swiftCode: 'ACMEUS33',
+			iban: 'GB00ACME12345600000001',
+			bankContactPhone: '1-800-123-4567',
+		},
 		'item.identity': Object.fromEntries(
 			[
 				'title',
@@ -42,11 +59,40 @@ export function template(name: string): JsonObject {
 				'licenseNumber',
 			].map(key => [key, null]),
 		),
-		'item.secureNote': { type: 0 },
-		'item.sshKey': { privateKey: null, publicKey: null, keyFingerprint: null },
+		'item.securenote': { type: 0 },
+		'item.driverslicense': {
+			firstName: 'Jane',
+			middleName: 'A.',
+			lastName: 'Smith',
+			dateOfBirth: '1990-01-15',
+			licenseNumber: 'D12345678',
+			issuingCountry: 'US',
+			issuingState: 'CA',
+			issueDate: '2020-06-01',
+			expirationDate: '2028-06-01',
+			issuingAuthority: 'California DMV',
+			licenseClass: 'C',
+		},
+		'item.passport': {
+			surname: 'Smith',
+			givenName: 'Jane',
+			dateOfBirth: '1990-01-15',
+			sex: 'F',
+			birthPlace: 'Los Angeles, CA',
+			nationality: 'USA',
+			issuingCountry: 'US',
+			passportNumber: 'A12345678',
+			passportType: 'P',
+			nationalIdentificationNumber: '123-45-6789',
+			issuingAuthority: 'U.S. Department of State',
+			issueDate: '2020-06-01',
+			expirationDate: '2030-06-01',
+		},
 	};
-	if (!templates[name]) throw new Error('Unknown template.');
-	return structuredClone(templates[name]);
+	const normalizedName = name.toLowerCase();
+	if (normalizedName === 'item-collections') return ['collection-id1', 'collection-id2'];
+	if (!templates[normalizedName]) throw new Error('Unknown template.');
+	return structuredClone(templates[normalizedName]);
 }
 export function decodeJson(value: string): JsonObject {
 	try {

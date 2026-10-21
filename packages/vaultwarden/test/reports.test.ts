@@ -35,14 +35,17 @@ test('offline reports include archived and organization logins, exclude trash, n
 		login('e', ''),
 		{ id: 'f', type: 2, name: 'Note', login: { password: 'private-secret-token' } },
 	];
+	let startedWith = -1;
 	const rows = await passwordHealth(items, {
 		checkExposed: false,
+		onStart: count => startedWith = count,
 		exposure: new PasswordExposureClient({
 			fetch: (async () => {
 				throw new Error('must not request');
 			}) as unknown as typeof fetch,
 		}),
 	});
+	expect(startedWith).toBe(3);
 	expect(rows.map(row => row.id)).toEqual(['a', 'b', 'c']);
 	expect(rows.map(row => row.reuseCount)).toEqual([2, 2, null]);
 	expect(rows.every(row => !row.exposed && row.exposedCount === null && row.exposedError === null)).toBe(true);
@@ -88,22 +91,37 @@ test('reports coalesce repeated-password lookups and keep exposure failures dist
 	expect(rows[2]).toMatchObject({
 		exposed: false,
 		exposedCount: null,
-		exposedError: 'Password exposure check failed.',
+		exposedError: 'Password exposure request failed (HTTP 503).',
 	});
 	expect(JSON.stringify(rows)).not.toContain('private service error');
 });
-test('invalid exposure responses reject instead of claiming the password was not found', async () => {
+test('malformed HTTP 200 exposure rows follow the pinned SDK and count as zero', async () => {
 	for (
 		const body of ['', '<html>unavailable</html>', `${suffix}:not-a-count`, `${suffix}:4294967296`, `${suffix}:-1`]
 	) {
 		const client = new PasswordExposureClient({ fetch: (async () => new Response(body)) as unknown as typeof fetch });
-		await expect(client.count('password')).rejects.toThrow('Invalid password exposure response');
+		expect(await client.count('password')).toBe(0);
 	}
 	const client = new PasswordExposureClient({
 		fetch: (async () => new Response('00000000000000000000000000000000000:0')) as unknown as typeof fetch,
 	});
 	expect(await client.count('password')).toBe(0);
+	const empty = new PasswordExposureClient({ fetch: (async () => new Response(null)) as unknown as typeof fetch });
+	expect(await empty.count('password')).toBe(0);
+	const duplicate = new PasswordExposureClient({
+		fetch: (async () => new Response(`${suffix}:invalid\n${suffix}:12`)) as unknown as typeof fetch,
+	});
+	expect(await duplicate.count('password')).toBe(0);
 	expect(() => new PasswordExposureClient({ baseUrl: 'http://remote.example' })).toThrow('HTTPS');
+});
+
+test('malformed successful exposure bodies do not produce a local error field', async () => {
+	const client = new PasswordExposureClient({ fetch: (async () => new Response('')) as unknown as typeof fetch });
+	expect(await passwordHealth([login('a', 'password')], { exposure: client })).toMatchObject([{
+		exposed: false,
+		exposedCount: null,
+		exposedError: null,
+	}]);
 });
 test('exposure requests obey a shared concurrency limit and release slots after failures', async () => {
 	let active = 0, peak = 0, calls = 0;

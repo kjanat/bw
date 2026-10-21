@@ -1,5 +1,12 @@
-import { ApiError, VaultwardenClient, type Login, type ApiKeyLogin, type ApiKeyCredentials } from '#client';
-import { decrypt, deriveMasterKey, masterPasswordHash, normalizeEmail, stretchKey, type Kdf } from '#crypto';
+import {
+	ApiError,
+	type ApiKeyCredentials,
+	type ApiKeyLogin,
+	type JsonObject,
+	type Login,
+	VaultwardenClient,
+} from '#client';
+import { decrypt, deriveMasterKey, type Kdf, masterPasswordHash, normalizeEmail, stretchKey } from '#crypto';
 
 export interface PasswordAccount extends Login {
 	email: string;
@@ -18,12 +25,32 @@ export interface SsoPendingAccount extends Omit<import('#client').SsoLoginResult
 	encryptedUserKey?: never;
 }
 export type Account = PasswordAccount | ApiKeyAccount | SsoAccount;
+/** Read the authenticated subject from a Vaultwarden/Bitwarden access token for status reporting. */
+export function accountUserId(account: Pick<Account, 'accessToken'>): string | undefined {
+	const parts = account.accessToken.split('.');
+	if (parts.length !== 3 || parts[1]!.length > 16_384) return undefined;
+	try {
+		const claims = JSON.parse(Buffer.from(parts[1]!, 'base64url').toString('utf8')) as { sub?: unknown };
+		return typeof claims.sub === 'string'
+				&& /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(claims.sub)
+			? claims.sub
+			: undefined;
+	} catch {
+		return undefined;
+	}
+}
 export interface TwoFactorAnswer {
 	provider: number;
 	token: string;
 }
 export interface LoginChallenge {
 	readonly providers: readonly number[];
+	/** Vaultwarden's short-lived Duo OIDC authorization URL, when provider 2 is offered. */
+	readonly duoAuthUrl?: string;
+	/** WebAuthn request options returned by Vaultwarden for provider 7. */
+	readonly webAuthnOptions?: Readonly<JsonObject>;
+	/** Origin used by Vaultwarden's WebAuthn relying-party configuration. */
+	readonly webAuthnOrigin?: string;
 	/** Sends an email code; no password or password hash is exposed to the callback. */
 	requestEmail(): Promise<void>;
 }
@@ -62,8 +89,11 @@ export async function loginWithPassword(
 		} catch (error) {
 			if (!(error instanceof ApiError) || !error.twoFactorProviders.length || !options.onTwoFactor) throw error;
 			const providers = Object.freeze([...error.twoFactorProviders]);
+			const webAuthn = webAuthnOptions(error);
 			const answer = await options.onTwoFactor({
 				providers,
+				duoAuthUrl: duoAuthUrl(error),
+				...(webAuthn ? { webAuthnOptions: webAuthn, webAuthnOrigin: new URL(client.server).origin } : {}),
 				requestEmail: async () => {
 					if (!providers.includes(1)) {
 						throw new Error('Email two-factor authentication is unavailable.', { cause: error });
@@ -91,6 +121,16 @@ export async function loginWithPassword(
 	} finally {
 		master.fill(0);
 	}
+}
+function duoAuthUrl(error: ApiError): string | undefined {
+	const value = error.twoFactorProviderData[2];
+	if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+	const url = (value as Record<string, unknown>).AuthUrl;
+	return typeof url === 'string' ? url : undefined;
+}
+function webAuthnOptions(error: ApiError): Readonly<JsonObject> | undefined {
+	const value = error.twoFactorProviderData[7];
+	return value && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : undefined;
 }
 function validateUserKey(key: Uint8Array): void {
 	if (key.length !== 64) {

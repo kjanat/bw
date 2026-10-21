@@ -22,7 +22,7 @@ test('SafeInCloud XML maps login, card, notes, and excludes deleted/template car
 		type: 1,
 		name: 'Bank',
 		favorite: true,
-		notes: 'login note\nextra note',
+		notes: 'login note\nextra note\n',
 		login: {
 			username: 'alice',
 			password: '  secret  ',
@@ -43,7 +43,7 @@ test('SafeInCloud XML maps login, card, notes, and excludes deleted/template car
 		},
 		fields: [{ name: 'PIN', value: '1234', type: 1 }],
 	});
-	expect(result[2]).toMatchObject({ type: 2, name: 'Secure note', secureNote: { type: 0 }, notes: 'private note' });
+	expect(result[2]).toMatchObject({ type: 2, name: 'Secure note', secureNote: { type: 0 }, notes: 'private note\n' });
 });
 
 test('SafeInCloud XML rejects malformed, missing-database, and entity-bearing documents', () => {
@@ -51,4 +51,20 @@ test('SafeInCloud XML rejects malformed, missing-database, and entity-bearing do
 	expect(() => parseSafeInCloudXml('<root/>')).toThrow('Missing database node.');
 	expect(() => parseSafeInCloudXml('<!DOCTYPE x [<!ENTITY secret "private">]><database/>'))
 		.toThrow('XML entity declarations are not supported.');
+});
+
+test('SafeInCloud XML preserves note text and appends the reference newline', () => {
+	const result = items(
+		parseSafeInCloudXml('<database><card title="Trailing"><notes>note&#10;</notes></card></database>'),
+	);
+	expect(result[0]?.notes).toBe('note\n\n');
+});
+
+test('SafeInCloud XML maps card brands using the full reference patterns', () => {
+	const cards = items(parseSafeInCloudXml(
+		'<database><card title="Amex"><field name="Number" autofill="cc-number">378282246310005</field></card>'
+			+ '<card title="Discover"><field name="Number" autofill="cc-number">6011111111111117</field></card>'
+			+ '<card title="Formatted"><field name="Number" autofill="cc-number">4111 1111 1111 1111</field></card></database>',
+	));
+	expect(cards.map(card => (card.card as JsonObject).brand)).toEqual(['Amex', 'Discover', 'Visa']);
 });

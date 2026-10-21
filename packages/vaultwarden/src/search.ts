@@ -2,6 +2,25 @@ import { getHostname } from 'tldts';
 import { object } from '#client';
 import type { VaultItem } from '#models';
 
+/** A query matched multiple objects; callers can present the exact IDs for disambiguation. */
+export class MultipleResultsError extends Error {
+	constructor(readonly ids: string[]) {
+		super(
+			'More than one result was found. Try getting a specific object by `id` instead. '
+				+ 'The following objects were found:\n'
+				+ ids.join('\n'),
+		);
+		this.name = 'MultipleResultsError';
+	}
+}
+/** A vault object lookup did not resolve; Serve maps this to bw's generic not-found response. */
+export class VaultObjectNotFoundError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = 'VaultObjectNotFoundError';
+	}
+}
+
 export function normalizeSearch(value: string): string {
 	return value.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 }
@@ -16,7 +35,10 @@ export function findNamedObject<T extends { id?: unknown; name?: unknown }>(valu
 			: typeof value.name === 'string' && value.name.toLowerCase().includes(normalized)
 	);
 	if (matches.length !== 1) {
-		throw new Error(matches.length ? 'Multiple matching objects. Use an object ID.' : 'Object not found.');
+		if (matches.length > 1) {
+			throw new MultipleResultsError(matches.flatMap(value => typeof value.id === 'string' ? [value.id] : []));
+		}
+		throw new VaultObjectNotFoundError('Object not found.');
 	}
 	return matches[0]!;
 }
@@ -34,9 +56,23 @@ function subtitle(item: VaultItem): string {
 		return [string(card.brand), suffix].filter(Boolean).join(', ');
 	}
 	if (item.type === 4) {
-		return [item.identity?.firstName, item.identity?.lastName].filter(value => typeof value === 'string').join(' ');
+		return [item.identity?.firstName, item.identity?.lastName]
+			.filter((value): value is string => typeof value === 'string' && value.length > 0).join(' ');
 	}
 	if (item.type === 5) return string(item.sshKey?.keyFingerprint);
+	if (item.type === 6) return string(item.bankAccount?.bankName);
+	if (item.type === 7) {
+		const name = [item.driversLicense?.firstName, item.driversLicense?.lastName]
+			.filter((value): value is string => typeof value === 'string' && Boolean(value)).join(' ');
+		const state = string(item.driversLicense?.issuingState);
+		return name && state ? `${name}, ${state}` : name || state;
+	}
+	if (item.type === 8) {
+		const name = [item.passport?.givenName, item.passport?.surname]
+			.filter((value): value is string => typeof value === 'string' && Boolean(value)).join(' ');
+		const country = string(item.passport?.issuingCountry);
+		return [name, country].filter(Boolean).join(', ');
+	}
 	return '';
 }
 /** Basic CLI search uses AND across terms and OR across non-secret display fields. */

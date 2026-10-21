@@ -1,11 +1,14 @@
-import { expect, test } from 'bun:test';
-import { generateKeyPairSync, publicEncrypt, createPublicKey, constants } from 'node:crypto';
 import type { JsonObject } from '#client';
 import { VaultwardenClient } from '#client';
-import { encrypt, decrypt, encryptAttachment, decryptAttachment } from '#crypto';
-import { VaultService } from '#vault-service';
-import { transformItem, encryptItem } from '#item-codec';
+import { decrypt, decryptAttachment, encrypt, encryptAttachment, encryptSharedKey } from '#crypto';
+import { encryptItem, transformItem } from '#item-codec';
+import { vaultItemResponse } from '#local-api-models';
+import { template } from '#templates';
 import { totp } from '#totp';
+import { findNamedObject, MultipleResultsError } from '#search';
+import { VaultService } from '#vault-service';
+import { expect, test } from 'bun:test';
+import { constants, createPublicKey, generateKeyPairSync, publicEncrypt } from 'node:crypto';
 
 const userKey = Buffer.alloc(64, 1);
 const itemKey = Buffer.alloc(64, 2);
@@ -43,6 +46,84 @@ test('item codec encrypts all known fields, including history and custom fields,
 	expect(JSON.stringify(encrypted)).not.toContain('previous');
 	expect(transformItem(encrypted, itemKey, 'decrypt')).toEqual(plaintext);
 });
+test('ambiguous item search exposes candidate IDs in the reference error', () => {
+	const vault = service(() => Response.json({}), {
+		profile: { id: 'user' },
+		folders: [],
+		ciphers: [wire({ id: 'first-match' }), wire({ id: 'second-match' })],
+	});
+	try {
+		expect(() => vault.findItem('Example')).toThrow(
+			'More than one result was found. Try getting a specific object by `id` instead. '
+				+ 'The following objects were found:\nfirst-match\nsecond-match',
+		);
+	} finally {
+		vault.dispose();
+	}
+});
+test('ambiguous named-object search exposes candidate IDs', () => {
+	const values = [{ id: 'folder-one', name: 'Shared folder one' }, { id: 'folder-two', name: 'Shared folder two' }];
+	try {
+		findNamedObject(values, 'Shared');
+		throw new Error('Expected ambiguous lookup to fail.');
+	} catch (error) {
+		expect(error).toBeInstanceOf(MultipleResultsError);
+		expect((error as MultipleResultsError).ids).toEqual(['folder-one', 'folder-two']);
+	}
+});
+test('TOTP entitlement uses personal premium or the organization cipher grant', () => {
+	const vault = service(() => Response.json({}), {
+		profile: { id: 'user', premium: false, premiumPersonally: false, premiumFromOrganization: false },
+		ciphers: [
+			{ id: 'personal' },
+			{ id: 'org-enabled', organizationId: 'org', organizationUseTotp: true },
+			{ id: 'org-disabled', organizationId: 'org', organizationUseTotp: false },
+		],
+	});
+	try {
+		expect(vault.canAccessTotp('personal')).toBe(false);
+		expect(vault.canAccessTotp('org-enabled')).toBe(true);
+		expect(vault.canAccessTotp('org-disabled')).toBe(false);
+	} finally {
+		vault.dispose();
+	}
+	const premium = service(() => Response.json({}), {
+		profile: { id: 'user', premiumPersonally: true },
+		ciphers: [{ id: 'personal' }],
+	});
+	try {
+		expect(premium.canAccessTotp('personal')).toBe(true);
+	} finally {
+		premium.dispose();
+	}
+});
+test('newer bank account, driver license, and passport fields encrypt and decrypt', () => {
+	for (
+		const [type, section, secret, field] of [
+			[6, 'bankAccount', 'bank-number', 'accountNumber'],
+			[7, 'driversLicense', 'license-number', 'licenseNumber'],
+			[8, 'passport', 'passport-number', 'passportNumber'],
+		] as const
+	) {
+		const value = {
+			type,
+			name: section,
+			[section]: { [field]: secret },
+		};
+		const encrypted = transformItem(value, itemKey, 'encrypt');
+		expect(JSON.stringify(encrypted)).not.toContain(secret);
+		expect(transformItem(encrypted, itemKey, 'decrypt')).toEqual(value);
+	}
+	for (const [type, section] of [[6, 'bankAccount'], [7, 'driversLicense'], [8, 'passport']] as const) {
+		const model = { type, id: 'item', name: 'Example', key: 'decrypted-key', [section]: { reference: 'field' } };
+		const response = vaultItemResponse(model);
+		expect(response[section]).toEqual(model[section]);
+		expect(response.key).toBeUndefined();
+	}
+	expect((template('item.bankAccount') as JsonObject).accountNumber).toBe('000123456789');
+	expect((template('item.driversLicense') as JsonObject).licenseNumber).toBe('D12345678');
+	expect((template('item.passport') as JsonObject).passportNumber).toBe('A12345678');
+});
 test('edits retain existing item key and send the client revision guard', async () => {
 	const vault = service((path, init) => {
 		expect(path).toEndWith('/api/ciphers/item');
@@ -52,26 +133,395 @@ test('edits retain existing item key and send the client revision guard', async 
 		expect(data.encryptedFor).toBe('user');
 		expect(transformItem(data, itemKey, 'decrypt').name).toBe('Changed');
 		return Response.json({ ...data, id: 'item', revisionDate: '2026-01-01T00:00:01Z' });
-	});
+	}, { profile: { id: 'user', premiumPersonally: true }, ciphers: [wire()] });
 	const item = vault.getItem('item');
 	item.name = 'Changed';
 	expect((await vault.editItem('item', item)).name).toBe('Changed');
 });
+test('archived-item edit prompt depends on archive entitlement', () => {
+	const archived = wire({ id: 'archived', archivedDate: '2026-01-01T00:00:00Z' });
+	const unentitled = service(() => Response.json({}), {
+		profile: { id: 'user' },
+		ciphers: [archived, wire({ id: 'active' })],
+		folders: [],
+	});
+	const personallyEntitled = service(() => Response.json({}), {
+		profile: { id: 'user', premiumPersonally: true },
+		ciphers: [archived],
+		folders: [],
+	});
+	const organizationEntitled = service(() => Response.json({}), {
+		profile: { id: 'user', premiumFromOrganization: true },
+		ciphers: [archived],
+		folders: [],
+	});
+	expect(unentitled.shouldUnarchiveBeforeEdit('archived')).toBe(true);
+	expect(personallyEntitled.shouldUnarchiveBeforeEdit('archived')).toBe(false);
+	expect(organizationEntitled.shouldUnarchiveBeforeEdit('archived')).toBe(false);
+	expect(unentitled.shouldUnarchiveBeforeEdit('active')).toBe(false);
+});
+test('editing a deleted item is rejected before making a server request', async () => {
+	let requests = 0;
+	const vault = service(() => {
+		requests++;
+		return Response.json({});
+	}, { profile: { id: 'user' }, ciphers: [wire({ deletedDate: '2026-01-01T00:00:00Z' })], folders: [] });
+	await expect(vault.editItem('item', vault.getItem('item'))).rejects.toThrow(
+		'You may not edit a deleted item. Use the restore command first.',
+	);
+	expect(requests).toBe(0);
+});
+test('confirmed personal-ownership policies block personal edits for non-admin members', async () => {
+	let requests = 0;
+	const organizationId = 'org';
+	const vault = service(() => {
+		requests++;
+		return Response.json({});
+	}, {
+		profile: { id: 'user', organizations: [{ id: organizationId, status: 2, type: 2 }] },
+		policies: [{ organizationId, type: 5, enabled: true }],
+		ciphers: [wire()],
+		folders: [],
+	});
+	await expect(vault.editItem('item', vault.getItem('item'))).rejects.toThrow(
+		'An organization policy restricts editing this cipher. Please use the share command first before modifying it.',
+	);
+	expect(requests).toBe(0);
+});
+test('personal-ownership policy precheck ignores admins and non-confirmed memberships', async () => {
+	for (
+		const membership of [
+			{ id: 'org', status: 2, type: 0 },
+			{ id: 'org', status: 2, type: 1 },
+			{ id: 'org', status: 1, type: 2 },
+		]
+	) {
+		let requests = 0;
+		const vault = service((_path, init) => {
+			requests++;
+			const data = JSON.parse(String(init.body));
+			return Response.json({ ...data, id: 'item', revisionDate: '2026-01-01T00:00:01Z' });
+		}, {
+			profile: { id: 'user', organizations: [membership] },
+			policies: [{ organizationId: 'org', type: 5, enabled: true }],
+			ciphers: [wire()],
+			folders: [],
+		});
+		await vault.editItem('item', vault.getItem('item'));
+		expect(requests).toBe(1);
+	}
+});
+test('sync edit, delete, and restore permissions stop forbidden mutations locally', async () => {
+	let requests = 0;
+	const vault = service(() => {
+		requests++;
+		return Response.json({});
+	}, {
+		profile: { id: 'user' },
+		ciphers: [
+			wire({ id: 'read-only', edit: false }),
+			wire({ id: 'no-delete', permissions: { delete: false } }),
+			wire({ id: 'no-restore', deletedDate: '2026-01-01T00:00:00Z', permissions: { restore: false } }),
+		],
+		folders: [],
+	});
+	await expect(vault.editItem('read-only', vault.getItem('read-only'))).rejects.toMatchObject({
+		message: 'You do not have permission to edit this item',
+	});
+	await expect(vault.deleteItem('no-delete')).rejects.toThrow('You do not have permission to delete this item.');
+	await expect(vault.restoreItem('no-restore')).rejects.toThrow('You do not have permission to restore this item');
+	expect(requests).toBe(0);
+});
+test('restore refuses an active item before the server request', async () => {
+	let requests = 0;
+	const vault = service(() => {
+		requests++;
+		return Response.json({});
+	}, { profile: { id: 'user' }, ciphers: [wire({ id: 'active' })] });
+	await expect(vault.restoreItem('active')).rejects.toThrow('Cipher is not in trash.');
+	expect(requests).toBe(0);
+});
+test('restore uses unarchive only for archived items, and trash restore takes precedence', async () => {
+	const paths: string[] = [];
+	const vault = service((path, init) => {
+		paths.push(`${init.method} ${path}`);
+		return Response.json({});
+	}, {
+		profile: { id: 'user' },
+		ciphers: [
+			wire({ id: 'archived', archivedDate: '2026-01-01T00:00:00Z' }),
+			wire({ id: 'archived-and-trashed', archivedDate: '2026-01-01T00:00:00Z', deletedDate: '2026-01-02T00:00:00Z' }),
+		],
+	});
+	await vault.restoreItem('archived');
+	await vault.restoreItem('archived-and-trashed');
+	expect(paths).toEqual([
+		'PUT https://example.com/api/ciphers/archived/unarchive',
+		'PUT https://example.com/api/ciphers/archived-and-trashed/restore',
+	]);
+});
+test('editing a hidden-password item preserves secrets redacted from the CLI response', async () => {
+	const privateItem = {
+		type: 1,
+		name: 'Private',
+		login: { username: 'person', password: 'hidden-password', totp: 'hidden-totp' },
+		fields: [
+			{ name: 'hidden-field', value: 'hidden-custom-value', type: 1 },
+			{ name: 'hidden-field', value: 'second-hidden-custom-value', type: 1 },
+		],
+		passwordHistory: [{ password: 'hidden-history', lastUsedDate: '2026-01-01T00:00:00Z' }],
+	};
+	const existing = {
+		...encryptItem(privateItem, itemKey),
+		id: 'item',
+		key: encrypt(itemKey, userKey),
+		viewPassword: false,
+		revisionDate: '2026-01-01T00:00:00Z',
+	};
+	let submitted: JsonObject | undefined;
+	const vault = service((_path, init) => {
+		submitted = transformItem(JSON.parse(String(init.body)), itemKey, 'decrypt');
+		return Response.json({ ...JSON.parse(String(init.body)), id: 'item', viewPassword: false });
+	}, { profile: { id: 'user' }, ciphers: [existing], folders: [] });
+	const response = vaultItemResponse(vault.getItem('item'));
+	expect(JSON.stringify(response)).not.toContain('hidden-password');
+	expect(JSON.stringify(response)).not.toContain('hidden-totp');
+	expect(JSON.stringify(response)).not.toContain('hidden-custom-value');
+	expect(JSON.stringify(response)).not.toContain('second-hidden-custom-value');
+	response.name = 'Renamed';
+	await vault.editItem('item', response as Parameters<VaultService['editItem']>[1]);
+	expect((submitted?.login as JsonObject).password).toBe('hidden-password');
+	expect((submitted?.login as JsonObject).totp).toBe('hidden-totp');
+	expect(((submitted?.fields as JsonObject[])[0] ?? {}).value).toBe('hidden-custom-value');
+	expect(((submitted?.fields as JsonObject[])[1] ?? {}).value).toBe('second-hidden-custom-value');
+	expect(submitted?.name).toBe('Renamed');
+});
+test('item collection edits enforce organization ownership and view permission before mutation', async () => {
+	let requests = 0;
+	const vault = service(() => {
+		requests++;
+		return Response.json({});
+	}, {
+		profile: { id: 'user' },
+		collections: [],
+		ciphers: [wire({ id: 'personal' }), wire({ id: 'restricted', organizationId: 'org', viewPassword: false })],
+	});
+	await expect(vault.editItemCollections('personal', [])).rejects.toThrow(
+		'Item does not belong to an organization. Consider moving it first.',
+	);
+	await expect(vault.editItemCollections('restricted', [])).rejects.toMatchObject({
+		message: 'You do not have permission to edit this item',
+	});
+	expect(requests).toBe(0);
+});
+test('item collection edits return the updated decrypted cipher like bw', async () => {
+	const { publicKey, privateKey } = generateKeyPairSync('rsa', {
+		modulusLength: 2048,
+		publicKeyEncoding: { type: 'spki', format: 'der' },
+		privateKeyEncoding: { type: 'pkcs8', format: 'der' },
+	});
+	const organizationKey = Buffer.alloc(64, 5), cipherKey = Buffer.alloc(64, 6);
+	const organizationId = 'organization', collectionId = 'collection';
+	const cipher = {
+		...encryptItem({ ...plaintext, name: 'Organization item' }, cipherKey),
+		id: 'organization-item',
+		key: encrypt(cipherKey, organizationKey),
+		organizationId,
+		collectionIds: [collectionId],
+		revisionDate: '2026-01-01T00:00:00Z',
+	};
+	let requestBody: JsonObject | undefined;
+	const vault = service((path, init) => {
+		expect(path).toBe('https://example.com/api/ciphers/organization-item/collections');
+		expect(init.method).toBe('PUT');
+		requestBody = JSON.parse(String(init.body));
+		return Response.json(cipher);
+	}, {
+		profile: {
+			id: 'user',
+			privateKey: encrypt(privateKey, userKey),
+			organizations: [{ id: organizationId, key: encryptSharedKey(organizationKey, publicKey.toString('base64')) }],
+		},
+		collections: [{ id: collectionId, organizationId }],
+		ciphers: [
+			{ ...cipher, viewPassword: true },
+		],
+	});
+	try {
+		const updated = await vault.editItemCollections('organization-item', [collectionId]);
+		expect(requestBody).toEqual({ collectionIds: [collectionId] });
+		expect(updated).toMatchObject({
+			id: 'organization-item',
+			name: 'Organization item',
+			organizationId,
+			collectionIds: [collectionId],
+		});
+	} finally {
+		vault.dispose();
+		organizationKey.fill(0);
+		cipherKey.fill(0);
+	}
+});
+test('archive refuses an archived item and a trashed item before mutation', async () => {
+	let requests = 0;
+	const vault = service(() => {
+		requests++;
+		return Response.json({});
+	}, {
+		profile: { id: 'user', premiumPersonally: true },
+		ciphers: [
+			wire({ id: 'archived', archivedDate: '2026-01-01T00:00:00Z' }),
+			wire({ id: 'trashed', deletedDate: '2026-01-01T00:00:00Z' }),
+		],
+		folders: [],
+	});
+	await expect(vault.archiveItem('archived')).rejects.toThrow('Item is already archived.');
+	await expect(vault.archiveItem('trashed')).rejects.toThrow(
+		'Item is in the trash, the item must be restored before archiving.',
+	);
+	expect(requests).toBe(0);
+});
+test('archive requires premium before applying item-state checks or calling the server', async () => {
+	let requests = 0;
+	const vault = service(() => {
+		requests++;
+		return Response.json({});
+	}, {
+		profile: { id: 'user', premiumPersonally: false, premiumFromOrganization: false },
+		ciphers: [wire({ id: 'already-archived', archivedDate: '2026-01-01T00:00:00Z' })],
+	});
+	await expect(vault.archiveItem('already-archived')).rejects.toThrow(
+		'Premium status is required to use this feature.',
+	);
+	expect(requests).toBe(0);
+});
+test('premium archive sends the archive request', async () => {
+	let request: { path: string; method: string | undefined } | undefined;
+	const vault = service((path, init) => {
+		request = { path, method: init.method };
+		return Response.json({});
+	}, {
+		profile: { id: 'user', premiumPersonally: true },
+		ciphers: [wire()],
+	});
+	await vault.archiveItem('item');
+	expect(request).toEqual({ path: 'https://example.com/api/ciphers/item/archive', method: 'PUT' });
+});
 test('lists distinguish trash and archive and combine object filters with OR', () => {
 	const vault = service(() => Response.json({}), {
-		profile: { id: 'user' },
+		profile: { id: 'user', premium: true },
 		folders: [],
 		ciphers: [
 			wire(),
 			wire({ id: 'trash', deletedDate: 'date' }),
 			wire({ id: 'archive', archivedDate: 'date' }),
+			wire({ id: 'trash-archive', deletedDate: 'date', archivedDate: 'date' }),
 			wire({ id: 'folder', folderId: 'folder' }),
 		],
 	});
 	expect(vault.listItems().map(i => i.id)).toEqual(['item', 'folder']);
 	expect(vault.listItems({ trash: true }).map(i => i.id)).toEqual(['trash']);
+	expect(vault.listItems({ trash: true, archived: true }).map(i => i.id)).toEqual(['trash-archive']);
 	expect(vault.listItems({ archived: true }).map(i => i.id)).toEqual(['archive']);
 	expect(vault.listItems({ folderId: 'folder', organizationId: 'notnull' }).map(i => i.id)).toEqual(['folder']);
+});
+test('archived listing follows the synced premium capability', () => {
+	const vault = service(() => Response.json({}), {
+		profile: { id: 'user', premium: false, organizations: [{ id: 'org' }] },
+		folders: [],
+		ciphers: [wire(), wire({ id: 'archive', archivedDate: 'date' })],
+	});
+	expect(vault.listItems({ archived: true }).map(item => item.id)).toEqual(['item']);
+	const organizationPremiumVault = service(() => Response.json({}), {
+		profile: { id: 'user', premium: false, premiumFromOrganization: true },
+		folders: [],
+		ciphers: [wire(), wire({ id: 'archive', archivedDate: 'date' })],
+	});
+	expect(organizationPremiumVault.listItems({ archived: true }).map(item => item.id)).toEqual(['archive']);
+});
+test('restricted-item policies hide disallowed items from list and report the policy denial on get', async () => {
+	const organizationA = '11111111-1111-1111-1111-111111111111';
+	const organizationB = '22222222-2222-2222-2222-222222222222';
+	const rsa = generateKeyPairSync('rsa', {
+		modulusLength: 2048,
+		publicKeyEncoding: { type: 'spki', format: 'der' },
+		privateKeyEncoding: { type: 'pkcs8', format: 'der' },
+	});
+	const organizationKey = Buffer.alloc(64, 8);
+	const wrappedKey = `3.${
+		publicEncrypt({
+			key: createPublicKey({ key: rsa.publicKey, format: 'der', type: 'spki' }),
+			oaepHash: 'sha256',
+			padding: constants.RSA_PKCS1_OAEP_PADDING,
+		}, organizationKey).toString('base64')
+	}`;
+	const organizationCipher = (id: string, type: number, organizationId: string) =>
+		wire({ id, type, organizationId, key: encrypt(itemKey, organizationKey) });
+	let requests = 0;
+	const vault = service(() => {
+		requests++;
+		return Response.json({});
+	}, {
+		profile: {
+			id: 'user',
+			privateKey: encrypt(rsa.privateKey, userKey),
+			organizations: [{ id: organizationA, key: wrappedKey }, { id: organizationB, key: wrappedKey }],
+		},
+		folders: [],
+		policies: [{ organizationId: organizationA, type: 15, enabled: true, data: [3] }],
+		ciphers: [
+			wire({ id: 'personal-card', type: 3 }),
+			organizationCipher('org-a-card', 3, organizationA),
+			organizationCipher('org-b-card', 3, organizationB),
+			organizationCipher('org-a-login', 1, organizationA),
+		],
+	});
+	try {
+		expect(vault.listItems().map(item => item.id)).toEqual(['org-b-card', 'org-a-login']);
+		expect(() => vault.findItem('personal-card')).toThrow(
+			'Access to this item type is restricted by organizational policy.',
+		);
+		expect(() => vault.findItem('org-a-card')).toThrow(
+			'Access to this item type is restricted by organizational policy.',
+		);
+		expect(() => vault.findItem('org-a-card', () => false)).toThrow(
+			'Access to this item type is restricted by organizational policy.',
+		);
+		expect(vault.findItem('org-b-card').id).toBe('org-b-card');
+		await expect(vault.editItem('org-a-card', vault.getItem('org-a-card'))).rejects.toThrow(
+			'Editing this item type is restricted by organizational policy.',
+		);
+		await expect(vault.deleteItem('org-a-card')).rejects.toThrow(
+			'Deleting this item type is restricted by organizational policy.',
+		);
+		await expect(vault.createItem({ type: 3, name: 'Restricted card' })).rejects.toThrow(
+			'Creating this item type is restricted by organizational policy.',
+		);
+		expect(requests).toBe(0);
+	} finally {
+		vault.dispose();
+		rsa.privateKey.fill(0);
+		organizationKey.fill(0);
+	}
+});
+test('password health includes archived and policy-hidden logins exactly once', async () => {
+	const vault = service(() => Response.json({}), {
+		profile: { id: 'user', premium: false },
+		folders: [],
+		policies: [{ organizationId: 'org', type: 15, enabled: true, data: [1] }],
+		ciphers: [
+			wire({ id: 'active' }),
+			wire({ id: 'archived', archivedDate: '2026-01-01T00:00:00Z' }),
+		],
+	});
+	try {
+		expect(vault.listItems().map(item => item.id)).toEqual([]);
+		const rows = await vault.passwordHealth({ checkExposed: false });
+		expect(rows.map(row => row.id)).toEqual(['active', 'archived']);
+		expect(rows.map(row => row.reuseCount)).toEqual([2, 2]);
+	} finally {
+		vault.dispose();
+	}
 });
 test('decrypts organization items and collections using account RSA private key', () => {
 	const rsa = generateKeyPairSync('rsa', {
@@ -136,7 +586,7 @@ function organizationSnapshot(ciphers: JsonObject[] = []) {
 			profile: {
 				id: 'user',
 				privateKey: encrypt(rsa.privateKey, userKey),
-				organizations: [{ id: 'org', key: wrapped }],
+				organizations: [{ id: 'org', organizationUserId: 'membership', key: wrapped }],
 			},
 			ciphers,
 			collections: [{ id: 'collection', organizationId: 'org', name: encrypt(Buffer.from('Collection'), orgKey) }],
@@ -292,18 +742,22 @@ test('moving a legacy item migrates its attachment bytes and keys before sharing
 		orgKey.fill(0);
 	}
 });
-test('collection rename preserves existing membership assignments', async () => {
+test('collection rename sends null memberships without an extra details request', async () => {
 	const { snapshot, orgKey } = organizationSnapshot();
-	const users = [{ id: 'member', readOnly: true, hidePasswords: true, manage: false }];
-	const vault = service((_path, init) => {
-		if (init.method === 'GET') {
-			return Response.json({ id: 'collection', name: encrypt(Buffer.from('Old'), orgKey), users, groups: [] });
-		}
+	const vault = service((path, init) => {
+		expect(path).toEndWith('/api/organizations/org/collections/collection');
+		expect(init.method).toBe('PUT');
 		const body = JSON.parse(String(init.body));
-		expect(body.users).toEqual(users);
-		expect(body.groups).toEqual([]);
+		expect(body.users).toBeNull();
+		expect(body.groups).toBeNull();
+		expect(body.externalId).toBeUndefined();
 		expect(decrypt(body.name, orgKey).toString()).toBe('New');
-		return Response.json({ ...body, id: 'collection' });
+		return Response.json({
+			id: 'collection',
+			name: body.name,
+			users: [{ id: 'member', readOnly: true, hidePasswords: true, manage: false }],
+			groups: [],
+		});
 	}, snapshot);
 	try {
 		expect((await vault.editCollection('org', 'collection', { name: 'New' })).name).toBe('New');
@@ -311,16 +765,92 @@ test('collection rename preserves existing membership assignments', async () => 
 		vault.dispose();
 	}
 });
-test('move rejects a collection from another organization before any network mutation', async () => {
+test('new organization collections grant the current member manage access by default', async () => {
+	const { snapshot, orgKey } = organizationSnapshot();
+	const vault = service((path, init) => {
+		expect(path).toEndWith('/api/organizations/org/collections');
+		expect(init.method).toBe('POST');
+		const body = JSON.parse(String(init.body));
+		expect(body.users).toEqual([{ id: 'membership', readOnly: false, hidePasswords: false, manage: true }]);
+		expect(body.groups).toBeNull();
+		return Response.json({ id: 'created-collection', name: encrypt(Buffer.from('Created'), orgKey) });
+	}, snapshot);
+	try {
+		expect((await vault.createCollection('org', { name: 'Created' })).name).toBe('Created');
+	} finally {
+		vault.dispose();
+		orgKey.fill(0);
+	}
+});
+test('move rejects an inaccessible collection before any network mutation', async () => {
 	const { snapshot } = organizationSnapshot([wire()]);
 	let calls = 0;
 	const vault = service(() => {
 		calls++;
 		return Response.json({});
 	}, snapshot);
-	await expect(vault.moveItem('item', 'org', ['other-collection'])).rejects.toThrow('another organization');
+	await expect(vault.moveItem('item', 'org', ['other-collection'])).rejects.toThrow(
+		'You do not have permission to add items to this collection.',
+	);
 	expect(calls).toBe(0);
 	vault.dispose();
+});
+
+test('move applies the bw collection-edit rule from cached organization and collection access', async () => {
+	for (
+		const organization of [
+			{ type: 1, allowAdminAccessToAllCollectionItems: true },
+			{ type: 4, permissions: { editAnyCollection: true } },
+		]
+	) {
+		const { snapshot, orgKey } = organizationSnapshot([wire()]);
+		Object.assign(snapshot.profile.organizations[0]!, organization);
+		Object.assign(snapshot.collections[0]!, { readOnly: true, manage: false });
+		const vault = service((path, init) => {
+			expect(path).toEndWith('/api/ciphers/item/share');
+			const body = JSON.parse(String(init.body));
+			return Response.json({ ...body.cipher, id: 'item', organizationId: 'org' });
+		}, snapshot);
+		try {
+			expect((await vault.moveItem('item', 'org', ['collection'])).organizationId).toBe('org');
+		} finally {
+			vault.dispose();
+			orgKey.fill(0);
+		}
+	}
+});
+
+test('move lowercases cipher and organization IDs like bw before lookup and mutation', async () => {
+	const { snapshot, orgKey } = organizationSnapshot([wire()]);
+	const vault = service((path, init) => {
+		expect(path).toEndWith('/api/ciphers/item/share');
+		const body = JSON.parse(String(init.body));
+		expect(body.cipher.organizationId).toBe('org');
+		return Response.json({ ...body.cipher, id: 'item', organizationId: 'org' });
+	}, snapshot);
+	try {
+		expect((await vault.moveItem('ITEM', 'ORG', ['collection'])).organizationId).toBe('org');
+	} finally {
+		vault.dispose();
+		orgKey.fill(0);
+	}
+});
+
+test('move rejects read-only collections for a regular organization member before mutation', async () => {
+	const { snapshot, orgKey } = organizationSnapshot([wire()]);
+	Object.assign(snapshot.profile.organizations[0]!, { type: 2 });
+	Object.assign(snapshot.collections[0]!, { readOnly: true, manage: false });
+	let calls = 0;
+	const vault = service(() => {
+		calls++;
+		return Response.json({});
+	}, snapshot);
+	await expect(vault.moveItem('item', 'org', ['collection'])).rejects.toThrow(
+		'You do not have permission to add items to this collection.',
+	);
+	expect(calls).toBe(0);
+	vault.dispose();
+	orgKey.fill(0);
 });
 
 test('failed binary upload removes incomplete attachment metadata', async () => {
@@ -335,7 +865,7 @@ test('failed binary upload removes incomplete attachment metadata', async () => 
 			return Response.json({}, { status: 500 });
 		}
 		return new Response(null, { status: 204 });
-	});
+	}, { profile: { premiumPersonally: true }, ciphers: [wire()] });
 	await expect(vault.createAttachment('item', 'private.bin', Buffer.from([0, 255]))).rejects.toThrow(
 		'incomplete metadata was removed',
 	);
@@ -359,7 +889,7 @@ test('attachment queries search item names and filenames, preferring one exact f
 		}
 		expect(path).toMatch(/\/api\/ciphers\/item\/attachment\/(abc123|def456)$/);
 		return Response.json({ url: 'https://files.example/signed-attachment' });
-	}, { profile: {}, ciphers: [wire({ attachments })] });
+	}, { profile: { premiumPersonally: true }, ciphers: [wire({ attachments })] });
 	try {
 		for (const query of ['REPORT.BIN', 'ABC123']) {
 			const result = await vault.getAttachment('Example', query);
@@ -371,9 +901,13 @@ test('attachment queries search item names and filenames, preferring one exact f
 			}
 		}
 		expect(paths).toHaveLength(4);
-		for (const query of ['REPORT', '.bin', 'missing', '']) {
-			await expect(vault.getAttachment('item', query)).rejects.toThrow();
+		for (const query of ['REPORT', '.bin']) {
+			await expect(vault.getAttachment('item', query)).rejects.toThrow('More than one result was found.');
 		}
+		await expect(vault.getAttachment('item', 'missing')).rejects.toThrow(
+			'Attachment `missing` was not found.',
+		);
+		await expect(vault.getAttachment('item', '')).rejects.toThrow('Attachment not found.');
 		expect(paths).toHaveLength(4);
 		const partial = await vault.getAttachment('item', 'BACKUP');
 		expect(partial.fileName).toBe('Report.bin.backup');
@@ -384,11 +918,25 @@ test('attachment queries search item names and filenames, preferring one exact f
 			fileName: encrypt(Buffer.from('REPORT.BIN'), itemKey),
 			key: encrypt(key, itemKey),
 		});
-		await expect(vault.getAttachment('item', 'report.bin')).rejects.toThrow('Multiple');
+		await expect(vault.getAttachment('item', 'report.bin')).rejects.toThrow(
+			'More than one result was found. Try getting a specific object by `id` instead. '
+				+ 'The following objects were found:\nabc123\ndef456\nduplicate',
+		);
 		expect(paths).toHaveLength(6);
 	} finally {
 		vault.dispose();
 		key.fill(0);
+	}
+});
+
+test('attachment reads distinguish items without attachments from unknown attachment names', async () => {
+	const vault = service(() => {
+		throw new Error('Attachment download should not be requested.');
+	}, { profile: { id: 'user' }, ciphers: [wire({ attachments: [] })] });
+	try {
+		await expect(vault.getAttachment('item', 'missing')).rejects.toThrow('No attachments available for this item.');
+	} finally {
+		vault.dispose();
 	}
 });
 
@@ -409,7 +957,7 @@ test('attachment metadata falls back only on 404, retaining cached keys and cred
 				return new Response(new Uint8Array(encryptAttachment(contents, key)));
 			}
 			return Response.json({}, { status });
-		}, { profile: {}, ciphers: [wire({ attachments: [attachment] })] });
+		}, { profile: { premiumPersonally: true }, ciphers: [wire({ attachments: [attachment] })] });
 		try {
 			if (status === 404) {
 				const result = await vault.getAttachment('item', 'old.bin');
@@ -422,4 +970,62 @@ test('attachment metadata falls back only on 404, retaining cached keys and cred
 		}
 	}
 	key.fill(0);
+});
+test('attachment download requires premium for personal items before network access', async () => {
+	let requests = 0;
+	const attachment = {
+		id: 'attachment',
+		fileName: encrypt(Buffer.from('private.bin'), itemKey),
+		key: encrypt(Buffer.alloc(64, 8), itemKey),
+	};
+	const vault = service(() => {
+		requests++;
+		return Response.json({});
+	}, {
+		profile: { premiumPersonally: false, premiumFromOrganization: false },
+		ciphers: [wire({ attachments: [attachment] })],
+	});
+	try {
+		expect(vault.canAccessAttachment('item')).toBe(false);
+		await expect(vault.getAttachment('item', 'private.bin')).rejects.toThrow(
+			'Premium status is required to use this feature.',
+		);
+		await expect(vault.createAttachment('item', 'private.bin', Buffer.from('synthetic'))).rejects.toThrow(
+			'Premium status is required to use this feature.',
+		);
+		await expect(vault.deleteAttachment('item', 'attachment')).rejects.toThrow(
+			'Premium status is required to use this feature.',
+		);
+		expect(requests).toBe(0);
+	} finally {
+		vault.dispose();
+	}
+	const organization = service(() => Response.json({}), {
+		profile: { premiumPersonally: false, organizations: [{ id: 'org' }] },
+		ciphers: [{ id: 'organization-item', organizationId: 'org' }],
+	});
+	try {
+		expect(organization.canAccessAttachment('organization-item')).toBe(true);
+	} finally {
+		organization.dispose();
+	}
+});
+test('attachment deletion validates membership before sending the server request', async () => {
+	let requests = 0;
+	const vault = service((path, init) => {
+		requests++;
+		expect(path).toEndWith('/api/ciphers/item/attachment/AbC123');
+		expect(init.method).toBe('DELETE');
+		return Response.json({});
+	}, { profile: { premiumPersonally: true }, ciphers: [wire({ attachments: [{ id: 'AbC123' }] })] });
+	await expect(vault.deleteAttachment('item', 'missing')).rejects.toThrow('Attachment `missing` was not found.');
+	expect(requests).toBe(0);
+	await vault.deleteAttachment('item', 'abc123');
+	expect(requests).toBe(1);
+	const empty = service(() => {
+		requests++;
+		return Response.json({});
+	}, { profile: {}, ciphers: [wire({ attachments: [] })] });
+	await expect(empty.deleteAttachment('item', 'missing')).rejects.toThrow('No attachments available for this item.');
+	expect(requests).toBe(1);
 });

@@ -47,3 +47,15 @@ test('Password Safe XML rejects malformed, missing-root, and entity-bearing docu
 	expect(() => parsePasswordSafeXml('<!DOCTYPE x [<!ENTITY secret "private">]><passwordsafe/>'))
 		.toThrow('XML entity declarations are not supported.');
 });
+
+test('Password Safe XML matches bw delimiter coercion when the attribute is absent or empty', () => {
+	const absent = items(parsePasswordSafeXml(
+		'<passwordsafe><entry><title>Missing delimiter</title><notes>remember null token</notes></entry></passwordsafe>',
+	));
+	expect(absent[0]?.notes).toBe('remember \n token');
+
+	const empty = items(parsePasswordSafeXml(
+		'<passwordsafe delimiter=""><entry><title>Empty delimiter</title><notes>abc</notes></entry></passwordsafe>',
+	));
+	expect(empty[0]?.notes).toBe('a\nb\nc');
+});

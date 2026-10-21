@@ -370,7 +370,11 @@ live('focused external import matches the independent bw importer', async () => 
 				name: item.name,
 				type: item.type,
 				favorite: item.favorite,
-				notes: typeof item.notes === 'string' ? item.notes.replace(/\r?\n$/, '') : null,
+				notes: typeof item.notes === 'string'
+					? format === 'safeincloudxml'
+						? item.notes
+						: item.notes.replace(/\r?\n$/, '')
+					: null,
 				folder: folders.find(folder => folder.id === item.folderId)?.name ?? null,
 				fields: [...((item.fields ?? []) as Record<string, unknown>[])].sort((a, b) =>
 					String(a.name).localeCompare(String(b.name))

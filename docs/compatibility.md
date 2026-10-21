@@ -60,28 +60,38 @@ failures. Tests cover SemVer prerelease/build ordering, credential-free requests
 redirect rejection configuration and sanitized error handling. No self-update
 or Bitwarden product-update request occurs.
 
-| Area                      | Coverage                                                                                                                                                                |
-| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Server selection          | Explicit URL; path prefixes; no cloud fallback                                                                                                                          |
-| Prelogin                  | Identity endpoint with legacy API fallback only on 404/405                                                                                                              |
-| Password authentication   | PBKDF2 and Argon2id, stable CLI device ID, initial sync/unlock, password inputs, refresh and 401 recovery                                                               |
-| API-key authentication    | Personal user client credentials, authenticated principal/KDF lookup, locked login, repeated-grant renewal, master-password unlock                                      |
-| Two-factor                | Provider/token submission and supported TOTP/email challenges; the reference CLI's separate new-device email-OTP challenge is not emitted by pinned Vaultwarden targets |
-| User keys                 | Legacy Key and modern wrapped-key response fields                                                                                                                       |
-| Encryption                | Encryption V1 EncString type 2; verify MAC before decrypting                                                                                                            |
-| Organization keys         | Account private-key decryption and RSA OAEP key types 3/4                                                                                                               |
-| Item reads/writes         | Login, secure note, card, identity, SSH key; per-item keys; custom fields and password history                                                                          |
-| Edit conflicts            | Preserve current item key; send lastKnownRevisionDate; reject stale edits                                                                                               |
-| Item lifecycle            | Create, edit, soft/permanent delete, restore, archive/unarchive                                                                                                         |
-| Folders                   | Create, list, get, edit, delete with encrypted names                                                                                                                    |
-| Organizations/collections | Collection CRUD with access preservation; member listing and confirmation; item moves and collection assignments                                                        |
-| Attachments               | Type-2 binary encryption, multipart upload, signed downloads, raw bytes, private file output, deletion, upload-failure cleanup                                          |
-| Sends                     | Text/file creation, owner reads, metadata/text edits, password removal, deletion, anonymous receive; separate fragment-key and account-key handling                     |
-| Filtering                 | Search, folder/organization/collection IDs, trash and archive                                                                                                           |
-| Templates/encoding/TOTP   | Item/folder templates, stdin base64 encoding; RFC 6238 and Steam TOTP                                                                                                   |
-| Reports                   | Password-health strength/reuse, archived and organization logins, optional HIBP range checks; get exposed occurrence counts                                             |
-| Local state               | Atomic private storage, encrypted cache, offline reads, session invalidation                                                                                            |
-| Protocol version          | Bitwarden-Client-Version 2026.10.0; required for Vaultwarden to include SSH keys in sync                                                                                |
+| Area                      | Coverage                                                                                                                                                                                                                                                    |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Server selection          | Explicit URL; path prefixes; no cloud fallback                                                                                                                                                                                                              |
+| Prelogin                  | Identity endpoint with legacy API fallback only on 404/405                                                                                                                                                                                                  |
+| Password authentication   | PBKDF2 and Argon2id, stable CLI device ID, initial sync/unlock, password inputs, refresh and 401 recovery                                                                                                                                                   |
+| API-key authentication    | Personal user client credentials, authenticated principal/KDF lookup, locked login, repeated-grant renewal, master-password unlock                                                                                                                          |
+| Two-factor                | Provider/token submission and interactive TOTP, email, Duo OIDC, FIDO2 and U2F challenges; WebAuthn CLI login uses optional system libfido2 tools. The reference CLI's separate new-device email-OTP challenge is not emitted by pinned Vaultwarden targets |
+| User keys                 | Legacy Key and modern wrapped-key response fields                                                                                                                                                                                                           |
+| Encryption                | Encryption V1 EncString type 2; verify MAC before decrypting                                                                                                                                                                                                |
+| Organization keys         | Account private-key decryption and RSA OAEP key types 3/4                                                                                                                                                                                                   |
+| Item reads/writes         | Login, secure note, card, identity, SSH key, bank account, driver license, passport; per-item keys; custom fields and password history                                                                                                                      |
+| Edit conflicts            | Preserve current item key; send lastKnownRevisionDate; reject stale edits                                                                                                                                                                                   |
+| Item lifecycle            | Create, edit, soft/permanent delete, restore, archive/unarchive                                                                                                                                                                                             |
+| Folders                   | Create, list, get, edit, delete with encrypted names                                                                                                                                                                                                        |
+| Organizations/collections | Collection CRUD with access preservation; member listing and confirmation; item moves and collection assignments                                                                                                                                            |
+| Organization policies     | URI match defaults and restricted-item-type visibility from synced policy type/data                                                                                                                                                                         |
+| Attachments               | Type-2 binary encryption, multipart upload, signed downloads, raw bytes, private file output, deletion, upload-failure cleanup                                                                                                                              |
+| Sends                     | Text/file creation, owner reads, metadata/text edits, password removal, deletion, anonymous receive; separate fragment-key and account-key handling                                                                                                         |
+| Filtering                 | Search, folder/organization/collection IDs, trash and archive                                                                                                                                                                                               |
+| Templates/encoding/TOTP   | Item/folder templates, stdin base64 encoding; RFC 6238 and Steam TOTP                                                                                                                                                                                       |
+| Reports                   | Password-health strength/reuse, archived and organization logins, optional HIBP range checks; get exposed occurrence counts                                                                                                                                 |
+| Local state               | Atomic private storage, encrypted cache, offline reads, session invalidation                                                                                                                                                                                |
+| Protocol version          | Bitwarden-Client-Version 2026.10.0; required for Vaultwarden to include SSH keys in sync                                                                                                                                                                    |
+
+The pinned Bitwarden CLI adds a premium-plan check before downloading personal-vault
+attachments. Vaultwarden's pinned attachment metadata handler checks cipher
+access and attachment ownership without applying that plan gate, so this client
+keeps Vaultwarden's server-supported download behavior instead of copying the
+Bitwarden-hosted account restriction. See Vaultwarden's
+[`get_attachment`](https://github.com/dani-garcia/vaultwarden/blob/58a980f850464f7d9cdc99a765df36f0a3308b91/src/api/core/ciphers.rs#L1127-L1146)
+and the pinned client's
+[`getAttachment`](https://github.com/bitwarden/clients/blob/ce5386b939062d9535cdf1a998101d25194908d0/apps/cli/src/commands/get.command.ts#L381-L419).
 
 KDF work is bounded: PBKDF2 at most 10,000,000 iterations; Argon2id at most
 20 iterations, 256 MiB, and 16 lanes. Unsupported formats fail explicitly.
@@ -289,6 +299,15 @@ substring lookups, uppercase UUIDs, overlapping names, and missing UUIDs directl
 against the independent client, alongside the existing protocol/transfer checks.
 The older server run does not include reference-client comparisons.
 
+The pinned `GetCommand.run`, `ListCommand.run`, `EditCommand.run`, and
+`RestoreCommand.run` dispatch arbitrary object strings and return `Unknown
+object.` for unsupported names. The DreamCLI frontend now preserves that
+behavior instead of rejecting those names through enum parsers; for `edit`,
+encoded request JSON is decoded before object dispatch, matching the reference
+order. Built-Node CLI regressions verify each response after the logged-in
+access gate. Empty `get` IDs also pass through to lookup and return the pinned
+`Not found.` response instead of failing argument parsing.
+
 The same real-server fixture now starts the compiled Node `serve` command on an
 ephemeral TCP port and verifies item/folder CRUD, exact secret strings, 256 KiB
 multipart attachment round-trips, text Sends, archive/restore, lock/unlock,
@@ -305,6 +324,19 @@ login-item JSON response in this fixture, exact secret responses and file Send
 rejection match in that comparison. The response model omits server-only fields,
 normalizes dates to milliseconds, supplies SDK defaults and excludes item and
 attachment key metadata. Handler tests also verify hidden-password redaction.
+Repeated boolean query keys now follow Koa and
+`CliUtils.convertBooleanOption`: they arrive as arrays and convert to `false`.
+A regression verifies duplicate `last` keys trigger a full sync instead of
+returning the last-sync timestamp.
+
+`POST /move/:id/:organizationId` preserves the pinned handler's validation
+order: the Koa-parsed body reaches `ShareCommand` unchanged, and each collection
+value is checked during collection-access lookup with the reference's
+case-sensitive ID comparison. A non-string member such as `[123]` or an
+uppercased collection UUID therefore returns `You do not have permission to
+add items to this collection.` rather than a local pre-validation error. The source is
+[`ShareCommand`](https://github.com/bitwarden/clients/blob/ce5386b939062d9535cdf1a998101d25194908d0/apps/cli/src/admin-console/commands/share.command.ts);
+a local API regression verifies the same response.
 File Send creation is explicitly unsupported by
 [`SendCreateCommand` in serve mode](https://github.com/bitwarden/clients/blob/ce5386b939062d9535cdf1a998101d25194908d0/apps/cli/src/tools/send/commands/create.command.ts);
 the HTTP API rejects it without reading the supplied host filename. The CLI and
@@ -326,7 +358,10 @@ Vendor mappings follow the pinned
 [`Safari`](https://github.com/bitwarden/clients/blob/ce5386b939062d9535cdf1a998101d25194908d0/libs/importer/src/importers/safari-csv-importer.ts),
 [`KeePassX`](https://github.com/bitwarden/clients/blob/ce5386b939062d9535cdf1a998101d25194908d0/libs/importer/src/importers/keepassx-csv-importer.ts),
 and [`LastPass`](https://github.com/bitwarden/clients/blob/ce5386b939062d9535cdf1a998101d25194908d0/libs/importer/src/importers/lastpass/lastpass-csv-importer.ts)
-importers. LastPass HTML and newer dedicated-type conversions still need coverage.
+importers. LastPass HTML exports are also supported: their `<pre>` text is
+extracted and HTML entities are decoded before the LastPass CSV mapping runs.
+Opt-in newer dedicated-type conversions remain a separate feature-flag parity
+case; the default import mapping is covered here.
 KeePass XML uses the pinned
 [`KeePass2XmlImporter`](https://github.com/bitwarden/clients/blob/ce5386b939062d9535cdf1a998101d25194908d0/libs/importer/src/importers/keepass2-xml-importer.ts)
 as its mapping reference. Its live fixture includes root/nested groups, an empty
@@ -405,7 +440,9 @@ single live run on several adapters without repeating account setup.
 
 Both clients decrypted the same synthetic per-item-key passwords over HTTPS,
 including secrets and folders written by the new CLI and an organization-owned
-item. Live tests cover all five supported item types, stale-edit rejection, and
+item. Live tests cover the original five item types; bank account, driver license,
+and passport currently have local codec, JSON-import, template, and response tests
+but still need live cross-client verification. Stale-edit rejection and
 trash/archive/restore/permanent-delete transitions. Collection CRUD, assignment,
 member confirmation, binary attachments, and item moves are also live tested.
 A separately registered and confirmed account can unwrap the organization key;
@@ -447,7 +484,11 @@ endpoints follow
 Password-health reports match official bw field for field for the live fixture
 corpus under both KDFs. The corpus includes reused, empty, contextual, Unicode,
 oversized, archived, and deleted login passwords, plus a non-login item.
-Organization logins are included. A loopback HIBP-compatible range service tests
+Organization logins are included. Selection reads all synced ciphers like the
+pinned report path, including archived logins without premium entitlement and
+logins hidden from ordinary listing by item-visibility policies; regression
+tests cover non-premium archive reuse counts and policy-hidden logins. A loopback
+HIBP-compatible range service tests
 positive counts, no-network mode, failed lookups, and absence of account
 credentials. `get exposed` prints a positive count and fails on service errors.
 Local tests cover padded replies, malformed/oversized bodies, timeouts,
@@ -516,7 +557,9 @@ The pinned [file-format inventory](reference/bw-import-formats-2026.10.0.json)
 contains 72 IDs extracted from the reference's canonical `importOptionsById`,
 filtering nonempty `acceptedFileTypes` exactly as its CLI listing does. This is
 source-derived: the reference refuses `import --formats` while logged out.
-Our importer list now covers all 72 reference IDs and adds the Vaultwarden
+The CLI enforces that login check and emits the sorted `MessageResponse`, raw,
+and `--response` formats from the pinned command. Our importer list now covers
+all 72 reference IDs and adds the Vaultwarden
 `bitwardenzip` backup format. Password Depot 17 XML has fixture-based unit
 coverage and a completed live comparison with `bw` on Vaultwarden 1.37.4. The
 unified Keeper ID selects its CSV or JSON importer from the file content, and
@@ -793,9 +836,11 @@ Vaultwarden 1.37.4.
 
 Password Safe XML (`pwsafexml`) converts dotted groups into folder paths,
 expands the export's notes delimiter, and uses email as the username when the
-username is blank. Its focused 2026-10-21 live comparison matched imported
-items and folder relationships against `/usr/bin/bw` 2026.10.0 on Vaultwarden
-1.37.4.
+username is blank. The parser also matches the pinned importer's JavaScript
+coercion for a missing delimiter (`split(null)` uses the literal `"null"`) and
+for an empty delimiter. Focused source-derived tests cover both cases. Its
+focused 2026-10-21 live comparison matched imported items and folder
+relationships against `/usr/bin/bw` 2026.10.0 on Vaultwarden 1.37.4.
 
 Sticky Password XML (`stickypasswordxml`) resolves login records through
 account links, maps account comments and URLs, and follows group parent IDs to
@@ -848,7 +893,17 @@ serializes structured JSON with two-space indentation; it never attempts to
 parse stdout to guess its type. Tests verify compact defaults, `VW_PRETTY`,
 explicit false overrides, quiet precedence, nested templates, schema-derived
 completions, JSON mode, literal flags after `--`, and unchanged raw secret/export
-bytes. Response envelopes and clean-exit behavior remain required work.
+bytes. Initial response envelopes and clean-exit behavior are implemented;
+login/unlock guidance now uses the reference `BW_SESSION` and `bw` examples;
+string-versus-message response types are selected by command, including raw
+secret output, and lock/logout titles match the reference. Response-mode list
+and get payloads for folders, collections, organizations, and organization
+members/collections now use the pinned response-model fields; owner Send and anonymous receive output now follows the pinned SendResponse and SendAccessResponse projections; exact payload
+parity for the remaining commands remains under audit. Delete, restore, archive, member
+confirmation, and Send deletion now use the reference no-data success behavior:
+normal mode stays silent and response mode emits only `{ "success": true }`.
+Organization item collection edits return the updated decrypted cipher; both
+Vaultwarden 1.36.0 and 1.37.4 collection routes return that cipher.
 
 All terminal prompts now use DreamCLI's shared prompt
 session. Hidden password entry replaces `@inquirer/password` for login, API

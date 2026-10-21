@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { parse as parseHtml } from 'parse5';
+import type { DefaultTreeAdapterTypes } from 'parse5';
 import { getHostname } from 'tldts';
 import { parseCsv } from '#csv';
 import type { JsonObject } from '#client';
@@ -50,6 +52,30 @@ export const externalCsvFormats = [
 	'passwordxpcsv',
 	'netwrixpasswordsecure',
 ] as const;
+
+function lastPassCsv(source: string): string {
+	// LastPass exports can be downloaded as an HTML page whose CSV is held in a
+	// <pre>. Parse it as inert HTML so entities are decoded just as they are by
+	// the reference importer's DOM text extraction.
+	if (!/<\s*(?:!doctype\s+html|html|body|pre)\b/i.test(source)) return source;
+	const findPre = (node: DefaultTreeAdapterTypes.Node): DefaultTreeAdapterTypes.Element | undefined => {
+		if ('tagName' in node && node.tagName === 'pre') return node;
+		const children = 'childNodes' in node ? node.childNodes : [];
+		for (const child of children) {
+			const match = findPre(child);
+			if (match) return match;
+		}
+		return undefined;
+	};
+	const textContent = (node: DefaultTreeAdapterTypes.Node): string => {
+		if (node.nodeName === '#text' && 'value' in node) return node.value;
+		const children = 'childNodes' in node ? node.childNodes : [];
+		return children.map(textContent).join('');
+	};
+	const pre = findPre(parseHtml(source));
+	if (!pre) throw new Error('LastPass HTML export is missing its CSV data.');
+	return textContent(pre);
+}
 export type ExternalCsvFormat = typeof externalCsvFormats[number];
 export function isExternalCsvFormat(value: string): value is ExternalCsvFormat {
 	return (externalCsvFormats as readonly string[]).includes(value);
@@ -1336,6 +1362,7 @@ export function parseExternalCsv(format: ExternalCsvFormat, source: string, orga
 	if (format === 'keepercsv') return keeperCsv(parseCsv(source.trim()), organization);
 	if (format === 'passwordxpcsv') return passwordXpCsv(parseCsv(source), organization);
 	if (format === 'netwrixpasswordsecure') return netwrixPasswordSecureCsv(source, organization);
+	if (format === 'lastpasscsv') source = lastPassCsv(source);
 	// The reference routes these vendor IDs through the same parsers.
 	if (format === 'edgecsv' || format === 'operacsv' || format === 'vivaldicsv' || format === 'bravecsv') {
 		format = 'chromecsv';

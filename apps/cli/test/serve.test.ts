@@ -3,6 +3,13 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { withStore } from '#store';
+import { effectiveServePort } from '#serve-command';
+
+test('serve uses the reference default port when zero is supplied', () => {
+	expect(effectiveServePort(0)).toBe(8087);
+	expect(effectiveServePort(8087)).toBe(8087);
+	expect(effectiveServePort(9090)).toBe(9090);
+});
 
 // The listener fixtures run under Node, matching the installed CLI runtime.
 // Native handle access is confined to the fixture that supplies inherited descriptors.
@@ -51,7 +58,7 @@ try {
     await ended;
     if(!output.startsWith('HTTP/1.1 200 ')) throw Error('Unexpected connected response');
     // Node may use a chunked response: assert the JSON content independently of framing.
-    if(!output.includes('"status":"locked"')) throw Error('Missing connected status');
+    if(!output.includes('"status":"locked"')||!output.includes('"userId":"11111111-1111-1111-1111-111111111111"')) throw Error('Missing connected status identity');
   } else {
     result=await new Promise((resolve,reject)=>{
       const request=http.get(path?{socketPath:path,path:'/status',headers:{Host:'localhost:8087'}}:
@@ -60,7 +67,7 @@ try {
           response.on('end',()=>resolve({status:response.statusCode,body:JSON.parse(output)}));
         }); request.on('error',reject);
     });
-    if(result.status!==200||result.body.data.template.status!=='locked') throw Error('Unexpected status response');
+    if(result.status!==200||result.body.data.template.status!=='locked'||result.body.data.template.userId!=='11111111-1111-1111-1111-111111111111') throw Error('Unexpected status response');
     child.kill('SIGTERM');
   }
   const [code,signal]=await exited;
@@ -79,7 +86,9 @@ for (const mode of ['unix', 'listening', 'connected']) {
 				state.account = {
 					email: 'fixture@example.com',
 					kdf: { type: 0, iterations: 600000 },
-					accessToken: 'synthetic-access',
+					accessToken: `header.${
+						Buffer.from(JSON.stringify({ sub: '11111111-1111-1111-1111-111111111111' })).toString('base64url')
+					}.signature`,
 					refreshToken: 'synthetic-refresh',
 					expiresAt: Date.now() + 3600000,
 					encryptedUserKey: 'locked-fixture-key',

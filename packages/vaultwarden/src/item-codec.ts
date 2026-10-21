@@ -26,11 +26,53 @@ const sections: Record<string, string[]> = {
 		'licenseNumber',
 	],
 	sshKey: ['privateKey', 'publicKey', 'keyFingerprint'],
+	bankAccount: [
+		'bankName',
+		'nameOnAccount',
+		'accountType',
+		'accountNumber',
+		'routingNumber',
+		'branchNumber',
+		'pin',
+		'swiftCode',
+		'iban',
+		'bankContactPhone',
+	],
+	driversLicense: [
+		'firstName',
+		'middleName',
+		'lastName',
+		'dateOfBirth',
+		'licenseNumber',
+		'issuingCountry',
+		'issuingState',
+		'issueDate',
+		'expirationDate',
+		'issuingAuthority',
+		'licenseClass',
+	],
+	passport: [
+		'surname',
+		'givenName',
+		'dateOfBirth',
+		'sex',
+		'birthPlace',
+		'nationality',
+		'issuingCountry',
+		'passportNumber',
+		'passportType',
+		'nationalIdentificationNumber',
+		'issuingAuthority',
+		'issueDate',
+		'expirationDate',
+	],
 };
 /** One field map serves both directions so writes cannot accidentally leave known secrets in plaintext. */
 export function transformItem(input: JsonObject, key: Uint8Array, direction: 'encrypt' | 'decrypt'): JsonObject {
 	const item = structuredClone(input);
-	if (typeof item.type === 'number' && ![1, 2, 3, 4, 5].includes(item.type)) throw new Error('Unsupported item type.');
+	if (typeof item.type === 'number' && ![1, 2, 3, 4, 5, 6, 7, 8].includes(item.type)) {
+		throw new Error('Unsupported item type.');
+	}
 	const transform = (target: JsonObject, names: string[]) => {
 		for (const name of names) {
 			const value = target[name];

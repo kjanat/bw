@@ -1,8 +1,29 @@
 import { expect, test } from 'bun:test';
-import { parseExternalJson } from '#json-import';
+import { bwCardBrand, parseExternalJson } from '#json-import';
 import type { JsonObject } from '#client';
 
 const items = (value: JsonObject) => value.items as JsonObject[];
+
+test('card-brand patterns match the pinned bw CardView rules', () => {
+	const cases: [string, string | null][] = [
+		['4111111111111111', 'Visa'],
+		['2221000000000000', 'Mastercard'],
+		['2220000000000000', null],
+		['378282246310005', 'Amex'],
+		['6221260000000000', 'Discover'],
+		['6221250000000000', null],
+		['36148900647913', 'Diners Club'],
+		['38123456789012', null],
+		['3528000000000000', 'JCB'],
+		['3500000000000000', null],
+		['4026000000000000', 'Visa'],
+		[' 4111111111111111', null],
+		['6212345678901234', null],
+	];
+	for (const [number, expected] of cases) expect(bwCardBrand(number)).toBe(expected);
+	expect(bwCardBrand(null)).toBeNull();
+	expect(bwCardBrand('  ')).toBeNull();
+});
 
 test('Avast JSON maps logins, secure notes, and payment cards', () => {
 	const result = parseExternalJson(
@@ -134,6 +155,14 @@ test('F-Secure FSK JSON rejects malformed exports with fixed errors', () => {
 	expect(() => parseExternalJson('fsecurefsk', JSON.stringify({ data: { entry: null } }))).toThrow(
 		'Invalid F-Secure FSK entry.',
 	);
+});
+
+test('F-Secure FSK card brands match bw Discover BIN recognition', () => {
+	const result = parseExternalJson(
+		'fsecurefsk',
+		JSON.stringify({ data: { card: { type: 2, service: 'Discover', creditNumber: '6221260000000000' } } }),
+	);
+	expect(items(result)[0]!.card).toMatchObject({ number: '6221260000000000', brand: 'Discover' });
 });
 
 test('Proton Pass JSON preserves supported Vaultwarden item types, fields, favorites, and vault folders', () => {
@@ -619,6 +648,137 @@ test('Password Boss JSON rejects malformed input without echoing it', () => {
 	expect(() => parseExternalJson('passwordbossjson', JSON.stringify({ entries: [] }))).toThrow(
 		'Invalid Password Boss JSON items.',
 	);
+});
+
+test('Password Boss card brands match bw Discover BIN recognition', () => {
+	const flat = parseExternalJson(
+		'passwordbossjson',
+		JSON.stringify([{ itemTypeName: 'CreditCard', cardNumber: '6221260000000000' }]),
+	);
+	expect(items(flat)[0]!.card).toMatchObject({ number: '6221260000000000', brand: 'Discover' });
+
+	const legacy = parseExternalJson(
+		'passwordbossjson',
+		JSON.stringify({ folders: [], items: [{ type: 'CreditCard', identifiers: { cardNumber: '6229250000000000' } }] }),
+	);
+	expect(items(legacy)[0]!.card).toMatchObject({ number: '6229250000000000', brand: 'Discover' });
+});
+
+test('legacy Password Boss card expiry uses local calendar fields like bw', () => {
+	const previousTimezone = process.env.TZ;
+	process.env.TZ = 'Europe/Amsterdam';
+	try {
+		const result = parseExternalJson(
+			'passwordbossjson',
+			JSON.stringify({
+				folders: [],
+				items: [{
+					name: 'Legacy card',
+					type: 'CreditCard',
+					identifiers: { cardNumber: '4111111111111111', expires: '2030-06-01T00:30:00+02:00' },
+				}],
+			}),
+		);
+		expect(items(result)[0]!.card).toMatchObject({ expMonth: '6', expYear: '2030' });
+	} finally {
+		if (previousTimezone === undefined) delete process.env.TZ;
+		else process.env.TZ = previousTimezone;
+	}
+});
+
+test('legacy Password Boss preserves a folder whose source ID matches its name', () => {
+	const result = parseExternalJson(
+		'passwordbossjson',
+		JSON.stringify({
+			folders: [{ id: 'Archive', name: 'Archive' }],
+			items: [{
+				name: 'Legacy folder item',
+				folder: 'Archive',
+				identifiers: { username: 'legacy-user' },
+			}],
+		}),
+	);
+	const folder = (result.folders as JsonObject[])[0]!;
+	expect(folder).toMatchObject({ id: 'Archive', name: 'Archive' });
+	expect(items(result)[0]!.folderId).toBe(folder.id);
+});
+
+test('legacy Password Boss preserves duplicate folder names and source ID relationships', () => {
+	const result = parseExternalJson(
+		'passwordbossjson',
+		JSON.stringify({
+			folders: [
+				{ id: 'folder-one', name: 'Archive' },
+				{ id: 'folder-two', name: 'Archive' },
+				{ id: 'folder-path', name: 'Parent/Child' },
+			],
+			items: [
+				{ name: 'First', folder: 'folder-one', identifiers: { username: 'first' } },
+				{ name: 'Second', folder: 'folder-two', identifiers: { username: 'second' } },
+				{ name: 'Path', folder: 'folder-path', identifiers: { username: 'path' } },
+			],
+		}),
+	);
+	expect(result.folders).toEqual([
+		{ id: 'folder-one', name: 'Archive' },
+		{ id: 'folder-two', name: 'Archive' },
+		{ id: 'folder-path', name: 'Parent/Child' },
+	]);
+	expect(items(result).map(value => value.folderId)).toEqual(['folder-one', 'folder-two', 'folder-path']);
+});
+
+test('legacy Password Boss resolves username and email in source property order', () => {
+	const result = parseExternalJson(
+		'passwordbossjson',
+		JSON.stringify({
+			folders: [],
+			items: [{
+				name: 'Legacy ordered fields',
+				identifiers: { email: 'first@example.test', username: 'later-user', password: 'secret' },
+			}],
+		}),
+	);
+	expect(items(result)[0]).toMatchObject({
+		login: { username: 'first@example.test', password: 'secret' },
+		fields: [{ name: 'username', value: 'later-user', type: 0 }],
+	});
+});
+
+test('legacy Password Boss matches case-sensitive URI field names from bw', () => {
+	const result = parseExternalJson(
+		'passwordbossjson',
+		JSON.stringify({
+			folders: [],
+			items: [{ name: 'Legacy uppercase URI', identifiers: { URL: 'https://example.test' } }],
+		}),
+	);
+	expect(items(result)[0]).toMatchObject({
+		type: 2,
+		secureNote: { type: 0 },
+		fields: [{ name: 'URL', value: 'https://example.test', type: 0 }],
+	});
+});
+
+test('legacy Password Boss retains custom field order from the source identifiers object', () => {
+	const result = parseExternalJson(
+		'passwordbossjson',
+		JSON.stringify({
+			folders: [],
+			items: [{
+				name: 'Legacy ordered custom fields',
+				identifiers: {
+					first: 'one',
+					custom_fields: [{ name: 'Recovery', value: 'two' }],
+					last: 'three',
+				},
+			}],
+		}),
+	);
+	expect(items(result)[0]!.fields).toEqual([
+		{ name: 'first', value: 'one', type: 0 },
+		{ name: 'Recovery', value: 'two', type: 0 },
+		{ name: 'last', value: 'three', type: 0 },
+	]);
 });
 
 test('Enpass JSON maps nested folders, login data, secure notes, and cards', () => {

@@ -6,7 +6,7 @@
       "name": "bw",
       "devDependencies": {
         "turbo": "^2.11.9",
-        "typescript": "7.0.2",
+        "typescript": "catalog:",
       },
     },
     "apps/cli": {
@@ -16,17 +16,17 @@
         "vw": "dist/main.js",
       },
       "dependencies": {
-        "@kjanat/dreamcli": "4.2.0",
+        "@kjanat/dreamcli": "catalog:",
         "@kjanat/vaultwarden": "workspace:*",
       },
       "devDependencies": {
-        "@babel/eslint-parser": "8.0.1",
-        "@babel/preset-typescript": "8.0.1",
-        "@eslint/js": "10.0.1",
-        "@types/bun": "latest",
+        "@babel/eslint-parser": "catalog:",
+        "@babel/preset-typescript": "catalog:",
+        "@eslint/js": "catalog:",
+        "@types/bun": "catalog:",
         "@vw/typescript-config": "workspace:*",
-        "eslint": "10.9.1",
-        "typescript": "7.0.2",
+        "eslint": "catalog:",
+        "typescript": "catalog:",
       },
     },
     "packages/typescript-config": {
@@ -37,27 +37,45 @@
       "name": "@kjanat/vaultwarden",
       "version": "0.1.0",
       "dependencies": {
-        "@noble/hashes": "2.4.0",
-        "@xmldom/xmldom": "0.9.12",
-        "fflate": "0.8.3",
-        "kdbxweb": "2.1.1",
-        "tldts": "7.4.19",
-        "zxcvbn": "4.4.2",
+        "@noble/hashes": "catalog:",
+        "@xmldom/xmldom": "catalog:",
+        "fflate": "catalog:",
+        "kdbxweb": "catalog:",
+        "parse5": "catalog:",
+        "tldts": "catalog:",
+        "zxcvbn": "catalog:",
       },
       "devDependencies": {
-        "@babel/eslint-parser": "8.0.1",
-        "@babel/preset-typescript": "8.0.1",
-        "@eslint/js": "10.0.1",
-        "@types/bun": "latest",
-        "@types/zxcvbn": "4.4.5",
+        "@babel/eslint-parser": "catalog:",
+        "@babel/preset-typescript": "catalog:",
+        "@eslint/js": "catalog:",
+        "@types/bun": "catalog:",
+        "@types/zxcvbn": "catalog:",
         "@vw/typescript-config": "workspace:*",
-        "eslint": "10.9.1",
-        "typescript": "7.0.2",
+        "eslint": "catalog:",
+        "typescript": "catalog:",
       },
     },
   },
   "patchedDependencies": {
     "kdbxweb@2.1.1": "patches/kdbxweb@2.1.1.patch",
+  },
+  "catalog": {
+    "@babel/eslint-parser": "8.0.1",
+    "@babel/preset-typescript": "8.0.1",
+    "@eslint/js": "10.0.1",
+    "@kjanat/dreamcli": "4.2.0",
+    "@noble/hashes": "2.4.0",
+    "@types/bun": "latest",
+    "@types/zxcvbn": "4.4.5",
+    "@xmldom/xmldom": "0.9.12",
+    "eslint": "10.9.1",
+    "fflate": "0.8.3",
+    "kdbxweb": "2.1.1",
+    "parse5": "8.0.1",
+    "tldts": "7.4.19",
+    "typescript": "7.0.2",
+    "zxcvbn": "4.4.2",
   },
   "packages": {
     "@babel/code-frame": ["@babel/code-frame@8.0.6", "", { "dependencies": { "@babel/helper-validator-identifier": "^8.0.6", "js-tokens": "^10.0.0" } }, "sha512-uMHhvmDmwFiLuiozaoRYTZHqMFuu3fem/X9JY78lohAuLoh8LSGGC8JqUzo2cVuBsBxkjMZNk56CE7ock8Xxkw=="],
@@ -262,6 +280,8 @@
 
     "empathic": ["empathic@2.1.0", "", {}, "sha512-AnfC1ATldl49/cvZdLPDjBfrRNwbDO05aibiOtzQu3qtlbJtomNLhF30HEtn/7iBz50dlMECqATo3fG0LrdEgw=="],
 
+    "entities": ["entities@8.1.0", "", {}, "sha512-kxL7msIffSuh9aaFAMD7rxAIuTRMAHMeBtgHW2yUdWw732ZNh4MehkF2gdjvtdmikkaIP9bFDDJOPlsvm7avrA=="],
+
     "escalade": ["escalade@3.2.0", "", {}, "sha512-WUj2qlxaQtO4g6Pq5c29GTcWGDyd8itL8zTlipgECz3JesAiiOKotd8JU6otB3PACgG6xkJUyVhboMS+bje/jA=="],
 
     "escape-string-regexp": ["escape-string-regexp@4.0.0", "", {}, "sha512-TtpcNJ3XAzx3Gq8sWRzJaVajRs0uVxA2YAkdb1jm2YkPz4G6egUFAyA3n5vtEIZefPk5Wa4UXbKuS5fKkJWdgA=="],
@@ -351,6 +371,8 @@
     "p-limit": ["p-limit@3.1.0", "", { "dependencies": { "yocto-queue": "^0.1.0" } }, "sha512-TYOanM3wGwNGsZN2cVTYPArw454xnXj5qmWF1bEoAc4+cU/ol7GVh7odevjp1FNHduHc3KZMcFduxU5Xc6uJRQ=="],
 
     "p-locate": ["p-locate@5.0.0", "", { "dependencies": { "p-limit": "^3.0.2" } }, "sha512-LaNjtRWUBY++zB5nE/NwcaoMylSPk+S+ZHNB1TzdbMJMny6dynpAGt7X/tl/QYq3TIeE6nxHppbo2LGymrG5Pw=="],
+
+    "parse5": ["parse5@8.0.1", "", { "dependencies": { "entities": "^8.0.0" } }, "sha512-z1e/HMG90obSGeidlli3hj7cbocou0/wa5HacvI3ASx34PecNjNQeaHNo5WIZpWofN9kgkqV1q5YvXe3F0FoPw=="],
 
     "path-exists": ["path-exists@4.0.0", "", {}, "sha512-ak9Qy5Q7jYb2Wwcey5Fpvg2KoAc/ZIhLSLOSBmRmygPsGwkVVt0fZa0qrtMz+m6tJTAHfZQ8FnmB4MG4LWy7/w=="],
 

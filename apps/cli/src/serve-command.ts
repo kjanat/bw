@@ -5,14 +5,18 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { flag } from '@kjanat/dreamcli';
 import { createLocalApiHandler, generateSecret } from '@kjanat/vaultwarden';
-import { unlockAccount, type JsonObject } from '@kjanat/vaultwarden';
+import { accountUserId, unlockAccount, type JsonObject } from '@kjanat/vaultwarden';
 import { openSession, sealSession, withStore, type State } from '#store';
 import type { VaultRuntime } from '#vault-commands';
+
+export function effectiveServePort(port: number): number {
+	return port || 8087;
+}
 
 export function serveCommand(
 	runtime: VaultRuntime,
 	directory: string,
-	sync: (state: State, save: () => Promise<void>) => Promise<void>,
+	sync: (state: State, save: () => Promise<void>, force?: boolean) => Promise<void>,
 ) {
 	return command('serve').description('Serve the local vault through the bw-compatible REST API')
 		.flag('hostname', flag.string().default('localhost'))
@@ -25,7 +29,7 @@ export function serveCommand(
 				if (!state.account) throw new Error('Log in before starting the local API.');
 				if (session) openSession(state, session).fill(0);
 			});
-			let port = flags.port;
+			let port = effectiveServePort(flags.port);
 			const hostname = flags.hostname;
 			const descriptor = /^fd\+(connected|listening):\/\/(\d+)$/.exec(hostname);
 			if (hostname.startsWith('fd+') && (!descriptor || !Number.isSafeInteger(Number(descriptor[2])))) {
@@ -47,11 +51,12 @@ export function serveCommand(
 							serverUrl: state.server ?? null,
 							lastSync: state.lastSync ?? null,
 							userEmail: state.account?.email ?? null,
-							userId: state.vault ? (state.vault.profile as JsonObject | undefined)?.id ?? null : null,
+							userId: (state.vault?.profile as JsonObject | undefined)?.id
+								?? (state.account ? accountUserId(state.account) ?? null : null),
 							status: !state.account ? 'unauthenticated' : unlocked ? 'unlocked' : 'locked',
 						};
 					}),
-				sync: () => withStore(directory, sync),
+				sync: (force) => withStore(directory, (state, save) => sync(state, save, force)),
 				lock: () =>
 					withStore(directory, async (state, save) => {
 						delete state.session;

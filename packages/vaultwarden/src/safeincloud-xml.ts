@@ -12,6 +12,20 @@ const children = (element: Element, tag: string): Element[] => {
 };
 const content = (element: Element | undefined) => element?.textContent ?? '';
 const blank = (value: string | null | undefined) => !value || !value.trim();
+function cardBrand(number: string): string | undefined {
+	if (/^4/.test(number)) return 'Visa';
+	if (/^(?:5[1-5]\d{14}|2(?:22[1-9]\d{12}|2[3-9]\d{13}|[3-6]\d{14}|7[01]\d{13}|720\d{12}))$/.test(number)) {
+		return 'Mastercard';
+	}
+	if (/^3[47]/.test(number)) return 'Amex';
+	if (/^(?:6011|622(?:12[6-9]|1[3-9]\d|[2-8]\d{2}|9[0-1]\d|92[0-5]|64[4-9])|65)/.test(number)) {
+		return 'Discover';
+	}
+	if (/^36/.test(number) || /^30[0-5]/.test(number)) return 'Diners Club';
+	if (/^35(?:2[89]|[3-8]\d)/.test(number)) return 'JCB';
+	if (/^(?:4026|417500|4508|4844|491[37])/.test(number)) return 'Visa';
+	return undefined;
+}
 
 /** Parse SafeInCloud's XML card database using the reference importer's field mapping. */
 export function parseSafeInCloudXml(source: string): JsonObject {
@@ -77,10 +91,8 @@ export function parseSafeInCloudXml(source: string): JsonObject {
 				if (blank(field.value)) continue;
 				if (field.autofill === 'cc-number') {
 					item.card!.number = field.value;
-					if (/^4\d{12}(?:\d{3})?(?:\d{3})?$/.test(field.value.replace(/\D/g, ''))) item.card!.brand = 'Visa';
-					else if (/^(?:5[1-5]|2(?:2[2-9]|[3-6]\d|7[01]|720))\d{14}$/.test(field.value.replace(/\D/g, ''))) {
-						item.card!.brand = 'Mastercard';
-					}
+					const brand = cardBrand(field.value);
+					if (brand) item.card!.brand = brand;
 					continue;
 				}
 				if (field.autofill === 'cc-name') item.card!.cardholderName = field.value;
@@ -117,8 +129,7 @@ export function parseSafeInCloudXml(source: string): JsonObject {
 			}
 		}
 		for (const note of children(cardElement, 'notes')) addNote('', content(note));
-		if (item.notes?.trim()) item.notes = item.notes.trimEnd();
-		else item.notes = null;
+		if (!item.notes?.trim()) item.notes = null;
 		items.push(item);
 	}
 	return { encrypted: false, items };

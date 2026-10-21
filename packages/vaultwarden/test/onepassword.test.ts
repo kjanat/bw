@@ -147,17 +147,20 @@ test('1PUX remaining category mappings and login-to-note conversion follow field
 		expect((parseOnePassword1Pux(document(category)).items as JsonObject[])[0]!.type).toBe(2);
 	}
 });
-test('1PUX imports every account/vault, limits history, and rejects malformed containers', () => {
+test('1PUX imports every vault from the first account, limits history, and rejects malformed containers', () => {
 	const base = JSON.parse(
 		document('005', [], {
 			password: 'synthetic',
 			passwordHistory: Array.from({ length: 8 }, (_, i) => ({ value: `old-${i}`, time: 1700000000 + i })),
 		}),
 	);
-	base.accounts.push(structuredClone(base.accounts[0]));
 	base.accounts[0].vaults.push(structuredClone(base.accounts[0].vaults[0]));
+	const secondAccount = structuredClone(base.accounts[0]);
+	secondAccount.vaults[0].items[0].overview.title = 'Ignored second account';
+	base.accounts.push(secondAccount);
 	const items = parseOnePassword1Pux(JSON.stringify(base)).items as JsonObject[];
-	expect(items).toHaveLength(3);
+	expect(items).toHaveLength(2);
+	expect(items.every(item => item.name === 'Synthetic fixture')).toBe(true);
 	expect(items[0]!.passwordHistory).toHaveLength(5);
 	for (const input of ['{secret invalid', '{}', '{"accounts":[]}', '{"accounts":[{"vaults":123}]}']) {
 		expect(() => parseOnePassword1Pux(input)).toThrow();

@@ -16,7 +16,7 @@
 	},
 	"devDependencies": {
 		"turbo": "^2.11.9",
-		"typescript": "7.0.2"
+		"typescript": "catalog:"
 	},
 	"engines": {
 		"node": ">=24"
@@ -26,6 +26,23 @@
 			"name": "bun",
 			"version": "1.4.3"
 		}
+	},
+	"catalog": {
+		"@babel/eslint-parser": "8.0.1",
+		"@babel/preset-typescript": "8.0.1",
+		"@eslint/js": "10.0.1",
+		"@kjanat/dreamcli": "4.2.0",
+		"@noble/hashes": "2.4.0",
+		"@types/bun": "latest",
+		"@types/zxcvbn": "4.4.5",
+		"@xmldom/xmldom": "0.9.12",
+		"eslint": "10.9.1",
+		"fflate": "0.8.3",
+		"kdbxweb": "2.1.1",
+		"parse5": "8.0.1",
+		"tldts": "7.4.19",
+		"typescript": "7.0.2",
+		"zxcvbn": "4.4.2"
 	},
 	"patchedDependencies": {
 		"kdbxweb@2.1.1": "patches/kdbxweb@2.1.1.patch"

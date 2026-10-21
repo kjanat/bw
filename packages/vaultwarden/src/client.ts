@@ -26,6 +26,7 @@ export class ApiError extends Error {
 			| 'password_hash_b64_invalid'
 			| 'send_id_invalid'
 			| 'unsupported_grant',
+		public readonly twoFactorProviderData: Readonly<Record<number, unknown>> = {},
 	) {
 		super(
 			twoFactorProviders.length
@@ -162,6 +163,7 @@ export class VaultwardenClient {
 		}
 		if (!response.ok) {
 			let providers: number[] = [];
+			const providerData: Record<number, unknown> = {};
 			let sendError: ApiError['sendAccessError'];
 			try {
 				const error = object(await response.json());
@@ -190,6 +192,9 @@ export class VaultwardenClient {
 				}
 				const details = field(error, 'twoFactorProviders2');
 				if (details && typeof details === 'object' && !Array.isArray(details)) {
+					for (const [key, value] of Object.entries(details)) {
+						if (/^\d+$/.test(key) && Number.isSafeInteger(Number(key))) providerData[Number(key)] = value;
+					}
 					providers = [
 						...new Set([
 							...providers,
@@ -201,7 +206,7 @@ export class VaultwardenClient {
 			} catch {
 				/* Never include server-controlled response text in errors. */
 			}
-			throw new ApiError(response.status, providers, sendError);
+			throw new ApiError(response.status, providers, sendError, providerData);
 		}
 		return response;
 	}

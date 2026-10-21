@@ -1,6 +1,7 @@
 import { test, expect } from 'bun:test';
 import { VaultwardenClient, ApiError, type JsonObject } from '#client';
 import { encrypt, decrypt, encryptAttachment } from '#crypto';
+import { MultipleResultsError } from '#search';
 import {
 	deriveSendKey,
 	hashSendPassword,
@@ -49,6 +50,76 @@ test('owner reads decrypt with the wrapped Send seed, expose access URL, and omi
 	expect(result.passwordSet).toBe(true);
 	expect(result.password).toBeUndefined();
 });
+test('text-only Send lookup filters before resolving exact IDs and ambiguous names', () => {
+	const fileSend: JsonObject = {
+		...encryptedSend(),
+		id: 'file-send-id',
+		type: 1,
+		file: { id: 'file-id', fileName: encrypt(Buffer.from('secret.txt'), key), size: 6 },
+	};
+	delete fileSend.text;
+	const service = new SendService(new VaultwardenClient('https://vault.example'), 'owner-token', {
+		sends: [encryptedSend(), fileSend],
+	}, accountKey);
+	expect(service.get('Secret', 0).id).toBe('send-id');
+	expect(service.get('send-id', 0).type).toBe(0);
+	expect(() => service.get('file-send-id', 0)).toThrow('Not found.');
+});
+test('ambiguous Send name lookup reports each matching ID', () => {
+	const second = { ...encryptedSend(), id: 'second-send-id' };
+	const service = new SendService(new VaultwardenClient('https://vault.example/prefix'), 'owner-token', {
+		sends: [encryptedSend(), second],
+	}, accountKey);
+	try {
+		service.get('Secret');
+		throw new Error('Expected ambiguous lookup to fail.');
+	} catch (error) {
+		expect(error).toBeInstanceOf(MultipleResultsError);
+		expect((error as MultipleResultsError).message).toContain(
+			'More than one result was found. Try getting a specific object by `id` instead. '
+				+ 'The following objects were found:\nsend-id\nsecond-send-id',
+		);
+		expect((error as MultipleResultsError).ids).toEqual(['send-id', 'second-send-id']);
+	}
+});
+test('file Send creation and edits require premium before network access', async () => {
+	let requests = 0;
+	const client = new VaultwardenClient('https://vault.example', {
+		fetch: (async () => {
+			requests++;
+			return Response.json({});
+		}) as unknown as typeof fetch,
+	});
+	const fileSend = {
+		...encryptedSend(),
+		type: 1,
+		file: { id: 'file-id', fileName: encrypt(Buffer.from('payload.bin'), key) },
+	};
+	const service = new SendService(client, 'owner-token', { sends: [fileSend] }, accountKey);
+	await expect(service.create(
+		{ type: 1, name: 'File', file: { fileName: 'payload.bin' } },
+		Buffer.from('payload'),
+	)).rejects.toThrow('Premium status is required');
+	await expect(service.edit('send-id', { name: 'Renamed' })).rejects.toThrow('Premium status is required');
+	expect(requests).toBe(0);
+});
+test('Send creation rejects a deletion date that is not in the future before network access', async () => {
+	let requests = 0;
+	const client = new VaultwardenClient('https://vault.example', {
+		fetch: (async () => {
+			requests++;
+			return Response.json({});
+		}) as unknown as typeof fetch,
+	});
+	const service = new SendService(client, 'owner-token', { sends: [] }, accountKey);
+	await expect(service.create({
+		type: 0,
+		name: 'Expired Send',
+		text: { text: 'payload' },
+		deletionDate: new Date(Date.now() - 1000).toISOString(),
+	})).rejects.toMatchObject({ message: 'Must specify a valid deletion date after the current time' });
+	expect(requests).toBe(0);
+});
 test('editing retains the seed, omits unchanged password proofs, and never transmits plaintext', async () => {
 	let requests = 0;
 	const client = new VaultwardenClient('https://vault.example', {
@@ -68,6 +139,18 @@ test('editing retains the seed, omits unchanged password proofs, and never trans
 	expect((await service.edit('send-id', { name: 'Renamed' })).name).toBe('Renamed');
 	await expect(service.edit('send-id', { type: 1 })).rejects.toThrow('type');
 	expect(requests).toBe(1);
+});
+test('Send edits may preserve or set deletion dates in the past like the Vaultwarden update API', async () => {
+	const deletionDate = new Date(Date.now() - 60_000).toISOString();
+	const client = new VaultwardenClient('https://vault.example', {
+		fetch: (async (_url: unknown, init?: RequestInit) => {
+			const data = JSON.parse(String(init!.body));
+			expect(data.deletionDate).toBe(deletionDate);
+			return Response.json({ ...encryptedSend(), ...data });
+		}) as unknown as typeof fetch,
+	});
+	const service = new SendService(client, 'owner-token', { sends: [encryptedSend()] }, accountKey);
+	await service.edit('send-id', { deletionDate });
 });
 test('recipient access isolates Send credentials and keeps fragment keys off the wire', async () => {
 	const calls: { url: string; init: RequestInit }[] = [];
@@ -230,7 +313,12 @@ test('failed Send file upload rolls back metadata, and failed rollback is distin
 				return Response.json({}, { status: 500 });
 			}) as unknown as typeof fetch,
 		});
-		const service = new SendService(client, 'owner-token', { sends: [] }, accountKey);
+		const service = new SendService(
+			client,
+			'owner-token',
+			{ profile: { premiumPersonally: true }, sends: [] },
+			accountKey,
+		);
 		const operation = service.create(
 			{ type: 1, name: 'File', file: { fileName: 'payload.bin' } },
 			Buffer.from('payload'),

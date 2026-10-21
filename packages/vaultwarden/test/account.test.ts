@@ -1,11 +1,25 @@
-import { test, expect } from 'bun:test';
+import {
+	accountUserId,
+	loginWithApiKey,
+	loginWithPassword,
+	type PasswordAccount,
+	refreshAccount,
+	unlockAccount,
+} from '#account';
 import { VaultwardenClient } from '#client';
-import { loginWithApiKey, loginWithPassword, refreshAccount, unlockAccount, type PasswordAccount } from '#account';
-import { deriveMasterKey, stretchKey, encrypt } from '#crypto';
+import { deriveMasterKey, encrypt, stretchKey } from '#crypto';
+import { expect, test } from 'bun:test';
 
 const id = '00000000-0000-0000-0000-000000000001';
 const credentials = { clientId: `user.${id}`, clientSecret: 'synthetic-api-secret' };
 const base = { access_token: 'access-token', expires_in: 3600, Key: 'wrapped-key', Kdf: 0, KdfIterations: 10000 };
+test('account user ID can be read from an access-token subject without a synced profile', () => {
+	const token = `header.${Buffer.from(JSON.stringify({ sub: id })).toString('base64url')}.signature`;
+	expect(accountUserId({ accessToken: token })).toBe(id);
+	for (const accessToken of ['opaque-token', 'header.e30.signature', 'header.invalid.signature']) {
+		expect(accountUserId({ accessToken })).toBeUndefined();
+	}
+});
 test('password challenge resumes one grant, requests email explicitly, and never exposes password material to the callback', async () => {
 	const email = 'fixture@example.com', password = 'synthetic-password';
 	const master = await deriveMasterKey(password, email, { type: 0, iterations: 10000 });
@@ -31,7 +45,18 @@ test('password challenge resumes one grant, requests email explicitly, and never
 			}
 			const body = new URLSearchParams(String(init.body));
 			if (++grants === 1) {
-				return Response.json({ TwoFactorProviders2: { '1': { Email: 'untrusted' } } }, { status: 400 });
+				return Response.json({
+					TwoFactorProviders: [1, 2, 7],
+					TwoFactorProviders2: {
+						'1': { Email: 'untrusted' },
+						'2': { AuthUrl: 'https://api-test.duosecurity.com/oauth/v1/authorize?request=short-lived' },
+						'7': {
+							challenge: 'Y2hhbGxlbmdl',
+							rpId: 'example.com',
+							allowCredentials: [{ id: 'Y3JlZGVudGlhbA', type: 'public-key' }],
+						},
+					},
+				}, { status: 400 });
 			}
 			expect(body.get('twoFactorProvider')).toBe('1');
 			expect(body.get('twoFactorToken')).toBe('123456');
@@ -42,8 +67,21 @@ test('password challenge resumes one grant, requests email explicitly, and never
 	const result = await loginWithPassword(api, email, password, undefined, {
 		onTwoFactor: async challenge => {
 			challenges++;
-			expect(challenge.providers).toEqual([1]);
-			expect(Object.keys(challenge).sort()).toEqual(['providers', 'requestEmail']);
+			expect(challenge.providers).toEqual([1, 2, 7]);
+			expect(challenge.duoAuthUrl).toBe('https://api-test.duosecurity.com/oauth/v1/authorize?request=short-lived');
+			expect(challenge.webAuthnOptions).toEqual({
+				challenge: 'Y2hhbGxlbmdl',
+				rpId: 'example.com',
+				allowCredentials: [{ id: 'Y3JlZGVudGlhbA', type: 'public-key' }],
+			});
+			expect(challenge.webAuthnOrigin).toBe('https://example.com');
+			expect(Object.keys(challenge).sort()).toEqual([
+				'duoAuthUrl',
+				'providers',
+				'requestEmail',
+				'webAuthnOptions',
+				'webAuthnOrigin',
+			]);
 			expect(Object.isFrozen(challenge.providers)).toBe(true);
 			await challenge.requestEmail();
 			return { provider: 1, token: '123456' };

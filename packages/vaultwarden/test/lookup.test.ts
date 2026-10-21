@@ -58,6 +58,74 @@ test('fingerprint matches an independent Python SHA256/HMAC/big-integer vector',
 	);
 	expect(() => fingerprintWords('identity', new Uint8Array())).toThrow('public key');
 });
+
+test('fingerprint accepts the case-insensitive me alias used by bw', async () => {
+	const vault = new VaultService(new VaultwardenClient('https://example.com'), 'synthetic', {
+		profile: {
+			id: 'abcdef01-0000-0000-0000-000000000001',
+			publicKey: Buffer.alloc(256).toString('base64'),
+		},
+	}, Buffer.alloc(64, 7));
+	try {
+		expect(await vault.fingerprint('Me')).toBe(await vault.fingerprint('me'));
+	} finally {
+		vault.dispose();
+	}
+});
+
+test('fingerprint me requires the local key while explicit user IDs use the API', async () => {
+	const id = 'abcdef01-0000-0000-0000-000000000001';
+	let requests = 0;
+	const localFetch = Object.assign(async () => {
+		requests++;
+		return Response.json({ publicKey: Buffer.alloc(256).toString('base64') });
+	}, { preconnect: () => {} });
+	const localOnlyVault = new VaultService(
+		new VaultwardenClient('https://example.com', {
+			fetch: localFetch,
+		}),
+		'synthetic',
+		{ profile: { id } },
+		Buffer.alloc(64, 7),
+	);
+	try {
+		await expect(localOnlyVault.fingerprint('me')).rejects.toThrow('No public key available for the active user.');
+		expect(requests).toBe(0);
+	} finally {
+		localOnlyVault.dispose();
+	}
+
+	const publicKey = Buffer.alloc(256).toString('base64');
+	const remoteFetch = Object.assign(async () => Response.json({ publicKey }), { preconnect: () => {} });
+	const remoteVault = new VaultService(
+		new VaultwardenClient('https://example.com', {
+			fetch: remoteFetch,
+		}),
+		'synthetic',
+		{ profile: { id: 'active-user' } },
+		Buffer.alloc(64, 7),
+	);
+	try {
+		expect(await remoteVault.fingerprint(id)).toBe(fingerprintWords(id, Buffer.from(publicKey, 'base64')).join('-'));
+	} finally {
+		remoteVault.dispose();
+	}
+
+	const missingFetch = Object.assign(async () => new Response('missing', { status: 404 }), { preconnect: () => {} });
+	const missingVault = new VaultService(
+		new VaultwardenClient('https://example.com', {
+			fetch: missingFetch,
+		}),
+		'synthetic',
+		{ profile: { id: 'active-user' } },
+		Buffer.alloc(64, 7),
+	);
+	try {
+		await expect(missingVault.fingerprint(id)).rejects.toThrow('not found');
+	} finally {
+		missingVault.dispose();
+	}
+});
 const items: VaultItem[] = [
 	{
 		id: '12345678-0000-0000-0000-000000000001',
@@ -82,6 +150,41 @@ const items: VaultItem[] = [
 		name: 'Profile',
 		identity: { firstName: 'John', lastName: 'Doe', ssn: 'excluded-ssn' },
 	},
+	{
+		id: 'dddddddd-0000-0000-0000-000000000004',
+		type: 6,
+		name: 'Main account',
+		bankAccount: { bankName: 'Harbor Bank', accountType: 'checking', accountNumber: 'excluded-account' },
+	},
+	{
+		id: 'eeeeeeee-0000-0000-0000-000000000005',
+		type: 7,
+		name: 'License',
+		driversLicense: {
+			firstName: 'Alex',
+			lastName: 'Rivera',
+			issuingState: 'Oregon',
+			licenseNumber: 'excluded-license',
+		},
+	},
+	{
+		id: 'ffffffff-0000-0000-0000-000000000006',
+		type: 8,
+		name: 'Passport',
+		passport: { givenName: 'Sam', surname: 'Taylor', issuingCountry: 'Canada', passportNumber: 'excluded-passport' },
+	},
+	{
+		id: 'aaaaaaaa-0000-0000-0000-000000000007',
+		type: 7,
+		name: 'State-only license',
+		driversLicense: { firstName: '', lastName: '', issuingState: 'Oregon' },
+	},
+	{
+		id: 'bbbbbbbb-0000-0000-0000-000000000008',
+		type: 8,
+		name: 'Country-only passport',
+		passport: { givenName: '', surname: '', issuingCountry: 'Canada' },
+	},
 ];
 test('basic item search ANDs normalized terms across display fields, URI hostnames and ID prefixes', () => {
 	for (const query of ['CAFE alice', 'project work', 'company example', '12345678', 'cafe accounts']) {
@@ -89,7 +192,15 @@ test('basic item search ANDs normalized terms across display fields, URI hostnam
 	}
 	expect(searchItems(items, 'visa 9876')[0]?.id).toBe(items[1]!.id);
 	expect(searchItems(items, 'doe john')[0]?.id).toBe(items[2]!.id);
+	expect(searchItems(items, 'harbor bank')[0]?.id).toBe(items[3]!.id);
+	expect(searchItems(items, 'alex oregon')[0]?.id).toBe(items[4]!.id);
+	expect(searchItems(items, 'taylor canada')[0]?.id).toBe(items[5]!.id);
+	expect(searchItems([items[6]!], ', oregon')).toEqual([]);
+	expect(searchItems([items[7]!], ', canada')).toEqual([]);
 	for (const query of ['do-not-search-this', 'private/path', 'excluded-ssn', '11111111', '1234567']) {
+		expect(searchItems(items, query)).toEqual([]);
+	}
+	for (const query of ['checking', 'excluded-account', 'excluded-license', 'excluded-passport']) {
 		expect(searchItems(items, query)).toEqual([]);
 	}
 	expect(searchItems(items, 'work missing')).toEqual([]);
@@ -151,7 +262,7 @@ test('vault lookups filter before resolving ambiguity and distinguish ID reads f
 	};
 	const vault = new VaultService(new VaultwardenClient('https://example.com'), 'token', snapshot, key);
 	try {
-		expect(() => vault.findItem('cafe work')).toThrow('Multiple');
+		expect(() => vault.findItem('cafe work')).toThrow('More than one result was found.');
 		expect(vault.findItem('cafe work', item => item.type === 1).id).toBe(items[0]!.id);
 		expect(() => vault.findItem('Archived only')).toThrow('not found');
 		expect(vault.findItem(clear[2]!.id!).name).toBe('Archived only');

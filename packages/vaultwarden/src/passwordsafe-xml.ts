@@ -69,7 +69,8 @@ export function parsePasswordSafeXml(source: string, organization = false): Json
 		if (organization) item.collectionIds = [id];
 		else item.folderId = id;
 	};
-	const delimiter = safe.getAttribute('delimiter');
+	// Match bw's String.split(null) coercion when the optional XML attribute is absent.
+	const delimiter = safe.getAttribute('delimiter') ?? 'null';
 	for (const entry of children(safe, 'entry')) {
 		const group = value(child(entry, 'group'));
 		const title = value(child(entry, 'title'));
@@ -77,7 +78,7 @@ export function parsePasswordSafeXml(source: string, organization = false): Json
 		const email = value(child(entry, 'email'));
 		const notesNode = child(entry, 'notes');
 		const rawNotes = notesNode ? value(notesNode) : '';
-		let notes = notesNode ? (blank(rawNotes) ? '' : delimiter ? rawNotes.split(delimiter).join('\n') : rawNotes) : '';
+		let notes = notesNode ? (blank(rawNotes) ? '' : rawNotes.split(delimiter).join('\n')) : '';
 		const loginUsername = blank(username) && child(entry, 'email')
 			? (blank(email) ? null : email)
 			: blank(username)

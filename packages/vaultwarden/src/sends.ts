@@ -1,6 +1,7 @@
 import { hkdfSync, pbkdf2Sync, randomBytes } from 'node:crypto';
 import { ApiError, VaultwardenClient, object, text, serverUrl, type JsonObject } from '#client';
 import { encrypt, decrypt, encryptAttachment, decryptAttachment } from '#crypto';
+import { MultipleResultsError } from '#search';
 
 export interface SendInput extends JsonObject {
 	type: 0 | 1;
@@ -66,7 +67,7 @@ function decodedSend(raw: JsonObject, seed: Uint8Array, server?: string): JsonOb
 		key.fill(0);
 	}
 }
-function validate(input: SendInput): void {
+function validate(input: SendInput, requireFutureDeletion = false): void {
 	if (input.type !== 0 && input.type !== 1) throw new Error('Vaultwarden supports text and file Sends only.');
 	if (typeof input.name !== 'string' || !input.name.trim()) throw new Error('A Send name is required.');
 	if (input.emails != null && (!Array.isArray(input.emails) || input.emails.length)) {
@@ -84,7 +85,11 @@ function validate(input: SendInput): void {
 		throw new Error('Invalid Send access limit.');
 	}
 	const deletion = Date.parse(input.deletionDate ?? '');
-	if (!Number.isFinite(deletion) || deletion > Date.now() + 31 * 86400000) {
+	const now = Date.now();
+	if (!Number.isFinite(deletion) || (requireFutureDeletion && deletion <= now)) {
+		throw new Error('Must specify a valid deletion date after the current time');
+	}
+	if (deletion > now + 31 * 86400000) {
 		throw new Error('Send deletion date must be within 31 days.');
 	}
 	if (input.expirationDate != null && !Number.isFinite(Date.parse(input.expirationDate))) {
@@ -110,6 +115,11 @@ export class SendService {
 		if (!Array.isArray(this.snapshot.sends)) throw new Error('No cached Sends. Run vw sync first.');
 		return this.snapshot.sends.map(object);
 	}
+	private hasPremiumAccess(): boolean {
+		const profile = this.snapshot.profile == null ? {} : object(this.snapshot.profile);
+		return profile.premium === true || profile.premiumPersonally === true
+			|| profile.premiumFromOrganization === true;
+	}
 	private decode(raw: JsonObject): JsonObject {
 		const seed = decrypt(text(raw.key), this.userKey);
 		try {
@@ -121,16 +131,25 @@ export class SendService {
 	list(): JsonObject[] {
 		return this.records().map(raw => this.decode(raw));
 	}
-	get(query: string): JsonObject {
-		const exact = this.records().find(value => value.id === query);
-		if (exact) return this.decode(exact);
-		const matches = this.list().filter(value => text(value.name).toLowerCase().includes(query.toLowerCase()));
+	get(query: string, type?: 0 | 1): JsonObject {
+		const records = this.records();
+		const exact = records.find(value => value.id === query);
+		if (exact && (type === undefined || exact.type === type)) return this.decode(exact);
+		if (exact) throw new Error('Not found.');
+		const matches = records.map(value => this.decode(value)).filter(value =>
+			(type === undefined || value.type === type)
+			&& text(value.name).toLowerCase().includes(query.toLowerCase())
+		);
 		if (matches.length !== 1 || !query.trim()) {
-			throw new Error(matches.length ? 'Multiple Sends match. Use an ID.' : 'Send not found.');
+			if (matches.length > 1) throw new MultipleResultsError(matches.map(value => text(value.id)));
+			throw new Error('Not found.');
 		}
 		return matches[0]!;
 	}
 	async create(input: SendInput, file?: Uint8Array): Promise<JsonObject> {
+		if (input.type === 1 && !this.hasPremiumAccess()) {
+			throw new Error('Premium status is required to use this feature.');
+		}
 		return this.save(
 			{ ...input, deletionDate: input.deletionDate ?? sendTemplate().deletionDate },
 			randomBytes(16),
@@ -140,6 +159,9 @@ export class SendService {
 	}
 	async edit(id: string, patch: JsonObject): Promise<JsonObject> {
 		const current = this.get(id);
+		if (current.type === 1 && !this.hasPremiumAccess()) {
+			throw new Error('Premium status is required to use this feature.');
+		}
 		if (patch.type !== undefined && patch.type !== current.type) throw new Error('A Send cannot change type.');
 		if (patch.key !== undefined && patch.key !== current.key) throw new Error('A Send cannot change its key.');
 		const seed = Buffer.from(text(current.key), 'base64');
@@ -150,7 +172,7 @@ export class SendService {
 		let key: Buffer | undefined;
 		let encrypted: Buffer | undefined;
 		try {
-			validate(input);
+			validate(input, id === undefined);
 			key = deriveSendKey(seed);
 			const enc = (value: string) => encrypt(Buffer.from(value), key!);
 			const data: JsonObject = {

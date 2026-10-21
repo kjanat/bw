@@ -150,7 +150,18 @@ test('SSO email 2FA retries the same code once and requests delivery using the p
 			const body = new URLSearchParams(String(init.body));
 			expect(body.get('code')).toBe(credentials.code);
 			expect(body.get('code_verifier')).toBe(credentials.codeVerifier);
-			if (grants === 1) return Response.json({ twoFactorProviders: [1] }, { status: 400 });
+			if (grants === 1) {
+				return Response.json({
+					twoFactorProviders: [1, 7],
+					twoFactorProviders2: {
+						'7': {
+							challenge: 'Y2hhbGxlbmdl',
+							rpId: 'vault.example',
+							allowCredentials: [{ id: 'Y3JlZGVudGlhbA', type: 'public-key' }],
+						},
+					},
+				}, { status: 400 });
+			}
 			expect(body.get('twoFactorProvider')).toBe('1');
 			expect(body.get('twoFactorToken')).toBe('123456');
 			return Response.json({
@@ -166,6 +177,13 @@ test('SSO email 2FA retries the same code once and requests delivery using the p
 	const account = await loginWithSso(client, credentials, undefined, {
 		onTwoFactor: async challenge => {
 			callbacks++;
+			expect(challenge.providers).toEqual([1, 7]);
+			expect(challenge.webAuthnOptions).toEqual({
+				challenge: 'Y2hhbGxlbmdl',
+				rpId: 'vault.example',
+				allowCredentials: [{ id: 'Y3JlZGVudGlhbA', type: 'public-key' }],
+			});
+			expect(challenge.webAuthnOrigin).toBe('https://vault.example');
 			await challenge.requestEmail();
 			return { provider: 1, token: '123456' };
 		},
