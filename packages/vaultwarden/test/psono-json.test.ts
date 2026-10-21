@@ -120,3 +120,16 @@ test('Psono JSON handles TOTP and bookmarks, skips GPG metadata, and rejects mal
 	expect(() => parseExternalJson('psonojson', JSON.stringify({ folders: [{ name: 2 }] })))
 		.toThrow('Invalid Psono folder name.');
 });
+
+test('Psono multiline values normalize CRLF and CR line endings in notes', () => {
+	const result = parseExternalJson(
+		'psonojson',
+		JSON.stringify({
+			items: [{
+				type: 'environment_variables',
+				environment_variables_variables: [{ key: '', value: 'first\r\nsecond\rthird\nfourth' }],
+			}],
+		}),
+	);
+	expect(items(result)[0]!.notes).toBe('first\nsecond\nthird\nfourth\n');
+});

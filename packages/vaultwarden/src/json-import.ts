@@ -1101,9 +1101,7 @@ function parsePsonoJson(source: string, organization: boolean): JsonObject {
 		const value = String(raw);
 		if (!value.trim()) return;
 		if (value.length > 200 || /[\r\n]/.test(value.trim())) {
-			target.notes = `${target.notes ?? ''}${key.trim() ? `${key}: ` : ''}${
-				value.replace(/\r\n|\r/g, '\n').replace(/\n/g, '\n')
-			}\n`;
+			target.notes = `${target.notes ?? ''}${key.trim() ? `${key}: ` : ''}${value.replace(/\r\n|\r/g, '\n')}\n`;
 		} else target.fields!.push({ name: key.trim() ? key : '', value, type });
 	};
 	const parseItems = (raw: unknown[], folder?: string): void => {
