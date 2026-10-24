@@ -56,6 +56,7 @@ terminalTest(
 			interrupt: true,
 			sequential: true,
 			challenge: true,
+			recovery: true,
 			cli_interrupt: true,
 		});
 	},

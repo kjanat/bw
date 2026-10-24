@@ -100,7 +100,8 @@ export async function answerLoginChallenge(
 			provider = Number(answer);
 		}
 	}
-	if (provider === undefined || !supported.includes(provider)) {
+	// Recovery is an explicit choice (--method 8); Vaultwarden does not advertise it in challenges.
+	if (provider === undefined || (provider !== 8 && !supported.includes(provider))) {
 		throw new Error(
 			'No supported two-factor method selected. Supported methods: TOTP, email, Duo, YubiKey OTP, WebAuthn, and recovery code.',
 		);
@@ -123,6 +124,7 @@ export async function answerLoginChallenge(
 			challenge.webAuthnOrigin!,
 		);
 	} else {
+		if (provider === 8) process.stderr.write("Using a recovery code disables the account's two-step login methods.\n");
 		token = await secretPrompt(provider === 8 ? 'Recovery code:' : 'Verification code:');
 	}
 	if (!token) throw new Error(provider === 8 ? 'A recovery code is required.' : 'A verification code is required.');

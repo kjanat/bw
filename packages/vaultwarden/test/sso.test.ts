@@ -196,8 +196,45 @@ test('SSO email 2FA retries the same code once and requests delivery using the p
 	expect(grants).toBe(2);
 	expect(emailRequests).toBe(1);
 });
+test('SSO login accepts an explicitly selected recovery code absent from Vaultwarden advertised providers', async () => {
+	let grants = 0;
+	const client = new VaultwardenClient('https://vault.example', {
+		fetch: (async (url: unknown, init: RequestInit) => {
+			if (String(url).endsWith('/profile')) return Response.json({ id: 'user', email });
+			expect(String(url)).toBe('https://vault.example/identity/connect/token');
+			const body = new URLSearchParams(String(init.body));
+			expect(body.get('grant_type')).toBe('authorization_code');
+			expect(body.get('code')).toBe(credentials.code);
+			expect(body.get('code_verifier')).toBe(credentials.codeVerifier);
+			if (++grants === 1) {
+				return Response.json({
+					TwoFactorProviders: ['0'],
+					TwoFactorProviders2: { '0': null },
+				}, { status: 400 });
+			}
+			expect(body.get('twoFactorProvider')).toBe('8');
+			expect(body.get('twoFactorToken')).toBe('synthetic-recovery-code');
+			return Response.json({
+				access_token: 'access',
+				refresh_token: 'refresh',
+				expires_in: 3600,
+				Key: wrapped,
+				Kdf: 0,
+				KdfIterations: 10000,
+			});
+		}) as unknown as typeof fetch,
+	});
+	const account = await loginWithSso(client, credentials, undefined, {
+		onTwoFactor: async challenge => {
+			expect(challenge.providers).toEqual([0]);
+			return { provider: 8, token: '  SYNTHETIC-RECOVERY- CODE  ' };
+		},
+	});
+	expect(account.email).toBe(email);
+	expect(grants).toBe(2);
+});
 test('SSO errors never fall back to password login or repeat grants', async () => {
-	for (const scenario of ['cancel', 'retry-failed']) {
+	for (const scenario of ['cancel', 'invalid-provider', 'retry-failed']) {
 		let grants = 0;
 		const client = new VaultwardenClient('https://vault.example', {
 			fetch: (async (url: unknown) => {
@@ -209,10 +246,11 @@ test('SSO errors never fall back to password login or repeat grants', async () =
 		const operation = loginWithSso(client, credentials, undefined, {
 			onTwoFactor: async () => {
 				if (scenario === 'cancel') throw new Error('Cancelled');
-				return { provider: 0, token: 'wrong' };
+				return { provider: scenario === 'invalid-provider' ? 1 : 0, token: 'wrong' };
 			},
 		});
 		if (scenario === 'cancel') await expect(operation).rejects.toThrow('Cancelled');
+		else if (scenario === 'invalid-provider') await expect(operation).rejects.toThrow('Invalid two-factor answer.');
 		else await expect(operation).rejects.toBeInstanceOf(ApiError);
 		expect(grants).toBe(scenario === 'retry-failed' ? 2 : 1);
 	}

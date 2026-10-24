@@ -19,22 +19,33 @@ def check(scenario, module, directory):
     script = (
         "import { secretPrompt, cliPromptSession } from " + json.dumps(module) + ";"
     )
-    if scenario == "challenge":
+    if scenario in ("challenge", "recovery"):
         script += (
             "const { answerLoginChallenge } = await import(new URL('./auth-input.js', "
             + json.dumps(module)
             + "));"
         )
-        script += """
+        if scenario == "recovery":
+            script += """
+const answer = await answerLoginChallenge({
+    providers: [0],
+    requestEmail: async () => { throw new Error('Unexpected email delivery'); },
+}, 8);
+if (answer.provider !== 8 || answer.token !== 'synthetic-recovery-code') process.exitCode = 1;
+process.stdout.write('DONE');
+"""
+            steps = [(b"Recovery code:", b"synthetic-recovery-code\r", True)]
+        else:
+            script += """
 let deliveries = 0;
 const answer = await answerLoginChallenge({ providers: [0, 1], requestEmail: async () => { deliveries++; } });
 if (deliveries !== 1 || answer.provider !== 1 || answer.token !== '123456') process.exitCode = 1;
 process.stdout.write('DONE');
 """
-        steps = [
-            (b"Two-factor method", b"2\n", False),
-            (b"Verification code:", b"123456\r", True),
-        ]
+            steps = [
+                (b"Two-factor method", b"2\n", False),
+                (b"Verification code:", b"123456\r", True),
+            ]
     elif scenario == "sequential":
         script += """
 const visible = await cliPromptSession().ask({ kind: 'input', message: 'Synthetic account:', trim: true });
@@ -108,9 +119,15 @@ try {
             b"synthetic-secret" in output
             or b"second-synthetic-value" in output
             or b"123456" in output
+            or b"synthetic-recovery-code" in output
         ):
             raise RuntimeError("Secret appeared in terminal output")
         after = termios.tcgetattr(slave)
+        if (
+            scenario == "recovery"
+            and b"disables the account's two-step login methods" not in output
+        ):
+            raise RuntimeError("Recovery consequences were not displayed")
         mask = termios.ECHO | termios.ICANON
         if before[3] & mask != after[3] & mask:
             raise RuntimeError("Terminal echo/canonical modes were not restored")
@@ -147,6 +164,7 @@ with tempfile.TemporaryDirectory(prefix="vw-prompt-cancel-") as directory:
                 "interrupt",
                 "sequential",
                 "challenge",
+                "recovery",
                 "cli_interrupt",
             )
         })

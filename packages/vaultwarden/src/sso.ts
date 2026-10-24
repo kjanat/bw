@@ -106,7 +106,8 @@ export async function loginWithSso(
 				await client.sendSsoEmailLogin();
 			},
 		});
-		if (!providers.includes(answer.provider) || !answer.token) {
+		// Recovery codes are accepted by Vaultwarden without being advertised as an enrolled factor.
+		if ((answer.provider !== 8 && !providers.includes(answer.provider)) || !answer.token) {
 			throw new Error('Invalid two-factor answer.', { cause: error });
 		}
 		return { ...await client.loginWithSso(credentials, answer), auth: 'sso' };

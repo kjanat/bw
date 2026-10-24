@@ -59,3 +59,20 @@ is implemented in `SendService` and `receiveSend`; email verification is a
 server limitation. Legacy body-based access is implemented and live tested on
 1.36.0; broader server-version and reference-client coverage remains required
 work.
+
+Recovery-code login now follows the pinned Vaultwarden identity handlers: provider
+8 can be explicitly selected even though it is absent from the enrolled providers
+in a challenge. Password and SSO grants normalize recovery codes to lowercase
+without spaces, including for 1.36.0, which requires that canonical form. Other
+factor tokens retain their literal contents. Interactive `--method 8` entry uses
+the hidden reader and explains that recovery disables the account's two-step
+login methods. Provider discovery accepts both Vaultwarden's string IDs and
+numeric IDs.
+
+The isolated recovery regression passed against the pinned 1.36.0 and 1.37.4
+containers using the built production library. It verifies the unadvertised
+provider, spaced uppercase recovery input, vault decryption, and removal of the
+account's second factors. SSO request behavior has focused transport coverage;
+the compiled Node prompt host has PTY coverage for hidden recovery entry and
+terminal restoration. These checks do not establish the full compatibility
+matrix or live SSO recovery coverage.

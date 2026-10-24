@@ -18,11 +18,75 @@ import {
 	object,
 	text,
 	writeCsv,
+	createAccountKeyMaterial,
 } from '@kjanat/vaultwarden';
 import { writeTestCertificate } from './fixtures/tls.js';
 
 const server = process.env.VW_TEST_SERVER;
 const live = server ? test : test.skip;
+live('real Vaultwarden: recovery-code challenge through the production library', async () => {
+	const location = new URL(server!);
+	if (location.protocol !== 'http:' || location.hostname !== '127.0.0.1') {
+		throw new Error('Live tests require a disposable HTTP loopback server.');
+	}
+	const email = `recovery-${randomUUID()}@example.com`, password = 'Synthetic-recovery-password-123!';
+	const kdf = { type: 0, iterations: 600000 } as const;
+	const material = await createAccountKeyMaterial(password, email, kdf);
+	try {
+		const post = (path: string, body: unknown) =>
+			fetch(`${server}${path}`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+				body: JSON.stringify(body),
+				signal: AbortSignal.timeout(10000),
+			});
+		const verify = await post('/identity/accounts/register/send-verification-email', { email });
+		expect(verify.status).toBe(200);
+		const registered = await post('/identity/accounts/register/finish', {
+			email,
+			masterPasswordHash: material.masterPasswordHash,
+			key: material.encryptedUserKey,
+			keys: { publicKey: material.publicKey, encryptedPrivateKey: material.encryptedPrivateKey },
+			kdf: kdf.type,
+			kdfIterations: kdf.iterations,
+			emailVerificationToken: await verify.json(),
+		});
+		expect(registered.status).toBe(200);
+		const client = new VaultwardenClient(server!);
+		const initial = await loginWithPassword(client, email, password);
+		const proof = { masterPasswordHash: material.masterPasswordHash };
+		const setup = await client.api(initial.accessToken, 'POST', '/two-factor/get-authenticator', proof);
+		const secret = text(field(object(setup.authenticator ?? setup), 'key'));
+		await client.api(initial.accessToken, 'PUT', '/two-factor/authenticator', {
+			...proof,
+			key: secret,
+			token: totp(secret),
+			userVerificationToken: setup.userVerificationToken,
+		});
+		const recovery = await client.api(initial.accessToken, 'POST', '/two-factor/get-recover', proof);
+		const code = text(field(recovery, 'code'));
+		let challenges = 0;
+		const recovered = await loginWithPassword(client, email, password, undefined, {
+			onTwoFactor: async challenge => {
+				challenges++;
+				expect(challenge.providers).toEqual([0]);
+				return { provider: 8, token: `  ${code.toUpperCase().split('').join(' ')}  ` };
+			},
+		});
+		expect(challenges).toBe(1);
+		const key = await unlockAccount(recovered, password);
+		try {
+			expect(key.equals(material.userKey)).toBe(true);
+		} finally {
+			key.fill(0);
+		}
+		const methods = await client.api(recovered.accessToken, 'GET', '/two-factor');
+		expect(field(methods, 'data')).toEqual([]);
+		await expect(loginWithPassword(client, email, password)).resolves.toMatchObject({ email });
+	} finally {
+		material.userKey.fill(0);
+	}
+}, 30000);
 live('real Vaultwarden: authentication, external imports, and REST compatibility', async () => {
 	const location = new URL(server!);
 	if (location.protocol !== 'http:' || location.hostname !== '127.0.0.1') {

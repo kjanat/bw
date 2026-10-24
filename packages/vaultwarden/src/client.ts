@@ -115,6 +115,10 @@ export interface SsoCredentials {
 	codeVerifier: string;
 	redirectUri: string;
 }
+/** Older Vaultwarden releases require the canonical recovery code; other factor tokens stay literal. */
+function loginTwoFactorToken(twoFactor: { provider: number; token: string }): string {
+	return twoFactor.provider === 8 ? twoFactor.token.replaceAll(' ', '').trim().toLowerCase() : twoFactor.token;
+}
 export interface ServiceUrls {
 	webVault?: string;
 	api?: string;
@@ -284,7 +288,15 @@ export class VaultwardenClient {
 				}
 				const p = field(error, 'twoFactorProviders');
 				if (Array.isArray(p)) {
-					providers = p.filter((v): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 0);
+					providers = [
+						...new Set(
+							p
+								.map(value => typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : value)
+								.filter((value): value is number =>
+									typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+								),
+						),
+					];
 				}
 				const details = field(error, 'twoFactorProviders2');
 				if (details && typeof details === 'object' && !Array.isArray(details)) {
@@ -411,7 +423,7 @@ export class VaultwardenClient {
 		});
 		if (twoFactor) {
 			body.set('twoFactorProvider', String(twoFactor.provider));
-			body.set('twoFactorToken', twoFactor.token);
+			body.set('twoFactorToken', loginTwoFactorToken(twoFactor));
 			body.set('twoFactorRemember', '0');
 		}
 		const data = await this.request('/identity/connect/token', {
@@ -467,7 +479,7 @@ export class VaultwardenClient {
 		});
 		if (twoFactor) {
 			body.set('twoFactorProvider', String(twoFactor.provider));
-			body.set('twoFactorToken', twoFactor.token);
+			body.set('twoFactorToken', loginTwoFactorToken(twoFactor));
 			body.set('twoFactorRemember', '0');
 		}
 		const data = await this.request('/identity/connect/token', { method: 'POST', body });

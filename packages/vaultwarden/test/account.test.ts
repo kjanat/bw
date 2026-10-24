@@ -95,7 +95,7 @@ test('password challenge resumes one grant, requests email explicitly, and never
 	expect(grants).toBe(2);
 	expect(requests.filter(url => url.endsWith('/send-email-login'))).toHaveLength(1);
 });
-test('password login submits the Vaultwarden recovery-code provider and token', async () => {
+test('password login accepts an explicitly selected recovery code absent from Vaultwarden advertised providers', async () => {
 	const email = 'recovery@example.com', password = 'synthetic-password';
 	const master = await deriveMasterKey(password, email, { type: 0, iterations: 10000 });
 	const stretched = stretchKey(master), userKey = Buffer.alloc(64, 11);
@@ -107,7 +107,12 @@ test('password login submits the Vaultwarden recovery-code provider and token', 
 		fetch: transport((_url, init) => {
 			if (String(_url).endsWith('/prelogin')) return Response.json({ kdf: 0, kdfIterations: 10000 });
 			const body = new URLSearchParams(String(init.body));
-			if (++grants === 1) return Response.json({ TwoFactorProviders: [8] }, { status: 400 });
+			if (++grants === 1) {
+				return Response.json({
+					TwoFactorProviders: ['0'],
+					TwoFactorProviders2: { '0': null },
+				}, { status: 400 });
+			}
 			expect(body.get('twoFactorProvider')).toBe('8');
 			expect(body.get('twoFactorToken')).toBe('recovery-token');
 			return Response.json({ ...base, refresh_token: 'refresh-token', Key: wrapped });
@@ -115,8 +120,8 @@ test('password login submits the Vaultwarden recovery-code provider and token', 
 	});
 	const account = await loginWithPassword(api, email, password, undefined, {
 		onTwoFactor: async challenge => {
-			expect(challenge.providers).toEqual([8]);
-			return { provider: 8, token: 'recovery-token' };
+			expect(challenge.providers).toEqual([0]);
+			return { provider: 8, token: '  RECOVERY- TOKEN  ' };
 		},
 	});
 	expect(account.email).toBe(email);

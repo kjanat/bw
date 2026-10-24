@@ -40,6 +40,7 @@ export function accountUserId(account: Pick<Account, 'accessToken'>): string | u
 	}
 }
 export interface TwoFactorAnswer {
+	/** Provider 8 explicitly uses a recovery code and disables the account's two-step login methods. */
 	provider: number;
 	token: string;
 }
@@ -101,7 +102,8 @@ export async function loginWithPassword(
 					await client.sendEmailLogin(email, passwordHash);
 				},
 			});
-			if (!providers.includes(answer.provider) || !answer.token) {
+			// Recovery codes are accepted by Vaultwarden without being advertised as an enrolled factor.
+			if ((answer.provider !== 8 && !providers.includes(answer.provider)) || !answer.token) {
 				throw new Error('Invalid two-factor answer.', { cause: error });
 			}
 			login = await client.login(email, passwordHash, answer);

@@ -236,6 +236,39 @@ test('2FA errors expose provider IDs without echoing server error bodies', async
 	}
 });
 
+test('2FA challenges accept Vaultwarden string IDs and numeric IDs without accepting malformed providers', async () => {
+	for (const providers of [['0', '1', '3'], [0, 1, 3]]) {
+		const api = new VaultwardenClient('https://vault.example', {
+			fetch: transport(() =>
+				json({
+					TwoFactorProviders: [
+						...providers,
+						'0',
+						-1,
+						1.5,
+						true,
+						null,
+						{},
+						'',
+						' ',
+						'1.5',
+						'-1',
+						'1e2',
+						'9007199254740992',
+					],
+				}, 400)
+			),
+		});
+		try {
+			await api.login('fixture@example.com', 'synthetic-hash');
+			throw new Error('Expected challenge');
+		} catch (error) {
+			expect(error).toBeInstanceOf(ApiError);
+			expect((error as ApiError).twoFactorProviders).toEqual([0, 1, 3]);
+		}
+	}
+});
+
 test('signed attachment download never forwards account credentials or follows redirects', async () => {
 	const api = new VaultwardenClient('https://vault.example.com', {
 		fetch: transport((url, init) => {

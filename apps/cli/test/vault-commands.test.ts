@@ -5,7 +5,7 @@ test('archived edits move back automatically without interaction', async () => {
 	const data = { archivedDate: '2026-01-01T00:00:00Z' };
 	const messages: string[] = [];
 	let prompted = false;
-	await prepareArchivedItemEdit({ shouldUnarchiveBeforeEdit: () => true }, 'item', data, {
+	await prepareArchivedItemEdit({ shouldUnarchiveBeforeEdit: async () => true }, 'item', data, {
 		noInteraction: true,
 		isTTY: true,
 		ask: async () => {
@@ -21,7 +21,7 @@ test('archived edits move back automatically without interaction', async () => {
 
 test('interactive archived edit can be cancelled without changing the submitted item', async () => {
 	const data = { archivedDate: '2026-01-01T00:00:00Z' };
-	await expect(prepareArchivedItemEdit({ shouldUnarchiveBeforeEdit: () => true }, 'item', data, {
+	await expect(prepareArchivedItemEdit({ shouldUnarchiveBeforeEdit: async () => true }, 'item', data, {
 		noInteraction: false,
 		isTTY: true,
 		ask: async () => 'cancel',
@@ -32,7 +32,7 @@ test('interactive archived edit can be cancelled without changing the submitted 
 
 test('interactive archived edit clears archive state after confirmation', async () => {
 	const data = { archivedDate: '2026-01-01T00:00:00Z' };
-	await prepareArchivedItemEdit({ shouldUnarchiveBeforeEdit: () => true }, 'item', data, {
+	await prepareArchivedItemEdit({ shouldUnarchiveBeforeEdit: async () => true }, 'item', data, {
 		noInteraction: false,
 		isTTY: true,
 		ask: async () => 'confirmed',
