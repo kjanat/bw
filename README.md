@@ -50,3 +50,5 @@ and removes it afterward. CI defines Node 24/26 jobs for both server versions.
 See the [usage guide](docs/README.md) and [compatibility contract](docs/compatibility.md)
 for supported commands, real-server tests, and remaining work. The implementation is in progress against the full CLI scope;
 [implementation status](docs/implementation-status.md) records completed behavior and outstanding work.
+The [Vaultwarden accommodations inventory](docs/vaultwarden-deviations.md) explains
+intentional differences from Bitwarden and the production rules that select them.

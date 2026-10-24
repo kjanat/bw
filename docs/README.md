@@ -4,6 +4,10 @@ An independent client with an explicit commitment to Vaultwarden compatibility.
 The TypeScript library implements the protocol and cryptography; a DreamCLI
 frontend supplies commands and local state. Neither package invokes `bw`.
 
+See [intentional accommodations for Vaultwarden](vaultwarden-deviations.md) for
+the differences from the Bitwarden reference, their server/version conditions,
+and the source and test evidence for each.
+
 The implementation is being developed against the full Vaultwarden-supported
 `bw` command surface tracked in [implementation status](implementation-status.md).
 Both packages are private while the API and compatibility coverage develop. The executable is `vw` to avoid colliding
