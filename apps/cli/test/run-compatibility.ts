@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
+
 const {
 	servers: compatibilityTargets,
 	referenceCliVersion,
@@ -43,7 +44,7 @@ if (compareReference && (!reference || !isAbsolute(reference) || !(await stat(re
 	throw new Error('VW_TEST_BW must name an absolute path to the independent bw 2026.10.0 executable.');
 }
 if (!Bun.which('envctl')) throw new Error('Compatibility runner requires envctl for Docker output redaction.');
-for (const command of ['docker', 'node', 'openssl', 'ssh-keygen']) {
+for (const command of ['docker', 'node', 'ssh-keygen']) {
 	if (!Bun.which(command)) throw new Error(`Compatibility runner requires ${command}.`);
 }
 const directory = await mkdtemp(join(tmpdir(), 'vw-compat-run-'));

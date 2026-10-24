@@ -12,6 +12,37 @@ const children = (element: Element, tag: string): Element[] => {
 };
 const content = (element: Element | undefined) => element?.textContent ?? '';
 const blank = (value: string | null | undefined) => !value || !value.trim();
+const passwordFieldNames = new Set([
+	'password',
+	'pass word',
+	'passphrase',
+	'pass phrase',
+	'pass',
+	'code',
+	'code word',
+	'codeword',
+	'secret',
+	'secret word',
+	'personpwd',
+	'key',
+	'keyword',
+	'key word',
+	'keyphrase',
+	'key phrase',
+	'form_pw',
+	'wppassword',
+	'pin',
+	'pwd',
+	'pw',
+	'pword',
+	'passwd',
+	'p',
+	'serial',
+	'serial#',
+	'license key',
+	'reg #',
+	'passwort',
+]);
 function cardBrand(number: string): string | undefined {
 	if (/^4/.test(number)) return 'Visa';
 	if (/^(?:5[1-5]\d{14}|2(?:22[1-9]\d{12}|2[3-9]\d{13}|[3-6]\d{14}|7[01]\d{13}|720\d{12}))$/.test(number)) {
@@ -46,10 +77,10 @@ export function parseSafeInCloudXml(source: string): JsonObject {
 	} catch (error) {
 		throw new Error('Invalid SafeInCloud XML.', { cause: error });
 	}
-	const database = document.getElementsByTagName('database').item(0);
-	if (!database) throw new Error('Missing database node.');
+	const databases = document.getElementsByTagName('database');
+	if (databases.length === 0) throw new Error('Missing database node.');
 	const items: VaultItem[] = [];
-	for (const cardElement of children(database, 'card')) {
+	for (const cardElement of Array.from(databases).flatMap(database => children(database, 'card'))) {
 		if (cardElement.getAttribute('template') === 'true' || cardElement.getAttribute('deleted') === 'true') continue;
 		const name = cardElement.getAttribute('title');
 		const item: VaultItem = {
@@ -76,14 +107,15 @@ export function parseSafeInCloudXml(source: string): JsonObject {
 			item.card = {};
 			delete item.login;
 		}
-		const addNote = (key: string, value: string) => {
-			item.notes = `${item.notes ?? ''}${key ? `${key}: ` : ''}${
-				value.replace(/\r\n|\r/g, '\n').split('\n').join('\n')
-			}\n`;
+		const addNote = (value: string) => {
+			item.notes = `${item.notes ?? ''}${value.replace(/\r\n|\r/g, '\n').split('\n').join('\n')}\n`;
+		};
+		const addFieldNote = (key: string, value: string) => {
+			item.notes = `${item.notes ?? ''}${key}: ${value.replace(/\r\n|\r/g, '\n').split('\n').join('\n')}\n`;
 		};
 		const addField = (key: string | null, value: string, type = 0) => {
 			if (blank(value)) return;
-			if (value.length > 200 || /[\r\n]/.test(value.trim())) addNote(key ?? '', value);
+			if (value.length > 200 || /[\r\n]/.test(value.trim())) addFieldNote(blank(key) ? '' : key!, value);
 			else item.fields!.push({ name: blank(key) ? '' : key, value, type });
 		};
 		if (isCard) {
@@ -103,7 +135,7 @@ export function parseSafeInCloudXml(source: string): JsonObject {
 						item.card!.expYear = `${match[2] ?? '20'}${match[3]}`;
 					} else addField(field.name, field.value);
 				} else if (field.autofill === 'cc-csc') item.card!.code = field.value;
-				else if (field.type === 'notes') addNote('', field.value);
+				else if (field.type === 'notes') addNote(field.value);
 				else addField(field.name, field.value, field.type === 'pin' ? 1 : 0);
 			}
 		} else if (item.type === 1) {
@@ -114,21 +146,22 @@ export function parseSafeInCloudXml(source: string): JsonObject {
 				if (field.type === 'login' && blank(login.username as string | null)) login.username = field.value;
 				else if (field.type === 'password' || field.type === 'secret') addField(field.name, field.value, 1);
 				else if (field.type === 'one_time_password') login.totp = field.value;
-				else if (field.type === 'notes') addNote('', field.value);
+				else if (field.type === 'notes') addNote(field.value);
 				else if (field.type === 'weblogin' || field.type === 'website') {
-					const uri = field.value.trim();
-					if (uri) uris.push({ uri: uri.includes('://') || !uri.includes('.') ? uri : `http://${uri}`, match: null });
+					let uri = field.value.trim();
+					if (!uri.includes('://') && uri.includes('.')) uri = `http://${uri}`;
+					if (uri) uris.push({ uri: uri.slice(0, 1000), match: null });
 				} else addField(field.name, field.value);
 			}
 			const hidden = item.fields!.filter(field => field.type === 1);
-			const password = hidden.find(field => ['password', 'passwort', 'pwd'].includes(String(field.name).toLowerCase()));
+			const password = hidden.find(field => passwordFieldNames.has(String(field.name).toLowerCase()));
 			const selected = password ?? hidden[0];
 			if (selected) {
 				login.password = selected.value;
-				if (password) item.fields = item.fields!.filter(field => field !== password);
+				if (password) item.fields = item.fields!.filter(field => field !== selected);
 			}
 		}
-		for (const note of children(cardElement, 'notes')) addNote('', content(note));
+		for (const note of children(cardElement, 'notes')) addNote(content(note));
 		if (!item.notes?.trim()) item.notes = null;
 		items.push(item);
 	}

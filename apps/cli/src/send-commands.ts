@@ -7,6 +7,7 @@ import { secretPrompt } from '#prompts';
 import {
 	decodeJson,
 	object,
+	sendObjectResponse,
 	sendTemplate,
 	receiveSend,
 	SendPasswordRequired,
@@ -26,51 +27,8 @@ function decodeSendJson(value: string): JsonObject {
 		throw new Error('Error parsing the encoded request data.');
 	}
 }
-function projectFields(value: unknown, fields: readonly string[]): JsonObject {
-	const source = value && typeof value === 'object' && !Array.isArray(value) ? object(value) : {};
-	return Object.fromEntries(fields.filter(field => source[field] !== undefined).map(field => [field, source[field]]));
-}
 export function sendResponseData(send: JsonObject, objectType = 'send'): JsonObject {
-	if (objectType === 'send-access') {
-		return {
-			object: objectType,
-			...projectFields(send, ['id', 'name', 'type']),
-			...(send.type === 0 && send.text != null
-				? { text: projectFields(send.text, ['text', 'hidden']) }
-				: {}),
-			...(send.type === 1 && send.file != null
-				? { file: projectFields(send.file, ['id', 'size', 'sizeName', 'fileName']) }
-				: {}),
-		};
-	}
-	return {
-		object: 'send',
-		...projectFields(send, [
-			'id',
-			'accessId',
-			'accessUrl',
-			'name',
-			'notes',
-			'key',
-			'type',
-			'maxAccessCount',
-			'accessCount',
-			'revisionDate',
-			'deletionDate',
-			'expirationDate',
-			'passwordSet',
-			'disabled',
-			'hideEmail',
-			'authType',
-		]),
-		emails: send.emails ?? [],
-		...(send.type === 0 && send.text != null
-			? { text: projectFields(send.text, ['text', 'hidden']) }
-			: {}),
-		...(send.type === 1 && send.file != null
-			? { file: projectFields(send.file, ['id', 'size', 'sizeName', 'fileName']) }
-			: {}),
-	};
+	return sendObjectResponse(send, objectType);
 }
 export function quickSendResult(send: JsonObject, fullObject: boolean): JsonObject | string {
 	return fullObject ? sendResponseData(send) : String(send.accessUrl ?? '');
@@ -90,7 +48,7 @@ export function receiveCommand() {
 				).length > 1
 			) throw new Error('Choose one Send password source.');
 			let password = flags.password;
-			if (flags.passwordfile) password = (await readFile(flags.passwordfile, 'utf8')).split(/\r?\n/, 1)[0] ?? '';
+			if (flags.passwordfile) password = (await readFile(flags.passwordfile, 'utf8')).split(/\r\n|\r|\n/, 1)[0] ?? '';
 			if (flags.passwordenv) {
 				password = process.env[flags.passwordenv];
 				if (password === undefined) throw new Error('The selected Send password environment variable is unset.');
@@ -122,6 +80,9 @@ export function sendCommands(runtime: VaultRuntime) {
 		if (type !== 0 && type !== 1) throw new Error('Vaultwarden supports text and file Sends only.');
 		const file = data.file == null ? {} : object(data.file);
 		const path = typeof file.fileName === 'string' ? file.fileName : filePath;
+		if (type === 1) {
+			await runtime.run(session, false, vault => vault.sends.assertCanCreate(1));
+		}
 		const contents = type === 1 && path ? await readFile(path) : undefined;
 		try {
 			const request = {

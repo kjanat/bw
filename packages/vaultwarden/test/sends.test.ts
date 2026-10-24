@@ -5,6 +5,7 @@ import { MultipleResultsError } from '#search';
 import {
 	deriveSendKey,
 	hashSendPassword,
+	assertSendFileSize,
 	SendService,
 	receiveSend,
 	SendPasswordRequired,
@@ -50,6 +51,13 @@ test('owner reads decrypt with the wrapped Send seed, expose access URL, and omi
 	expect(result.passwordSet).toBe(true);
 	expect(result.password).toBeUndefined();
 });
+test('Send lookup resolves UUIDs without regard to letter case', () => {
+	const id = 'aabbccdd-1111-2222-3333-445566778899';
+	const service = new SendService(new VaultwardenClient('https://vault.example'), 'owner-token', {
+		sends: [{ ...encryptedSend(), id }],
+	}, accountKey);
+	expect(service.get(id.toUpperCase()).id).toBe(id);
+});
 test('text-only Send lookup filters before resolving exact IDs and ambiguous names', () => {
 	const fileSend: JsonObject = {
 		...encryptedSend(),
@@ -82,11 +90,12 @@ test('ambiguous Send name lookup reports each matching ID', () => {
 		expect((error as MultipleResultsError).ids).toEqual(['send-id', 'second-send-id']);
 	}
 });
-test('file Send creation and edits require premium before network access', async () => {
-	let requests = 0;
+test('Bitwarden file Send creation and edits require premium before mutation', async () => {
+	const requests: string[] = [];
 	const client = new VaultwardenClient('https://vault.example', {
-		fetch: (async () => {
-			requests++;
+		fetch: (async (url: unknown) => {
+			requests.push(String(url));
+			if (String(url).endsWith('/api/config')) return Response.json({ server: { name: 'Bitwarden' } });
 			return Response.json({});
 		}) as unknown as typeof fetch,
 	});
@@ -96,12 +105,65 @@ test('file Send creation and edits require premium before network access', async
 		file: { id: 'file-id', fileName: encrypt(Buffer.from('payload.bin'), key) },
 	};
 	const service = new SendService(client, 'owner-token', { sends: [fileSend] }, accountKey);
+	await expect(service.assertCanCreate(1)).rejects.toThrow('Premium status is required');
 	await expect(service.create(
 		{ type: 1, name: 'File', file: { fileName: 'payload.bin' } },
 		Buffer.from('payload'),
 	)).rejects.toThrow('Premium status is required');
 	await expect(service.edit('send-id', { name: 'Renamed' })).rejects.toThrow('Premium status is required');
-	expect(requests).toBe(0);
+	expect(requests).toEqual(['https://vault.example/api/config']);
+});
+test('Vaultwarden file Sends bypass the Bitwarden premium gate for create and edit', async () => {
+	const paths: string[] = [];
+	const existing = {
+		...encryptedSend(),
+		type: 1,
+		text: null,
+		file: { id: 'existing-file', fileName: encrypt(Buffer.from('existing.bin'), key) },
+	};
+	const client = new VaultwardenClient('https://vault.example', {
+		fetch: (async (url: unknown, init: RequestInit) => {
+			const path = String(url);
+			paths.push(path);
+			if (path.endsWith('/api/config')) return Response.json({ server: { name: 'Vaultwarden' } });
+			if (path.endsWith('/api/sends/file/v2')) {
+				const data = JSON.parse(String(init.body));
+				return Response.json({
+					fileUploadType: 0,
+					sendResponse: {
+						...data,
+						id: 'created-send',
+						accessId,
+						file: { ...data.file, id: 'created-file' },
+					},
+				});
+			}
+			if (path.endsWith('/api/sends/created-send/file/created-file')) return new Response(null, { status: 204 });
+			if (path.endsWith('/api/sends/send-id')) {
+				const data = JSON.parse(String(init.body));
+				return Response.json({ ...existing, ...data, file: existing.file });
+			}
+			throw new Error(`Unexpected request: ${path}`);
+		}) as unknown as typeof fetch,
+	});
+	const service = new SendService(client, 'owner-token', {
+		profile: { premiumPersonally: false, premiumFromOrganization: false },
+		sends: [existing],
+	}, accountKey);
+	await service.assertCanCreate(1);
+	const created = await service.create(
+		{ type: 1, name: 'Created on Vaultwarden', file: { fileName: 'created.bin' } },
+		Buffer.from('payload'),
+	);
+	expect(created.name).toBe('Created on Vaultwarden');
+	expect((await service.edit('send-id', { name: 'Renamed on Vaultwarden' })).name)
+		.toBe('Renamed on Vaultwarden');
+	expect(paths).toEqual([
+		'https://vault.example/api/config',
+		'https://vault.example/api/sends/file/v2',
+		'https://vault.example/api/sends/created-send/file/created-file',
+		'https://vault.example/api/sends/send-id',
+	]);
 });
 test('Send creation rejects a deletion date that is not in the future before network access', async () => {
 	let requests = 0;
@@ -119,6 +181,31 @@ test('Send creation rejects a deletion date that is not in the future before net
 		deletionDate: new Date(Date.now() - 1000).toISOString(),
 	})).rejects.toMatchObject({ message: 'Must specify a valid deletion date after the current time' });
 	expect(requests).toBe(0);
+});
+test('Send creation rejects even an empty non-null email list before network access', async () => {
+	let requests = 0;
+	const client = new VaultwardenClient('https://vault.example', {
+		fetch: (async () => {
+			requests++;
+			return Response.json({});
+		}) as unknown as typeof fetch,
+	});
+	const service = new SendService(client, 'owner-token', { sends: [] }, accountKey);
+	await expect(service.create({
+		type: 0,
+		name: 'Email Send',
+		text: { text: 'payload' },
+		emails: [],
+	})).rejects.toThrow('Vaultwarden does not support email-verification Sends.');
+	expect(requests).toBe(0);
+});
+test('Send file size limits match Bitwarden and Vaultwarden wire payload limits', () => {
+	const fiveHundredMiB = 500 * 1024 * 1024;
+	expect(() => assertSendFileSize(fiveHundredMiB, false)).not.toThrow();
+	expect(() => assertSendFileSize(fiveHundredMiB + 1, false)).toThrow('500 MiB');
+	const maxVaultwardenPlaintext = Math.floor((550_502_400 - 49) / 16) * 16 - 1;
+	expect(() => assertSendFileSize(maxVaultwardenPlaintext, true)).not.toThrow();
+	expect(() => assertSendFileSize(maxVaultwardenPlaintext + 1, true)).toThrow('525 MiB');
 });
 test('editing retains the seed, omits unchanged password proofs, and never transmits plaintext', async () => {
 	let requests = 0;

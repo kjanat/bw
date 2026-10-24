@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
+	isVaultwardenVersion,
 	minimumVaultwardenVersionForCipherType,
 	UnsupportedVaultwardenCapabilityError,
 	vaultwardenVersionAtLeast,
@@ -129,6 +130,7 @@ export class VaultwardenClient {
 	private readonly transport: typeof fetch;
 	private serverVersionRequest?: Promise<string>;
 	private serverIsVaultwardenRequest?: Promise<boolean>;
+	private serverConfigRequest?: Promise<JsonObject>;
 	constructor(
 		server: string,
 		options: { fetch?: typeof fetch; deviceId?: string; services?: ServiceUrls } = {},
@@ -141,16 +143,33 @@ export class VaultwardenClient {
 		this.deviceId = options.deviceId ?? randomUUID();
 	}
 	readonly deviceId: string;
+	/** The server's configured web-vault origin, used to validate WebAuthn assertions. */
+	async webAuthnOrigin(): Promise<string> {
+		const environment = object(field(await this.serverConfig(), 'environment') ?? {});
+		const vault = field(environment, 'vault');
+		if (typeof vault !== 'string' || !vault) return new URL(this.server).origin;
+		return new URL(serverUrl(vault)).origin;
+	}
 	/** The release version reported by Vaultwarden's public /api/version endpoint. */
 	serverVersion(): Promise<string> {
-		this.serverVersionRequest ??= this.loadServerVersion();
+		if (!this.serverVersionRequest) {
+			const request = this.loadServerVersion();
+			this.serverVersionRequest = request;
+			void request.catch(() => {
+				if (this.serverVersionRequest === request) this.serverVersionRequest = undefined;
+			});
+		}
 		return this.serverVersionRequest;
+	}
+	/** Whether the connected server identifies itself as Vaultwarden in /api/config. */
+	isVaultwardenServer(): Promise<boolean> {
+		return this.serverIsVaultwarden();
 	}
 	/** Refuse writes for item kinds that the connected Vaultwarden release cannot store. */
 	async assertCipherTypeSupported(type: number): Promise<void> {
 		const minimumVersion = minimumVaultwardenVersionForCipherType(type);
 		if (!minimumVersion) return;
-		if (!(await this.serverIsVaultwarden())) return;
+		if (!(await this.isVaultwardenServer())) return;
 		const serverVersion = await this.serverVersion();
 		if (!vaultwardenVersionAtLeast(serverVersion, minimumVersion)) {
 			throw new UnsupportedVaultwardenCapabilityError('cipher-type', {
@@ -161,10 +180,34 @@ export class VaultwardenClient {
 		}
 	}
 	private serverIsVaultwarden(): Promise<boolean> {
-		this.serverIsVaultwardenRequest ??= this.loadServerIdentity();
+		if (!this.serverIsVaultwardenRequest) {
+			const request = this.loadServerIdentity();
+			this.serverIsVaultwardenRequest = request;
+			void request.catch(() => {
+				if (this.serverIsVaultwardenRequest === request) this.serverIsVaultwardenRequest = undefined;
+			});
+		}
 		return this.serverIsVaultwardenRequest;
 	}
 	private async loadServerIdentity(): Promise<boolean> {
+		const server = field(await this.serverConfig(), 'server');
+		return typeof server === 'object'
+			&& server !== null
+			&& !Array.isArray(server)
+			&& typeof field(server as JsonObject, 'name') === 'string'
+			&& (field(server as JsonObject, 'name') as string).toLowerCase() === 'vaultwarden';
+	}
+	private serverConfig(): Promise<JsonObject> {
+		if (!this.serverConfigRequest) {
+			const request = this.loadServerConfig();
+			this.serverConfigRequest = request;
+			void request.catch(() => {
+				if (this.serverConfigRequest === request) this.serverConfigRequest = undefined;
+			});
+		}
+		return this.serverConfigRequest;
+	}
+	private async loadServerConfig(): Promise<JsonObject> {
 		const response = await this.requestRaw('/api/config');
 		let config: unknown;
 		try {
@@ -172,12 +215,7 @@ export class VaultwardenClient {
 		} catch {
 			throw new Error('Server returned an invalid configuration response.');
 		}
-		const server = field(object(config), 'server');
-		return typeof server === 'object'
-			&& server !== null
-			&& !Array.isArray(server)
-			&& typeof field(server as JsonObject, 'name') === 'string'
-			&& (field(server as JsonObject, 'name') as string).toLowerCase() === 'vaultwarden';
+		return object(config);
 	}
 	private async loadServerVersion(): Promise<string> {
 		const response = await this.requestRaw('/api/version');
@@ -187,7 +225,7 @@ export class VaultwardenClient {
 		} catch {
 			throw new Error('Vaultwarden returned an invalid server version.');
 		}
-		if (typeof version !== 'string' || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)) {
+		if (typeof version !== 'string' || !isVaultwardenVersion(version)) {
 			throw new Error('Vaultwarden returned an invalid server version.');
 		}
 		return version;

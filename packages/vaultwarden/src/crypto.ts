@@ -1,10 +1,4 @@
 import {
-	constants,
-	createPrivateKey,
-	generateKeyPairSync,
-	privateDecrypt,
-	publicEncrypt,
-	createPublicKey,
 	createCipheriv,
 	createDecipheriv,
 	createHash,
@@ -15,6 +9,13 @@ import {
 } from 'node:crypto';
 import { promisify } from 'node:util';
 import { argon2idAsync } from '@noble/hashes/argon2.js';
+import {
+	generateKeyPair,
+	importPkcs8DerOrThrow,
+	importSpkiDerOrThrow,
+	decryptRsaOaepOrThrow,
+	encryptRsaOaepOrThrow,
+} from 'micro509/keys';
 
 const derive = promisify(pbkdf2);
 export type Kdf =
@@ -134,9 +135,9 @@ export async function createAccountKeyMaterial(password: string, email: string, 
 	publicKey: string;
 	encryptedPrivateKey: string;
 }> {
-	const pair = generateKeyPairSync('rsa', { modulusLength: 2048 });
-	const privateKey = Buffer.from(pair.privateKey.export({ format: 'der', type: 'pkcs8' }));
-	const publicKey = pair.publicKey.export({ format: 'der', type: 'spki' });
+	const pair = await generateKeyPair({ kind: 'rsa', modulusLength: 2048, scheme: 'oaep', hash: 'SHA-256' });
+	const publicKey = Buffer.from(await pair.exportSpkiDer());
+	const privateKey = await pair.exportPkcs8Der();
 	const userKey = randomBytes(64);
 	let master: Buffer | undefined;
 	try {
@@ -163,30 +164,28 @@ export async function createAccountKeyMaterial(password: string, email: string, 
 }
 
 /** Vaultwarden organization keys use RSA OAEP EncString types 3 (SHA256) or 4 (SHA1). */
-export function decryptSharedKey(value: string, privateKey: Uint8Array): Buffer {
+export async function decryptSharedKey(value: string, privateKey: Uint8Array): Promise<Buffer> {
 	const match = /^([34])\.([A-Za-z0-9+/]+={0,2})$/.exec(value);
 	if (!match) throw new Error('Unsupported organization key envelope.');
 	try {
-		return privateDecrypt({
-			key: createPrivateKey({ key: Buffer.from(privateKey), format: 'der', type: 'pkcs8' }),
-			padding: constants.RSA_PKCS1_OAEP_PADDING,
-			oaepHash: match[1] === '3' ? 'sha256' : 'sha1',
-		}, b64(match[2]!));
+		const material = await importPkcs8DerOrThrow(privateKey, {
+			kind: 'rsa',
+			scheme: 'oaep',
+			hash: match[1] === '3' ? 'SHA-256' : 'SHA-1',
+		});
+		const decrypted = await decryptRsaOaepOrThrow(material, b64(match[2]!));
+		return Buffer.from(decrypted.buffer, decrypted.byteOffset, decrypted.byteLength);
 	} catch {
 		throw new Error('Organization key authentication failed.');
 	}
 }
 
 /** Wrap an organization key for a member without exposing it to the server. */
-export function encryptSharedKey(key: Uint8Array, publicKey: string): string {
+export async function encryptSharedKey(key: Uint8Array, publicKey: string): Promise<string> {
 	if (key.length !== 64) throw new Error('Expected a 512-bit organization key.');
 	try {
-		const material = createPublicKey({ key: b64(publicKey), format: 'der', type: 'spki' });
-		return `3.${
-			publicEncrypt({ key: material, padding: constants.RSA_PKCS1_OAEP_PADDING, oaepHash: 'sha256' }, key).toString(
-				'base64',
-			)
-		}`;
+		const material = await importSpkiDerOrThrow(b64(publicKey), { kind: 'rsa', scheme: 'oaep', hash: 'SHA-256' });
+		return `3.${Buffer.from(await encryptRsaOaepOrThrow(material, key)).toString('base64')}`;
 	} catch {
 		throw new Error('Invalid member public key.');
 	}
@@ -201,6 +200,11 @@ export function encryptAttachment(value: Uint8Array, key: Uint8Array): Buffer {
 		Buffer.from(parts[2]!, 'base64'),
 		Buffer.from(parts[1]!, 'base64'),
 	]);
+}
+/** Type-2 attachment wire size, including its type byte, IV, MAC, and PKCS#7 padding. */
+export function encryptedAttachmentSize(plaintextSize: number): number {
+	if (!Number.isSafeInteger(plaintextSize) || plaintextSize < 0) throw new Error('Invalid attachment size.');
+	return 49 + (Math.floor(plaintextSize / 16) + 1) * 16;
 }
 export function decryptAttachment(value: Uint8Array, key: Uint8Array): Buffer {
 	if (value.length < 65 || value[0] !== 2 || (value.length - 49) % 16 !== 0) {

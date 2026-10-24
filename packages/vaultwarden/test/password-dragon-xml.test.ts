@@ -40,9 +40,9 @@ test('Password Dragon XML maps login data, attributes, and category paths', () =
 	]);
 });
 
-test('Password Dragon XML rejects malformed, missing-root, and entity-bearing documents', () => {
+test('Password Dragon XML rejects malformed and entity-bearing documents', () => {
 	expect(() => parsePasswordDragonXml('<bad')).toThrow('Invalid Password Dragon XML.');
-	expect(() => parsePasswordDragonXml('<Root/>')).toThrow('Missing PasswordManager root node.');
+	expect(parsePasswordDragonXml('<Root/>')).toEqual({ encrypted: false, items: [], folders: [] });
 	expect(() => parsePasswordDragonXml('<!DOCTYPE x [<!ENTITY secret "private">]><PasswordManager/>'))
 		.toThrow('XML entity declarations are not supported.');
 });

@@ -31,6 +31,8 @@
 		"@xmldom/xmldom": "catalog:",
 		"fflate": "catalog:",
 		"kdbxweb": "catalog:",
+		"lunr": "catalog:",
+		"micro509": "catalog:",
 		"parse5": "catalog:",
 		"tldts": "catalog:",
 		"zxcvbn": "catalog:"
@@ -40,6 +42,7 @@
 		"@babel/preset-typescript": "catalog:",
 		"@eslint/js": "catalog:",
 		"@types/bun": "catalog:",
+		"@types/lunr": "catalog:",
 		"@types/zxcvbn": "catalog:",
 		"@vw/typescript-config": "workspace:*",
 		"eslint": "catalog:",

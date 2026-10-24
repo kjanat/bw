@@ -71,30 +71,32 @@ persisted. An omitted login email comes from `VW_EMAIL` or an interactive prompt
 local unlock token without prompting or changing it.
 For two-factor login, supply `--method 0 --code TOKEN` (TOTP), or another supported
 provider ID; `VW_2FA_TOKEN` can supply the code. On an interactive terminal, a
-server challenge prompts for TOTP, email, or YubiKey OTP. With multiple supported
-methods, select one; `--method` can select it in advance. Selecting email requests
-a login code before prompting. `--nointeraction` requires an explicit method and
-code and never initiates an email request. Verification codes use hidden entry.
-WebAuthn and Duo browser challenges remain pending.
+server challenge offers TOTP, email, Duo, YubiKey OTP, WebAuthn, or recovery code
+when Vaultwarden reports that provider and required challenge data. With multiple
+supported methods, select one; `--method` can select it in advance. Selecting
+email requests a login code before prompting. `--nointeraction` requires an
+explicit method and code and never initiates an email request. Codes and recovery
+codes use hidden entry.
 
-For an existing SSO-linked account with a master password, use
-`login --sso [organization-identifier]`. The CLI opens the authorization URL and
+Use `login --sso [organization-identifier]` for an existing SSO account or a
+Vaultwarden JIT-provisioned account. The CLI opens the authorization URL and
 receives the callback on localhost ports 8065–8070, then uses the master password
-to unlock the vault. `--nointeraction` prints the URL without opening a browser;
-complete it externally and supply a password through the normal input sources.
-Authorization uses S256 PKCE and random state; callback validation happens before
-the code exchange. The code and verifier are not stored in the account profile.
-New SSO account enrollment and initial vault/password setup remain required work;
-the current flow reports that web-vault setup is needed when no wrapped key exists.
+to unlock the vault. On first login, if Vaultwarden has not initialized the
+account's wrapped user key, the CLI initializes the master password and account
+keys through Vaultwarden's set-password endpoint before syncing and unlocking.
+`--nointeraction` prints the URL without opening a browser; complete it externally
+and supply a password through the normal input sources. Authorization uses S256
+PKCE and random state; callback validation happens before the code exchange. The
+code and verifier are not stored in the account profile.
 
 The library exposes `createSsoAuthorization`, `ssoCredentialsFromCallback`, and
 `loginWithSso`. Callers own the browser and callback transport; the returned
 authorization object is short-lived secret-bearing state. `loginWithSso` accepts
 the same optional two-factor callback contract as password login. Email delivery
 for a pending SSO challenge uses the pending device identifier, without sending
-a master password hash. Existing-account SSO, refresh, TOTP, PKCE rejection, and
-compiled CLI login are live tested; SSO email challenges are currently protocol
-tested only.
+a master password hash. Existing-account and JIT SSO, refresh, TOTP, PKCE
+rejection, and compiled CLI first-login setup are live tested; SSO email
+challenges are currently protocol tested only.
 
 Library callers can pass a fifth argument to `loginWithPassword(client, email,
 password, twoFactor, { onTwoFactor })`. The callback receives the server's provider
@@ -187,9 +189,11 @@ revoke the API key on the server.
 
 ## Vault management
 
-`get template NAME` returns a JSON template without logging in. `encode` reads
-UTF-8 stdin and emits base64; create/edit accept that encoded JSON as an argument
-or from stdin. The same command pattern applies to items and folders:
+`get template NAME` returns a JSON template while the vault is locked; it requires
+a logged-in account. Bank-account, driver's-license, and passport templates are
+available on Vaultwarden 1.37.4 and newer. `encode` reads UTF-8 stdin and emits
+base64; create/edit accept that encoded JSON as an argument or from stdin. The
+same command pattern applies to items and folders:
 
 ```sh
 node apps/cli/dist/main.js get template folder
@@ -421,6 +425,14 @@ is always an ID lookup and never falls back to an object named after that UUID.
 Library callers use `findFolder`, `findCollection`, and `findOrganization` on
 `VaultService`; mutations continue to require IDs.
 
+Vault reads that can decrypt organization data are asynchronous: await
+`getItem`, `findItem`, `listItems`, `findCollection`, and `listCollections`.
+The `decryptSharedKey` and `encryptSharedKey` helpers also return promises.
+Organization envelopes use `micro509` RSA-OAEP with SHA-256 for type 3 and
+explicit legacy SHA-1 imports for type 4. Dispose the service after awaited
+operations finish to clear cached organization keys; disposal also invalidates
+pending key decryptions.
+
 `list items --url` honors each saved URI's match setting:
 
 | Value | Mode               | Behavior                                                               |
@@ -519,7 +531,8 @@ return 403 and unknown routes return 404. Status and template results use
 `{ "object": "template", "template": ... }`. Objects carry `item`, `folder`,
 `collection`, `org-collection`, `organization`, `org-member`, or `send`
 discriminators. GET routes support HEAD; OPTIONS describes allowed methods,
-and unsupported methods return 405. JSON bodies are limited to 1 MiB.
+and unsupported methods return 405. JSON bodies are limited to 1 MiB;
+URL-encoded form bodies use the pinned parser's 56 KiB limit.
 Item responses use the reference client model: inactive sections and server-only
 permissions metadata are omitted, dates use millisecond precision, attachment
 keys are excluded, and hidden-password metadata redacts the protected values.

@@ -22,6 +22,7 @@ import {
 	decryptSharedKey,
 	type Kdf,
 } from '@kjanat/vaultwarden';
+import { writeTestCertificate } from './fixtures/tls.js';
 
 // Explicit opt-in. Only disposable loopback instances may be mutated by this test.
 const server = process.env.VW_TEST_SERVER;
@@ -43,6 +44,10 @@ for (
 					'Live tests require a disposable HTTP loopback server.',
 				);
 			}
+			const serverVersionResponse = await fetch(`${server}/api/version`);
+			expect(serverVersionResponse.status).toBe(200);
+			const serverVersion = await serverVersionResponse.json() as string;
+			expect(['1.36.0', '1.37.4']).toContain(serverVersion);
 			const email = `fixture-${randomUUID()}@example.com`;
 			const password = 'Synthetic-fixture-password-123!';
 			const userKey = randomBytes(64);
@@ -184,30 +189,7 @@ for (
 			const dir = await mkdtemp(join(tmpdir(), 'vw-live-'));
 			const ca = join(dir, 'ca.pem');
 			const keyPath = join(dir, 'key.pem');
-			const certificate = Bun.spawnSync(
-				[
-					'openssl',
-					'req',
-					'-x509',
-					'-newkey',
-					'rsa:2048',
-					'-nodes',
-					'-days',
-					'1',
-					'-subj',
-					'/CN=localhost',
-					'-addext',
-					'subjectAltName=IP:127.0.0.1,DNS:localhost',
-					'-keyout',
-					keyPath,
-					'-out',
-					ca,
-				],
-				{ stdout: 'pipe', stderr: 'pipe' },
-			);
-			if (certificate.exitCode !== 0) {
-				throw new Error('Could not generate test TLS certificate.');
-			}
+			await writeTestCertificate(ca, keyPath);
 			const proxy = Bun.serve({
 				hostname: '127.0.0.1',
 				port: 0,
@@ -238,6 +220,7 @@ for (
 				secret = password,
 				input?: string,
 				apiOptions?: { directory: string; clientId: string; clientSecret: string },
+				appDataDir = apiOptions?.directory ?? dir,
 			) {
 				const child = Bun.spawn(
 					[
@@ -248,7 +231,7 @@ for (
 					{
 						env: {
 							PATH: process.env.PATH,
-							VW_APPDATA_DIR: apiOptions?.directory ?? dir,
+							VW_APPDATA_DIR: appDataDir,
 							NODE_EXTRA_CA_CERTS: ca,
 							VW_PASSWORD: secret,
 							...(apiOptions ? { VW_CLIENTID: apiOptions.clientId, VW_CLIENTSECRET: apiOptions.clientSecret } : {}),
@@ -398,6 +381,32 @@ for (
 				const beforeMove = await readFile(downloadPath);
 				expect(beforeMove).toEqual(attachmentBytes);
 				expect((await stat(downloadPath)).mode & 0o777).toBe(0o600);
+				const replacementItemKey = randomBytes(64);
+				try {
+					const itemForRotation = JSON.parse(await checked(['get', 'item', movable.id]));
+					const rekeyed = JSON.parse(
+						await checked([
+							'edit',
+							'item',
+							movable.id,
+							encode({ ...itemForRotation, key: replacementItemKey.toString('base64') }),
+						]),
+					);
+					expect(rekeyed.key).toBeUndefined();
+					const rekeyedDownload = join(dir, 'rekeyed.bin');
+					await checked([
+						'get',
+						'attachment',
+						attachmentId,
+						'--itemid',
+						movable.id,
+						'--output',
+						rekeyedDownload,
+					]);
+					expect(await readFile(rekeyedDownload)).toEqual(attachmentBytes);
+				} finally {
+					replacementItemKey.fill(0);
+				}
 				const moved = JSON.parse(await checked(['move', movable.id, organization.id, encode([collection.id])]));
 				expect(moved.organizationId).toBe(organization.id);
 				expect(moved.login.password).toBe('moved-secret');
@@ -461,6 +470,29 @@ for (
 				const legacyWire = (await legacyUpload.json()).attachments[0];
 				expect(legacyWire.key).toBe('');
 				await checked(['sync']);
+				const replacementLegacyItemKey = randomBytes(64);
+				try {
+					const legacyForRotation = JSON.parse(await checked(['get', 'item', legacyItem.id]));
+					await checked([
+						'edit',
+						'item',
+						legacyItem.id,
+						encode({ ...legacyForRotation, key: replacementLegacyItemKey.toString('base64') }),
+					]);
+					const legacyRekeyedPath = join(dir, 'legacy-rekeyed.bin');
+					await checked([
+						'get',
+						'attachment',
+						'legacy-move.bin',
+						'--itemid',
+						legacyItem.id,
+						'--output',
+						legacyRekeyedPath,
+					]);
+					expect(await readFile(legacyRekeyedPath)).toEqual(legacyAttachmentBytes);
+				} finally {
+					replacementLegacyItemKey.fill(0);
+				}
 				const migratedLegacyItem = JSON.parse(
 					await checked(['move', legacyItem.id, organization.id, encode([collection.id])]),
 				);
@@ -576,13 +608,175 @@ for (
 					});
 					expect(memberLogin.status).toBe(200);
 					const memberAuth = await memberLogin.json() as { access_token: string };
+					const memberCliDir = join(dir, 'member-cli');
+					expect(
+						(await run(['config', 'server', tlsServer], undefined, password, undefined, undefined, memberCliDir)).code,
+					)
+						.toBe(0);
+					const memberCliLogin = await run(
+						['login', memberEmail, '--raw'],
+						undefined,
+						password,
+						undefined,
+						undefined,
+						memberCliDir,
+					);
+					if (memberCliLogin.code) throw new Error(`Member CLI login failed: ${memberCliLogin.stderr}`);
+					const memberSession = memberCliLogin.stdout.trim();
+					const memberImportName = `Member import into existing collection ${randomUUID()}`;
+					const memberImportPath = join(dir, 'member-existing-collection-import.json');
+					await writeFile(
+						memberImportPath,
+						JSON.stringify({
+							encrypted: false,
+							collections: [{ id: collections[0].id, name: 'Imported existing collection' }],
+							items: [{
+								type: 1,
+								name: memberImportName,
+								login: { password: 'member-import-secret' },
+								collectionIds: [collections[0].id],
+							}],
+						}),
+						{ mode: 0o600 },
+					);
+					const memberImport = await run(
+						[
+							'import',
+							'bitwardenjson',
+							memberImportPath,
+							'--organizationid',
+							organization.id,
+						],
+						memberSession,
+						password,
+						undefined,
+						undefined,
+						memberCliDir,
+					);
+					if (memberImport.code) throw new Error(`Member collection import failed: ${memberImport.stderr}`);
+					expect(JSON.parse(memberImport.stdout)).toMatchObject({ items: 1, collections: 1 });
+					const memberImportSync = await run(
+						['sync'],
+						memberSession,
+						password,
+						undefined,
+						undefined,
+						memberCliDir,
+					);
+					if (memberImportSync.code) throw new Error(`Member import sync failed: ${memberImportSync.stderr}`);
+					const memberItemList = await run(
+						['list', 'items'],
+						memberSession,
+						password,
+						undefined,
+						undefined,
+						memberCliDir,
+					);
+					if (memberItemList.code) throw new Error(`Member item list failed: ${memberItemList.stderr}`);
+					const importedMemberItem = JSON.parse(memberItemList.stdout).find((value: { name: string }) =>
+						value.name === memberImportName
+					);
+					expect(importedMemberItem).toMatchObject({
+						organizationId: organization.id,
+						collectionIds: [collections[0].id],
+					});
+					await checked(['sync']);
+					await checked(['delete', 'item', importedMemberItem.id, '--permanent']);
+					const memberItem = JSON.parse(
+						(await run(
+							[
+								'create',
+								'item',
+								encode({ type: 1, name: 'Member collectionless move', login: { password: 'member-secret' } }),
+							],
+							memberSession,
+							password,
+							undefined,
+							undefined,
+							memberCliDir,
+						)).stdout,
+					) as { id: string };
+					const memberCollectionlessMove = await run(
+						['move', memberItem.id, organization.id],
+						memberSession,
+						password,
+						undefined,
+						undefined,
+						memberCliDir,
+					);
+					if (serverVersion === '1.36.0') {
+						expect(memberCollectionlessMove.code).toBe(0);
+						const moved = JSON.parse(memberCollectionlessMove.stdout) as {
+							organizationId: string;
+							collectionIds: string[];
+						};
+						expect(moved.organizationId).toBe(organization.id);
+						expect(moved.collectionIds).toEqual([]);
+					} else {
+						expect(memberCollectionlessMove.code).toBe(1);
+						expect(memberCollectionlessMove.stderr).toContain('Vaultwarden request failed (HTTP 400).');
+					}
+					const memberShareItem = JSON.parse(
+						(await run(
+							[
+								'create',
+								'item',
+								encode({ type: 1, name: 'Member collectionless share', login: { password: 'member-secret' } }),
+							],
+							memberSession,
+							password,
+							undefined,
+							undefined,
+							memberCliDir,
+						)).stdout,
+					) as { id: string };
+					const memberCollectionlessShare = await run(
+						['share', memberShareItem.id, organization.id],
+						memberSession,
+						password,
+						undefined,
+						undefined,
+						memberCliDir,
+					);
+					if (serverVersion === '1.36.0') {
+						expect(memberCollectionlessShare.code).toBe(0);
+						expect(JSON.parse(memberCollectionlessShare.stdout).collectionIds).toEqual([]);
+					} else {
+						expect(memberCollectionlessShare.code).toBe(1);
+						expect(memberCollectionlessShare.stderr).toContain('Vaultwarden request failed (HTTP 400).');
+					}
+					const memberCollectionlessCreate = await run(
+						[
+							'create',
+							'item',
+							encode({
+								type: 1,
+								name: 'Member collectionless create',
+								organizationId: organization.id,
+								collectionIds: [],
+								login: { password: 'member-secret' },
+							}),
+						],
+						memberSession,
+						password,
+						undefined,
+						undefined,
+						memberCliDir,
+					);
+					if (serverVersion === '1.36.0') {
+						expect(memberCollectionlessCreate.code).toBe(0);
+						expect(JSON.parse(memberCollectionlessCreate.stdout).collectionIds).toEqual([]);
+					} else {
+						expect(memberCollectionlessCreate.code).toBe(1);
+						expect(memberCollectionlessCreate.stderr).toContain('Vaultwarden request failed (HTTP 400).');
+					}
 					const memberSync = await fetch(`${server}/api/sync`, {
 						headers: { Authorization: `Bearer ${memberAuth.access_token}`, 'Bitwarden-Client-Version': '2026.10.0' },
 					});
 					expect(memberSync.status).toBe(200);
 					const memberVault = await memberSync.json() as { profile: { organizations: { id: string; key: string }[] } };
 					const wrapped = memberVault.profile.organizations.find(o => o.id === organization.id)!;
-					const shared = decryptSharedKey(wrapped.key, memberRsa.privateKey);
+					const shared = await decryptSharedKey(wrapped.key, memberRsa.privateKey);
 					try {
 						expect(shared).toEqual(orgKey);
 					} finally {
@@ -672,7 +866,8 @@ for (
 						session,
 						password,
 					);
-					if (type >= 6 && result.code !== 0) {
+					if (type >= 6 && serverVersion === '1.36.0') {
+						expect(result.code).toBe(1);
 						expect(result.stderr).toContain('requires Vaultwarden 1.37.4 or newer');
 						continue;
 					}
@@ -890,6 +1085,14 @@ for (
 						const referenceIds = (JSON.parse(reference.stdout) as { id: string }[]).map(item => item.id);
 						expect(listed.map(item => item.id)).toEqual(referenceIds);
 						expect(referenceIds).toContain(expectedId);
+					}
+					for (const query of [`>shortid:${item.id.slice(0, 8)}`, '>name:Compatibility']) {
+						const listed = JSON.parse(await checked(['list', 'items', '--search', query])) as { id: string }[];
+						const reference = await official(['list', 'items', '--search', query], login.stdout.trim());
+						if (reference.code) throw new Error(`Reference advanced item search failed: ${reference.stderr}`);
+						const referenceIds = (JSON.parse(reference.stdout) as { id: string }[]).map(value => value.id);
+						expect(listed.map(value => value.id)).toEqual(referenceIds);
+						expect(referenceIds).toEqual([]);
 					}
 					for (
 						const [kind, query] of [
@@ -1190,6 +1393,20 @@ for (
 					], login.stdout.trim());
 					expect(officialDownload.code).toBe(0);
 					expect(await readFile(officialAttachment)).toEqual(attachmentBytes);
+					const officialLegacyAttachment = join(dir, 'official-legacy.bin');
+					const officialLegacyDownload = await official([
+						'get',
+						'attachment',
+						'legacy-move.bin',
+						'--itemid',
+						legacyItem.id,
+						'--output',
+						officialLegacyAttachment,
+					], login.stdout.trim());
+					if (officialLegacyDownload.code) {
+						throw new Error(`Official legacy attachment read failed: ${officialLegacyDownload.stderr}`);
+					}
+					expect(await readFile(officialLegacyAttachment)).toEqual(legacyAttachmentBytes);
 					const officialMoved = await official(['get', 'password', movable.id], login.stdout.trim());
 					expect(officialMoved.code).toBe(0);
 					expect(officialMoved.stdout.trim()).toBe('moved-secret');
@@ -1205,8 +1422,9 @@ for (
 					async function verifyImported(
 						withAttachment = false,
 						expectedNames: string[] = fullExportNames,
+						syncFirst = true,
 					) {
-						await checked(['sync']);
+						if (syncFirst) await checked(['sync']);
 						const added = JSON.parse(await checked(['list', 'items'])).filter((v: { id: string }) =>
 							!originalItems.has(v.id)
 						);
@@ -1285,7 +1503,7 @@ for (
 							]),
 						);
 						expect(result.items).toBe(expectedNames.length);
-						await verifyImported(false, expectedNames);
+						await verifyImported(false, expectedNames, false);
 					}
 					const attached = JSON.parse(
 						await checked(['create', 'attachment', '--file', uploadPath, '--itemid', item.id]),
@@ -1300,7 +1518,7 @@ for (
 						}
 						const restored = JSON.parse(await checked(['import', 'bitwardenzip', path]));
 						expect(restored.attachments).toBe(1);
-						await verifyImported(true);
+						await verifyImported(true, fullExportNames, false);
 					}
 					const noCollectionItems = [] as { id: string }[];
 					for (const name of ['Move without collection: vw', 'Move without collection: bw']) {
@@ -1318,7 +1536,6 @@ for (
 					);
 					expect(movedWithoutCollection.organizationId).toBe(organization.id);
 					expect(movedWithoutCollection.collectionIds).toEqual([]);
-					expect((await official(['sync', '--force'], login.stdout.trim())).code).toBe(0);
 					const referenceMoveWithoutCollection = await official(
 						['move', noCollectionItems[1]!.id, organization.id],
 						login.stdout.trim(),

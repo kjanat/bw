@@ -13,6 +13,7 @@ import { parseOnePassword1Pif, parseOnePasswordCsv } from '#onepassword-legacy';
 import { parsePasswordDepot17Xml } from '#password-depot-xml';
 import { parsePasswordDragonXml } from '#password-dragon-xml';
 import { parsePasswordSafeXml } from '#passwordsafe-xml';
+import { applicableOrganizationPolicies } from '#policy';
 import { parseSafeInCloudXml } from '#safeincloud-xml';
 import { parseStickyPasswordXml } from '#stickypassword-xml';
 import { parseKasperskyTxt } from '#text-import';
@@ -78,6 +79,19 @@ function records(value: unknown): JsonObject[] {
 	if (!Array.isArray(value)) throw new Error('Invalid vault export structure.');
 	return value.map(object);
 }
+function sameId(value: unknown, id: unknown): boolean {
+	return typeof value === 'string' && typeof id === 'string' && value.toLowerCase() === id.toLowerCase();
+}
+function sameOptionalId(value: unknown, id?: string): boolean {
+	return value == null || id == null ? value == null && id == null : typeof value === 'string'
+		&& value.toLowerCase() === id.toLowerCase();
+}
+function serverGroupId(value: unknown): string | undefined {
+	return typeof value === 'string'
+			&& /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
+		? value.toLowerCase()
+		: undefined;
+}
 function json(value: string): JsonObject {
 	try {
 		return object(JSON.parse(value));
@@ -119,16 +133,64 @@ function selectFields(item: JsonObject, encrypted = false): JsonObject {
 	return result;
 }
 export { parseCsv, writeCsv } from '#csv';
+function parseBitwardenCsv(source: string): string[][] {
+	const delimiters = [',', '\t', '|', ';', '\x1e', '\x1f'];
+	let bestDelimiter = ',';
+	let bestDelta: number | undefined;
+	let maxFieldCount: number | undefined;
+	for (const delimiter of delimiters) {
+		let preview: string[][];
+		try {
+			preview = parseCsv(source, '"', delimiter).slice(0, 10);
+		} catch {
+			continue;
+		}
+		let delta = 0, totalFields = 0, previousFieldCount: number | undefined;
+		for (const row of preview) {
+			const fieldCount = row.length;
+			totalFields += fieldCount;
+			if (previousFieldCount === undefined) previousFieldCount = fieldCount;
+			else if (fieldCount > 0) {
+				delta += Math.abs(fieldCount - previousFieldCount);
+				previousFieldCount = fieldCount;
+			}
+		}
+		const averageFieldCount = preview.length ? totalFields / preview.length : 0;
+		if (
+			(bestDelta === undefined || delta <= bestDelta)
+			&& (maxFieldCount === undefined || averageFieldCount > maxFieldCount)
+			&& averageFieldCount > 1.99
+		) {
+			bestDelta = delta;
+			maxFieldCount = averageFieldCount;
+			bestDelimiter = delimiter;
+		}
+	}
+	return parseCsv(source, '"', bestDelimiter);
+}
 function csvDocument(source: string, organization = false): JsonObject {
-	const rows = parseCsv(source);
+	const normalizedSource = source.replace(/\r\n|\r|\n/g, '\n');
+	const rows = parseBitwardenCsv(normalizedSource);
 	if (!rows.length) throw new Error('CSV is empty.');
-	const header = rows.shift()!;
-	if (new Set(header).size !== header.length) throw new Error('Duplicate CSV headers.');
-	if (!header.includes('name')) throw new Error('Missing Bitwarden CSV name column.');
+	const sourceHeader = rows.shift()!;
+	const headerCounts: Record<string, number> = Object.create(null);
+	const usedHeaders = new Set(sourceHeader);
+	const header = sourceHeader.map(value => {
+		if (!headerCounts[value]) {
+			headerCounts[value] = 1;
+			return value;
+		}
+		let suffix = headerCounts[value]!;
+		let renamed: string;
+		do renamed = `${value}_${suffix++}`; while (usedHeaders.has(renamed));
+		headerCounts[value] = suffix;
+		usedHeaders.add(renamed);
+		return renamed;
+	});
 	const groups: JsonObject[] = [];
 	const ids = new Map<string, string>();
 	const items: JsonObject[] = [];
-	const grouping = (name: string): string => {
+	const ensureGroup = (name: string): string => {
 		let id = ids.get(name);
 		if (!id) {
 			id = randomUUID();
@@ -137,50 +199,73 @@ function csvDocument(source: string, organization = false): JsonObject {
 		}
 		return id;
 	};
+	const grouping = (value: string): string | undefined => {
+		if (!value.trim()) return undefined;
+		const name = value.replace(/\\/g, '/').replace(/^\/+/, '');
+		const id = ensureGroup(name);
+		const parts = name.split('/');
+		for (let index = parts.length - 1; index > 0; index--) ensureGroup(parts.slice(0, index).join('/'));
+		return id;
+	};
 	for (const row of rows) {
-		if (row.every(v => !v)) continue;
-		if (row.length !== header.length) throw new Error('CSV row has an unexpected number of fields.');
 		const values: Record<string, string> = Object.create(null);
-		header.forEach((key, i) => values[key] = row[i]!);
-		const name = values.name || values.title || values.url || values.login_uri || '--';
+		header.forEach((key, i) => {
+			if (i < row.length) values[key] = row[i]!;
+		});
+		const name = values.name?.trim() ? values.name : '--';
 		const type = values.type?.toLowerCase() === 'note' ? 2 : 1;
 		const group = values.folder ?? '';
-		const collections = organization
-			? (values.collections ? parseCsv(values.collections)[0] ?? [] : group ? [group] : [])
-			: [];
-		const fields = (values.fields ?? '').split(/\r?\n/).filter(Boolean).flatMap(line => {
+		const collections = organization && values.collections?.trim() ? values.collections.split(',') : [];
+		const fields = (values.fields ?? '').split(/\r\n|\r|\n/).filter(line => line.trim()).flatMap(line => {
 			const index = line.lastIndexOf(': ');
 			return index < 0 ? [] : [{ name: line.slice(0, index), value: line.slice(index + 2) || null, type: 0 }];
 		});
-		const uri = values.login_uri ?? values.url ?? values.uri ?? '';
-		const uris = (uri ? parseCsv(uri)[0] ?? [] : []).filter(Boolean).map(uri => ({ uri, match: null }));
+		const uri = values.login_uri || values.uri || '';
+		const uris = (uri.trim() ? parseBitwardenCsv(uri)[0] ?? [] : []).flatMap(value => {
+			let uri = value.trim();
+			if (!uri) return [];
+			if (!uri.includes('://') && uri.includes('.')) uri = `http://${uri}`;
+			return [{ uri: uri.slice(0, 1000), match: null }];
+		});
+		const username = values.login_username || values.username;
+		const password = values.login_password || values.password;
+		const totp = values.login_totp || values.totp;
+		const archivedDate = values.archivedDate?.trim() ? new Date(values.archivedDate).toJSON() : null;
 		items.push({
 			type,
 			name,
-			notes: values.notes ?? values.note ?? values.extra ?? null,
-			folderId: !organization && group ? grouping(group) : null,
-			collectionIds: collections.map(grouping),
-			favorite: !!values.favorite && values.favorite !== '0',
-			reprompt: Number(values.reprompt) || 0,
+			notes: values.notes?.trim() ? values.notes : null,
+			folderId: !organization ? grouping(group) ?? null : null,
+			collectionIds: collections.flatMap(name => {
+				const id = grouping(name);
+				return id ? [id] : [];
+			}),
+			favorite: !organization && (values.favorite?.trim() ? values.favorite : '0') !== '0',
+			reprompt: Number.parseInt(values.reprompt?.trim() ? values.reprompt : '0', 10),
 			fields,
 			...(type === 2
 				? { secureNote: { type: 0 } }
 				: {
 					login: {
-						username: values.login_username ?? values.username ?? null,
-						password: values.login_password ?? values.password ?? null,
-						totp: values.login_totp ?? values.totp ?? null,
-						uris,
+						username: username?.trim() ? username : null,
+						password: password?.trim() ? password : null,
+						totp: totp?.trim() ? totp : null,
+						uris: uris.length ? uris : null,
 					},
 				}),
-			archivedDate: values.archivedDate || null,
+			archivedDate,
 		});
 	}
 	return { encrypted: false, items, ...(organization ? { collections: groups } : { folders: groups }) };
 }
 function csvExport(document: JsonObject, organization = false): string {
 	const groupKey = organization ? 'collections' : 'folders';
-	const groups = new Map(records(document[groupKey] ?? []).map(group => [group.id, group.name]));
+	const groups = new Map(
+		records(document[groupKey] ?? []).map(group => [
+			typeof group.id === 'string' ? group.id.toLowerCase() : group.id,
+			group.name,
+		]),
+	);
 	const headers = organization
 		? [
 			'collections',
@@ -213,13 +298,13 @@ function csvExport(document: JsonObject, organization = false): string {
 	for (const item of records(document.items)) {
 		if (item.type !== 1 && item.type !== 2) continue;
 		const login = object(item.login ?? {});
-		const fields = records(item.fields ?? []).map(f => `${f.name ?? ''}: ${f.value ?? ''}`).join('\n');
+		const fields = records(item.fields ?? []).map(f => `${f.name || ''}: ${f.value}`).join('\n');
 		const uris = records(login.uris ?? []).map(uri => uri.uri ?? '');
 		const cells: JsonObject = {
-			folder: groups.get(item.folderId),
+			folder: groups.get(typeof item.folderId === 'string' ? item.folderId.toLowerCase() : item.folderId),
 			favorite: item.favorite ? 1 : null,
 			collections: Array.isArray(item.collectionIds)
-				? writeCsv([item.collectionIds.map(id => groups.get(id) ?? '')])
+				? item.collectionIds.map(id => groups.get(typeof id === 'string' ? id.toLowerCase() : id) ?? '')
 				: '',
 			type: item.type === 1 ? 'login' : 'note',
 			name: item.name,
@@ -227,7 +312,7 @@ function csvExport(document: JsonObject, organization = false): string {
 			fields,
 			reprompt: item.reprompt ?? 0,
 			archivedDate: item.archivedDate,
-			login_uri: writeCsv([uris]),
+			login_uri: uris,
 			login_username: login.username,
 			login_password: login.password,
 			login_totp: login.totp,
@@ -290,9 +375,9 @@ export async function decryptExportDocument(
 }
 interface TransferKeys {
 	user: Uint8Array;
-	organization: (id: string) => Uint8Array;
+	organization: (id: string) => Uint8Array | Promise<Uint8Array>;
 }
-function scopeKey(keys: TransferKeys, organizationId?: string): Uint8Array {
+async function scopeKey(keys: TransferKeys, organizationId?: string): Promise<Uint8Array> {
 	return organizationId ? keys.organization(organizationId) : keys.user;
 }
 async function sourceForExport(vault: VaultService, organizationId?: string): Promise<JsonObject> {
@@ -304,6 +389,9 @@ async function sourceForExport(vault: VaultService, organizationId?: string): Pr
 	);
 	return { ...response, profile: vault.snapshot.profile };
 }
+function personalExportPolicyApplies(vault: VaultService): boolean {
+	return applicableOrganizationPolicies(vault.snapshot, 10).length > 0;
+}
 // Bitwarden ZIPs group attachments by sanitized item name and contain no ID manifest.
 function zipItemName(name: string): string {
 	return name.replace(/[/\\><:"|?*]/g, '_').replace(/__+/g, '_');
@@ -312,12 +400,25 @@ export function officialZipAttachments(items: JsonObject[], zip: Record<string, 
 	const result: JsonObject[] = [];
 	const names = new Map<string, number>();
 	const folderItems = new Map<string, JsonObject[]>();
+	const nameGroups = new Map<string, string[]>();
 	for (const item of items) {
 		const name = text(item.name);
 		const count = names.get(name) ?? 0;
 		names.set(name, count + 1);
 		const folder = `${zipItemName(name)}${count ? `_${count}` : ''}`;
 		folderItems.set(folder, [...(folderItems.get(folder) ?? []), item]);
+		nameGroups.set(name, [...(nameGroups.get(name) ?? []), folder]);
+	}
+	const fileFolders = new Set(
+		Object.keys(zip).filter(path => path.startsWith('attachments/') && !path.endsWith('/')).map(path =>
+			path.split('/')[1]
+		),
+	);
+	for (const folders of nameGroups.values()) {
+		const present = folders.filter(folder => fileFolders.has(folder)).length;
+		if (folders.length > 1 && present > 0 && present !== folders.length) {
+			throw new Error('ZIP attachment item names are ambiguous or missing.');
+		}
 	}
 	for (const path of Object.keys(zip)) {
 		if (!path.startsWith('attachments/') || path.endsWith('/')) continue;
@@ -338,15 +439,22 @@ export async function exportVault(
 	options: TransferOptions = {},
 ): Promise<Buffer> {
 	if (!['json', 'csv', 'encrypted_json', 'zip'].includes(format)) throw new Error('Unsupported export format.');
+	if (!options.organizationId && personalExportPolicyApplies(vault)) {
+		throw new Error('One or more organization policies prevents you from exporting your personal vault.');
+	}
 	if (format === 'zip' && options.organizationId) throw new Error('Zip export not supported for organization.');
 	const source = await sourceForExport(vault, options.organizationId);
-	const owner = scopeKey(keys, options.organizationId);
+	const owner = await scopeKey(keys, options.organizationId);
 	const items = records(source.ciphers).filter(item =>
-		!item.deletedDate && (item.organizationId ?? null) === (options.organizationId ?? null)
+		!item.deletedDate
+		&& sameOptionalId(item.organizationId, options.organizationId)
+		&& !vault.isRestrictedItem(item)
 	);
 	const groupKey = options.organizationId ? 'collections' : 'folders';
 	const grouping = records(source[groupKey] ?? []).filter(group =>
-		!options.organizationId || !group.organizationId || group.organizationId === options.organizationId
+		!options.organizationId || !group.organizationId
+		|| (typeof group.organizationId === 'string'
+			&& group.organizationId.toLowerCase() === options.organizationId.toLowerCase())
 	);
 	const encrypted = format === 'encrypted_json' && options.password === undefined;
 	const document: JsonObject = {
@@ -392,13 +500,15 @@ export async function exportVault(
 		const itemNames = new Map<string, number>();
 		for (const encryptedItem of items) {
 			const item = decryptOwnedItem(encryptedItem, owner);
+			const itemAttachments = records(item.attachments ?? []);
+			if (!itemAttachments.length) continue;
 			const itemName = text(item.name);
 			const itemNameCount = itemNames.get(itemName) ?? 0;
 			itemNames.set(itemName, itemNameCount + 1);
 			let folderName = zipItemName(itemName);
 			if (itemNameCount) folderName += `_${itemNameCount}`;
 			const attachmentNames = new Map<string, number>();
-			for (const attachment of records(item.attachments ?? [])) {
+			for (const attachment of itemAttachments) {
 				let contents: Buffer | undefined;
 				try {
 					const downloaded = await vault.getAttachment(text(item.id), text(attachment.id));
@@ -466,7 +576,7 @@ export async function importVault(
 			if (manifest.version !== 1) throw new Error('Unsupported ZIP manifest.');
 		}
 	}
-	const owner = scopeKey(keys, options.organizationId);
+	const owner = await scopeKey(keys, options.organizationId);
 	const document = await decryptExportDocument(
 		format === '1password1pux'
 			? parseOnePassword1Pux(input, !!options.organizationId)
@@ -535,12 +645,15 @@ export async function importVault(
 	const groupIds = new Map<unknown, number>();
 	const encryptedGroups = groups.map((group, index) => {
 		if (group.id != null) {
-			if (groupIds.has(group.id)) throw new Error('Duplicate grouping ID.');
-			groupIds.set(group.id, index);
+			const id = typeof group.id === 'string' ? group.id.toLowerCase() : group.id;
+			if (groupIds.has(id)) throw new Error('Duplicate grouping ID.');
+			groupIds.set(id, index);
 		}
 		if (typeof group.name !== 'string') throw new Error('Imported group name must be a string.');
 		const name = group.name;
+		const id = serverGroupId(group.id);
 		return {
+			...(id ? { id } : {}),
 			name: encrypt(Buffer.from(name), owner),
 			// Older Vaultwarden imports deserialize the full collection request shape.
 			...(options.organizationId ? { externalId: group.externalId ?? null, groups: [], users: [] } : {}),
@@ -550,7 +663,7 @@ export async function importVault(
 	const ciphers: JsonObject[] = rawItems.map((raw, index) => {
 		const item = structuredClone(raw);
 		if (item.deletedDate) throw new Error('Import contains a deleted item.');
-		item.name = typeof item.name === 'string' && item.name ? item.name : '--';
+		item.name = typeof item.name === 'string' && item.name.trim() ? item.name : '--';
 		if (
 			(format === 'bitwardenjson' || format === 'bitwardenzip')
 			&& Array.isArray(item.passwordHistory)
@@ -566,7 +679,8 @@ export async function importVault(
 			? [raw.folderId]
 			: [];
 		for (const ref of refs) {
-			const group = groupIds.get(ref);
+			const id = typeof ref === 'string' ? ref.toLowerCase() : ref;
+			const group = groupIds.get(id);
 			if (group !== undefined) relationships.push({ key: index, value: group });
 		}
 		for (const field of ['id', 'key', 'attachments', 'revisionDate', 'creationDate', 'deletedDate', 'collectionIds']) {
@@ -589,10 +703,19 @@ export async function importVault(
 	for (const attachment of attachments) {
 		if (
 			typeof attachment.path !== 'string' || !attachment.path.startsWith('attachments/') || !zip?.[attachment.path]
-			|| !rawItems.some(item => item.id === attachment.itemId)
+			|| !rawItems.some(item => sameId(item.id, attachment.itemId))
 		) throw new Error('Invalid ZIP attachment manifest.');
 		text(attachment.itemId);
 		text(attachment.fileName);
+	}
+	if (options.organizationId && ciphers.length > 0 && encryptedGroups.length === 0) {
+		await vault.assertOrganizationCollectionlessImportAllowed(options.organizationId);
+	}
+	if (options.organizationId && encryptedGroups.length > 0) {
+		await vault.assertOrganizationImportCollectionsAllowed(
+			options.organizationId,
+			encryptedGroups.map(group => typeof group.id === 'string' ? group.id : undefined),
+		);
 	}
 	try {
 		await vault.client.api(

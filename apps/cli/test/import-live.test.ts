@@ -4,6 +4,7 @@ import { generateKeyPairSync, randomBytes, randomUUID } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { writeTestCertificate } from './fixtures/tls.js';
 
 const server = process.env.VW_TEST_SERVER;
 const live = server ? test : test.skip;
@@ -97,25 +98,7 @@ live('focused external import matches the independent bw importer', async () => 
 		} finally {
 			pair.privateKey.fill(0);
 		}
-		const tls = Bun.spawnSync([
-			'openssl',
-			'req',
-			'-x509',
-			'-newkey',
-			'rsa:2048',
-			'-nodes',
-			'-days',
-			'1',
-			'-subj',
-			'/CN=localhost',
-			'-addext',
-			'subjectAltName=IP:127.0.0.1,DNS:localhost',
-			'-keyout',
-			keyPath,
-			'-out',
-			ca,
-		], { stdout: 'pipe', stderr: 'pipe' });
-		if (tls.exitCode !== 0) throw new Error('Could not generate importer comparison TLS certificate.');
+		await writeTestCertificate(ca, keyPath);
 		proxy = Bun.serve({
 			hostname: '127.0.0.1',
 			port: 0,
@@ -295,27 +278,33 @@ live('focused external import matches the independent bw importer', async () => 
 				},
 			},
 		});
-		const passwordBoss = JSON.stringify([
-			{
-				itemType: 'Login',
-				itemTypeName: 'Login',
-				name: `${prefix} Password Boss login`,
-				folder: `${prefix} Password Boss folder`,
-				email: 'boss@example.test',
-				password: 'boss-secret',
-				url: 'boss.example.test',
-				notes: 'Password Boss note',
-				customFields: [{ name: 'Recovery', value: 'boss-recovery' }],
-			},
-			{
-				itemTypeName: 'CreditCard',
-				name: `${prefix} Password Boss card`,
-				cardNumber: '4111111111111111',
-				nameOnCard: 'Alice Example',
-				securityCode: '123',
-				expirationDate: '2030-06-01T00:00:00Z',
-			},
-		]);
+		const passwordBoss = JSON.stringify({
+			folders: [{ id: 'password-boss-folder', name: `${prefix} Password Boss folder` }],
+			items: [
+				{
+					type: 'Login',
+					name: `${prefix} Password Boss login`,
+					folder: 'password-boss-folder',
+					login_url: 'boss.example.test',
+					identifiers: {
+						email: 'boss@example.test',
+						password: 'boss-secret',
+						notes: 'Password Boss note',
+						custom_fields: [{ name: 'Recovery', value: 'boss-recovery' }],
+					},
+				},
+				{
+					type: 'CreditCard',
+					name: `${prefix} Password Boss card`,
+					identifiers: {
+						cardNumber: '4111111111111111',
+						nameOnCard: 'Alice Example',
+						security_code: '123',
+						expires: '2030-06-01T00:00:00Z',
+					},
+				},
+			],
+		});
 		const passwordDragon = `<?xml version="1.0"?><PasswordManager><record>
 <Category>${prefix} Password Dragon/Bank</Category><Account-Name>${prefix} Password Dragon login</Account-Name>
 <User-Id>dragon-user</User-Id><Password>dragon-secret</Password><URL>dragon.example.test</URL>

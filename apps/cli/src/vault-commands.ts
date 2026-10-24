@@ -1,4 +1,4 @@
-import { outputCommand as command, outputSuccess } from '#output';
+import { getObjectResponse, outputCommand as command, outputSuccess } from '#output';
 import { readFile } from 'node:fs/promises';
 import { basename, resolve } from 'node:path';
 import { arg, flag } from '@kjanat/dreamcli';
@@ -13,6 +13,7 @@ import {
 	type VaultService,
 	type VaultItem,
 	type VaultFolder,
+	type EditVaultItem,
 } from '@kjanat/vaultwarden';
 
 export interface VaultRuntime {
@@ -34,7 +35,7 @@ export async function prepareArchivedItemEdit(
 		write: (message: string) => void;
 	},
 ): Promise<void> {
-	if (!vault.shouldUnarchiveBeforeEdit(id)) return;
+	if (!(await vault.shouldUnarchiveBeforeEdit(id))) return;
 	if (options.noInteraction || !options.isTTY) {
 		options.write(
 			'Archive is only available with a Premium subscription, which has ended. Your edit was saved and the item was moved back to your vault.',
@@ -57,8 +58,9 @@ function decodeRequestJson(value: string): JsonObject {
 	}
 }
 const isGuid = (value: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
-function collectionOrganizationId(option: string | undefined, data: JsonObject): string {
-	const organizationId = option || data.organizationId;
+export function collectionOrganizationId(option: string | undefined, data: JsonObject): string {
+	const optionProvided = typeof option === 'string' && !!option.trim();
+	const organizationId = optionProvided ? option : data.organizationId;
 	if (typeof organizationId !== 'string' || !organizationId.trim()) {
 		throw new Error(
 			'An organization id is required, either via the `--organizationid` option '
@@ -68,15 +70,17 @@ function collectionOrganizationId(option: string | undefined, data: JsonObject):
 	}
 	if (!isGuid(organizationId)) throw new Error(`\`${organizationId}\` is not a GUID.`);
 	if (
-		option && typeof data.organizationId === 'string' && data.organizationId.trim() && option !== data.organizationId
+		optionProvided && typeof data.organizationId === 'string' && data.organizationId.trim()
+		&& option.toLowerCase() !== data.organizationId.toLowerCase()
 	) {
 		throw new Error(
 			'The `--organizationid` option (or `organizationId` query parameter) does not match '
 				+ "the request's `organizationId` property.",
 		);
 	}
-	data.organizationId = organizationId;
-	return organizationId;
+	const normalized = organizationId.toLowerCase();
+	data.organizationId = normalized;
+	return normalized;
 }
 export function vaultCommands(runtime: VaultRuntime) {
 	const create = command('create').description('Create an encrypted item, folder, or organization collection')
@@ -125,7 +129,7 @@ export function vaultCommands(runtime: VaultRuntime) {
 					: args.object === 'folder'
 					? vault.createFolder(data as VaultFolder)
 					: vault.createCollection(organizationId!, data));
-			out.json(args.object === 'item' ? vaultItemResponse(result) : result);
+			out.json(args.object === 'item' ? vaultItemResponse(result) : getObjectResponse(args.object, result));
 		});
 	const edit = command('edit').description('Edit an item, folder, collection, or item collection assignments')
 		.arg('object', arg.string()).arg('id', arg.string()).arg(
@@ -168,12 +172,12 @@ export function vaultCommands(runtime: VaultRuntime) {
 					});
 				}
 				return args.object === 'item'
-					? vault.editItem(args.id, data as VaultItem)
+					? vault.editItem(args.id, data as EditVaultItem)
 					: args.object === 'folder'
 					? vault.editFolder(args.id, data as VaultFolder)
 					: vault.editCollection(organizationId!, args.id, data);
 			});
-			out.json(args.object === 'item' ? vaultItemResponse(result) : result);
+			out.json(args.object === 'item' ? vaultItemResponse(result) : getObjectResponse(args.object, result));
 		});
 	const remove = command('delete').description('Trash an item or delete a folder or collection')
 		.arg('object', arg.enum(['item', 'folder', 'org-collection', 'attachment'])).arg('id', arg.string()).flag(
@@ -226,9 +230,6 @@ export function vaultCommands(runtime: VaultRuntime) {
 			.arg('id', arg.string()).arg('organizationId', arg.string()).arg('encodedJson', input().optional())
 			.flag('session', session()).action(async ({ args, flags, out }) => {
 				const collectionIds = args.encodedJson?.trim() ? decodeStringArray(args.encodedJson) : [];
-				if (name === 'share' && collectionIds.length === 0) {
-					throw new Error('You must provide at least one collection id for this item.');
-				}
 				const moved = await runtime.run(flags.session, true, vault =>
 					vault.moveItem(args.id, args.organizationId, collectionIds));
 				out.json(vaultItemResponse(moved));

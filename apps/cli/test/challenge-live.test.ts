@@ -19,6 +19,7 @@ import {
 	text,
 	writeCsv,
 } from '@kjanat/vaultwarden';
+import { writeTestCertificate } from './fixtures/tls.js';
 
 const server = process.env.VW_TEST_SERVER;
 const live = server ? test : test.skip;
@@ -128,6 +129,12 @@ live('real Vaultwarden: authentication, external imports, and REST compatibility
 		expect(login.code).toBe(0);
 		expect(login.stdout.trim()).not.toBe('');
 		expect(login.stderr.includes(password)).toBe(false);
+		const portProbe = createServer();
+		await new Promise<void>(resolve => portProbe.listen(0, '127.0.0.1', resolve));
+		const address = portProbe.address();
+		if (!address || typeof address === 'string') throw new Error('Could not reserve a local API port.');
+		const servePort = address.port;
+		await new Promise<void>((resolve, reject) => portProbe.close(error => error ? reject(error) : resolve()));
 		const serving = Bun.spawn([
 			'node',
 			executable,
@@ -135,7 +142,7 @@ live('real Vaultwarden: authentication, external imports, and REST compatibility
 			'--hostname',
 			'127.0.0.1',
 			'--port',
-			'0',
+			String(servePort),
 			'--session',
 			login.stdout.trim(),
 		], {
@@ -152,7 +159,7 @@ live('real Vaultwarden: authentication, external imports, and REST compatibility
 				if (address) ready.resolve(address[1]!);
 			}
 		})();
-		void serving.exited.then(() => ready.reject(new Error('Local API exited before listening.')));
+		void serving.exited.then(() => ready.reject(new Error(`Local API exited before listening. ${diagnostic}`)));
 		const stdout = new Response(serving.stdout).text();
 		const deadline = setTimeout(() => ready.reject(new Error('Local API did not start.')), 5000);
 		try {
@@ -232,25 +239,7 @@ live('real Vaultwarden: authentication, external imports, and REST compatibility
 					type: 0,
 				});
 				const ca = join(dir, 'reference-ca.pem'), keyPath = join(dir, 'reference-key.pem');
-				const certificate = Bun.spawnSync([
-					'openssl',
-					'req',
-					'-x509',
-					'-newkey',
-					'rsa:2048',
-					'-nodes',
-					'-days',
-					'1',
-					'-subj',
-					'/CN=localhost',
-					'-addext',
-					'subjectAltName=IP:127.0.0.1,DNS:localhost',
-					'-keyout',
-					keyPath,
-					'-out',
-					ca,
-				], { stdout: 'pipe', stderr: 'pipe' });
-				if (certificate.exitCode !== 0) throw new Error('Could not generate test TLS certificate.');
+				await writeTestCertificate(ca, keyPath);
 				const proxy = Bun.serve({
 					hostname: '127.0.0.1',
 					port: 0,

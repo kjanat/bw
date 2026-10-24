@@ -34,7 +34,7 @@ bun run format
 
 Formatting uses the project's dprint configuration.
 
-Run the managed disposable-server checks with Docker, OpenSSL, OpenSSH and
+Run the managed disposable-server checks with Docker, OpenSSH and
 `envctl` installed:
 
 ```sh

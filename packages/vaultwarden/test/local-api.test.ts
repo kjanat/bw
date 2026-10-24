@@ -8,7 +8,7 @@ import { VaultService } from '#vault-service';
 import { expect, test } from 'bun:test';
 
 const id = '00000000-0000-0000-0000-000000000001';
-function fixture() {
+function fixture(fetcher?: typeof fetch) {
 	const key = Buffer.alloc(64, 7);
 	const snapshot: JsonObject = {
 		profile: { id, organizations: [] },
@@ -34,6 +34,11 @@ function fixture() {
 			locked = true;
 		},
 		unlock: async password => {
+			if (password === null) {
+				throw new Error(
+					'Master password is required. Try again in interactive mode or provide a password file or environment variable.',
+				);
+			}
 			if (password !== 'fixture-password') throw new Error('Invalid password.');
 			locked = false;
 			return 'synthetic-session';
@@ -42,7 +47,7 @@ function fixture() {
 		run: async (_mutate, operation) => {
 			calls++;
 			if (locked) throw new Error('Vault is locked.');
-			const client = new VaultwardenClient('https://example.com');
+			const client = new VaultwardenClient('https://example.com', { fetch: fetcher ?? fetch });
 			const vault = new VaultService(client, 'synthetic-access', snapshot, key);
 			try {
 				return await operation(vault);
@@ -65,9 +70,14 @@ test('local API rejects Origin and rebinding Host headers before invoking the ba
 		Host: 'attacker.example:8087',
 	}];
 	for (const headers of forbidden) {
-		expect((await f.request('/status', { headers })).status).toBe(403);
+		const response = await f.request('/status', { headers });
+		expect(response.status).toBe(403);
+		expect(response.headers.get('content-type')).toBe('text/plain; charset=utf-8');
+		expect(await response.text()).toBe('Forbidden');
 	}
-	expect((await f.handler(new Request('http://localhost:8087/status'))).status).toBe(403);
+	const missingHost = await f.handler(new Request('http://localhost:8087/status'));
+	expect(missingHost.status).toBe(403);
+	expect(await missingHost.text()).toBe('Forbidden');
 	expect(f.calls()).toBe(0);
 	for (const host of ['localhost:8087', '127.0.0.1:8087', '[::1]:8087', 'LOCALHOST:8087']) {
 		expect((await f.request('/status', { headers: { Host: host } })).status).toBe(200);
@@ -126,6 +136,25 @@ test('local API wraps lists and strings and preserves secret whitespace', async 
 	const malformed = await (await request('/generate?length=invalid')).json();
 	expect(malformed.data.data).toHaveLength(14);
 });
+test('local API ignores whitespace-only URL filters like bw serve', async () => {
+	const f = fixture(), calls: string[] = [];
+	f.backend.run = async (_mutate, operation) =>
+		operation({
+			listItems: () => {
+				calls.push('list');
+				return [];
+			},
+			listItemsForUrl: (url: string) => {
+				calls.push(`url:${url}`);
+				return [];
+			},
+		} as unknown as VaultService);
+	const whitespace = await f.request('/list/object/items?url=%20%20%20');
+	expect(whitespace.status).toBe(200);
+	const valid = await f.request('/list/object/items?url=https%3A%2F%2Fexample.test');
+	expect(valid.status).toBe(200);
+	expect(calls).toEqual(['list', 'url:https://example.test']);
+});
 test('get uri preserves a whitespace-only first URI like the pinned CLI', async () => {
 	const f = fixture();
 	const uriItemId = '00000000-0000-0000-0000-000000000002';
@@ -136,11 +165,17 @@ test('get uri preserves a whitespace-only first URI like the pinned CLI', async 
 	expect(response.status).toBe(200);
 	expect(await response.json()).toEqual({ success: true, data: { object: 'string', data: '   ' } });
 });
-test('move resolves invalid collection values through the pinned collection-access error', async () => {
-	const f = fixture();
+test('Vaultwarden move rejects inaccessible collection IDs before mutation with the pinned CLI error', async () => {
+	const fetcher = (async input => {
+		if (new URL(input instanceof Request ? input.url : input).pathname === '/api/config') {
+			return Response.json({ server: { name: 'Vaultwarden' } });
+		}
+		throw new Error('Unexpected Vaultwarden request.');
+	}) as typeof fetch;
+	const f = fixture(fetcher);
 	const organizationId = '11111111-1111-1111-1111-111111111111';
 	const collectionId = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
-	f.snapshot.profile = { id, organizations: [{ id: organizationId, type: 0 }] };
+	f.snapshot.profile = { id, organizations: [{ id: organizationId, type: 2 }] };
 	f.snapshot.collections = [{
 		id: collectionId,
 		organizationId,
@@ -252,6 +287,49 @@ test('local API maps missing object and secret lookups to the bw Serve not-found
 	const restricted = await f.request('/object/password/not-an-item');
 	expect(await restricted.json()).toEqual({ success: false, message: 'Not found.' });
 });
+test('local API secret reads preserve hidden-field errors and enforce TOTP entitlement', async () => {
+	const f = fixture();
+	f.snapshot.profile = {
+		id,
+		premium: false,
+		premiumPersonally: false,
+		premiumFromOrganization: false,
+		organizations: [],
+	};
+	const profile = f.snapshot.profile as JsonObject;
+	f.snapshot.ciphers = [{
+		...encryptItem(
+			{ type: 1, name: 'Hidden', login: { password: 'hidden-password', totp: 'JBSWY3DPEHPK3PXP' } },
+			f.key,
+		),
+		id: 'hidden-item',
+		viewPassword: false,
+	}, {
+		...encryptItem({ type: 1, name: 'TOTP', login: { totp: 'JBSWY3DPEHPK3PXP' } }, f.key),
+		id: 'totp-item',
+	}];
+	for (
+		const [field, message] of [
+			['password', 'No password available for this login.'],
+			['totp', 'No TOTP available for this login.'],
+			['exposed', 'No password available for this login.'],
+		] as const
+	) {
+		const response = await f.request(`/object/${field}/hidden-item`);
+		expect(response.status).toBe(400);
+		expect(await response.json()).toMatchObject({ success: false, message });
+	}
+	const denied = await f.request('/object/totp/totp-item');
+	expect(denied.status).toBe(400);
+	expect(await denied.json()).toMatchObject({
+		success: false,
+		message: 'Premium status is required to use this feature.',
+	});
+	profile.premiumPersonally = true;
+	const allowed = await f.request('/object/totp/totp-item');
+	expect(allowed.status).toBe(200);
+	expect((await allowed.json()).data.data).toMatch(/^\d{6}$/);
+});
 test('local API accepts bw camelCase ID query aliases and returns IDs for ambiguous lookups', async () => {
 	const f = fixture();
 	const ciphers = f.snapshot.ciphers as JsonObject[];
@@ -301,15 +379,37 @@ test('local API mutation responses omit undefined data like bw Serve', async () 
 });
 test('local API list filters match bw object-specific behavior', async () => {
 	const f = fixture();
+	f.snapshot.ciphers = [{
+		...encryptItem({ type: 1, name: 'Folder filter item', login: { username: 'alice' } }, f.key),
+		id: 'folder-filter-item',
+		folderId: 'folder-one',
+	}];
 	f.snapshot.profile = {
 		id,
 		organizations: [{ id: 'org-one', name: 'First' }, { id: 'org-two', name: 'Second' }],
 	};
 	f.snapshot.folders = [{ id: 'folder', name: encrypt(Buffer.from('Private folder'), f.key) }];
+	const matchedFolder = await (await f.request('/list/object/items?folderid=folder-one')).json();
+	expect(matchedFolder.data.data.map((value: JsonObject) => value.id)).toEqual(['folder-filter-item']);
+	const repeatedFolder = await (await f.request('/list/object/items?folderid=folder-one&folderid=other')).json();
+	expect(repeatedFolder.data.data).toEqual([]);
+	const camelFallback = await (await f.request('/list/object/items?folderid=&folderId=folder-one')).json();
+	expect(camelFallback.data.data.map((value: JsonObject) => value.id)).toEqual(['folder-filter-item']);
 	const folders = await (await f.request('/list/object/folders?organizationid=missing')).json();
 	expect(folders.data.data.map((value: JsonObject) => value.name)).toEqual(['Private folder']);
 	const organizations = await (await f.request('/list/object/organizations?organizationid=org-one')).json();
 	expect(organizations.data.data).toHaveLength(2);
+	f.backend.run = async (_mutate, operation) =>
+		operation({
+			listCollections: () => [
+				{ id: 'first', organizationId: 'org-one', name: 'First collection' },
+				{ id: 'second', organizationId: 'org-two', name: 'Second collection' },
+			],
+		} as unknown as VaultService);
+	const collections = await (await f.request('/list/object/collections?organizationid=org-one')).json();
+	expect(collections.data.data.map((value: JsonObject) => value.id)).toEqual(['first']);
+	const uppercaseCollections = await (await f.request('/list/object/collections?organizationid=ORG-ONE')).json();
+	expect(uppercaseCollections.data.data).toEqual([]);
 });
 test('local API lists Sends through both reference Serve routes', async () => {
 	const f = fixture();
@@ -350,7 +450,30 @@ test('local API Send search includes secondary fields after name matches', async
 	const result = await response.json();
 	expect(result.data.data.map((send: JsonObject) => send.id)).toEqual(['named-send', 'secondary-send']);
 });
-test('local API takes unlock passwords only from JSON and serializes lock/unlock/read ordering', async () => {
+test('local API Send search matches UUID prefixes regardless of letter case', async () => {
+	const f = fixture();
+	const sendId = 'ABCDEF00-0000-0000-0000-000000000001';
+	const seed = Buffer.alloc(16, 4), key = deriveSendKey(seed);
+	try {
+		f.snapshot.sends = [{
+			id: sendId,
+			accessId: 'send-access-id',
+			type: 0,
+			key: encrypt(seed, f.key),
+			name: encrypt(Buffer.from('Mixed-case ID'), key),
+			text: { text: encrypt(Buffer.from('payload'), key), hidden: false },
+			deletionDate: new Date(Date.now() + 86400000).toISOString(),
+			disabled: false,
+		}];
+	} finally {
+		key.fill(0);
+		seed.fill(0);
+	}
+	const response = await f.request('/send/list?search=abcdef00');
+	expect(response.status).toBe(200);
+	expect((await response.json()).data.data.map((send: JsonObject) => send.id)).toEqual([sendId]);
+});
+test('local API unlocks from JSON and serializes lock/unlock/read ordering', async () => {
 	const f = fixture();
 	const { backend, request } = f;
 	const lastSync = '2026-10-21T12:00:00.000Z';
@@ -409,6 +532,125 @@ test('local API takes unlock passwords only from JSON and serializes lock/unlock
 	expect(failedSync.status).toBe(400);
 	expect((await failedSync.json()).message).toBe('Syncing failed: synthetic sync failure');
 });
+test('local API parses URL-encoded form bodies like the pinned Serve body parser', async () => {
+	const { request } = fixture();
+	const response = await request('/unlock', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+		body: new URLSearchParams({ password: 'fixture-password' }),
+	});
+	expect(response.status).toBe(200);
+	expect(await response.json()).toMatchObject({
+		success: true,
+		data: {
+			object: 'message',
+			title: 'Your vault is now unlocked!',
+			message: expect.stringContaining('$ bw list items --session synthetic-session'),
+		},
+	});
+});
+test('local API preserves form keys beyond the qs nesting depth as a literal key', async () => {
+	const f = fixture();
+	let received: unknown;
+	f.backend.run = async (_mutate, operation) =>
+		operation({
+			createCollection: async (_organizationId: string, input: JsonObject) => {
+				received = input;
+				return input;
+			},
+		} as unknown as VaultService);
+	const organizationId = '11111111-1111-1111-1111-111111111111';
+	const response = await f.request(`/object/org-collection?organizationid=${organizationId}`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+		body: 'name=Deep&groups%5B0%5D%5B1%5D%5B2%5D%5B3%5D%5B4%5D%5B5%5D%5B6%5D=value',
+	});
+	expect(response.status).toBe(200);
+	expect(JSON.stringify(received)).toContain('"[5][6]":"value"');
+});
+test('local API treats qs arrayLimit as an inclusive index boundary', async () => {
+	const f = fixture();
+	let received: unknown;
+	f.backend.run = async (_mutate, operation) =>
+		operation({
+			createCollection: async (_organizationId: string, input: JsonObject) => {
+				received = input;
+				return input;
+			},
+		} as unknown as VaultService);
+	const organizationId = '11111111-1111-1111-1111-111111111111';
+	const response = await f.request(`/object/org-collection?organizationid=${organizationId}`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+		body: 'name=Indexed&groups%5B20%5D%5Bid%5D=group-id',
+	});
+	expect(response.status).toBe(200);
+	expect((received as JsonObject).groups).toEqual([{ id: 'group-id' }]);
+	const aboveLimit = await f.request(`/object/org-collection?organizationid=${organizationId}`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+		body: 'name=Indexed&groups%5B21%5D%5Bid%5D=group-id',
+	});
+	expect(aboveLimit.status).toBe(200);
+	expect((received as JsonObject).groups).toEqual({ '21': { id: 'group-id' } });
+});
+test('local API compacts sparse form arrays like qs', async () => {
+	const f = fixture();
+	let received: unknown;
+	f.backend.run = async (_mutate, operation) =>
+		operation({
+			createCollection: async (_organizationId: string, input: JsonObject) => {
+				received = input;
+				return input;
+			},
+		} as unknown as VaultService);
+	const organizationId = '11111111-1111-1111-1111-111111111111';
+	const response = await f.request(`/object/org-collection?organizationid=${organizationId}`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+		body: 'groups%5B2%5D%5Bid%5D=third&groups%5B0%5D%5Bid%5D=first',
+	});
+	expect(response.status).toBe(200);
+	expect((received as JsonObject).groups).toEqual([{ id: 'first' }, { id: 'third' }]);
+});
+test('local API form parsing drops Object prototype keys but preserves the ordinary prototype key', async () => {
+	const f = fixture();
+	let received: unknown;
+	f.backend.run = async (_mutate, operation) =>
+		operation({
+			createCollection: async (_organizationId: string, input: JsonObject) => {
+				received = input;
+				return input;
+			},
+		} as unknown as VaultService);
+	const organizationId = '11111111-1111-1111-1111-111111111111';
+	const response = await f.request(`/object/org-collection?organizationid=${organizationId}`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+		body: 'name=Indexed&prototype=allowed&toString=blocked&constructor=blocked&hasOwnProperty=blocked',
+	});
+	expect(response.status).toBe(200);
+	const data = received as JsonObject;
+	expect(data.prototype).toBe('allowed');
+	expect(Object.hasOwn(data, 'toString')).toBe(false);
+	expect(Object.hasOwn(data, 'constructor')).toBe(false);
+	expect(Object.hasOwn(data, 'hasOwnProperty')).toBe(false);
+});
+test('local API applies the pinned body parser form limit before invoking unlock', async () => {
+	const f = fixture();
+	let unlockCalls = 0;
+	f.backend.unlock = async () => {
+		unlockCalls++;
+		return 'synthetic-session';
+	};
+	const response = await f.request('/unlock', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+		body: `password=${'a'.repeat(56 * 1024)}`,
+	});
+	expect(response.status).toBe(400);
+	expect(unlockCalls).toBe(0);
+});
 test('local API treats repeated boolean query parameters as false like bw serve', async () => {
 	const f = fixture();
 	f.backend.status = async () => ({ status: 'unlocked', lastSync: '2026-01-02T03:04:05.000Z' });
@@ -438,6 +680,30 @@ test('local API accepts the JSON media types supported by bw serve', async () =>
 		});
 		expect(response.status).toBe(200);
 	}
+	const empty = await request('/unlock', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+	});
+	expect(empty.status).toBe(400);
+	expect(await empty.json()).toMatchObject({
+		success: false,
+		message:
+			'Master password is required. Try again in interactive mode or provide a password file or environment variable.',
+	});
+});
+test('local API ignores text/plain bodies like the default koa-bodyparser configuration', async () => {
+	const { request } = fixture();
+	const response = await request('/unlock', {
+		method: 'POST',
+		headers: { 'Content-Type': 'text/plain' },
+		body: JSON.stringify({ password: 'fixture-password' }),
+	});
+	expect(response.status).toBe(400);
+	expect(await response.json()).toEqual({
+		success: false,
+		message:
+			'Master password is required. Try again in interactive mode or provide a password file or environment variable.',
+	});
 });
 test('malformed and oversized JSON fail without invoking mutations and do not poison the request queue', async () => {
 	const f = fixture();
@@ -453,11 +719,24 @@ test('malformed and oversized JSON fail without invoking mutations and do not po
 	expect(f.calls()).toBe(0);
 	expect((await f.request('/sync', { method: 'POST' })).status).toBe(200);
 });
+test('local API rejects scalar JSON bodies under koa-bodyparser strict mode', async () => {
+	const f = fixture();
+	const response = await f.request('/unlock', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify('synthetic-secret'),
+	});
+	expect(response.status).toBe(400);
+	expect(await response.json()).toEqual({ success: false, message: 'Invalid request.' });
+	expect(f.calls()).toBe(0);
+});
 test('local API organization collection mutations accept body organization IDs and reject conflicts', async () => {
 	const f = fixture(), calls: { method: string; id?: string; organizationId: string }[] = [];
+	let formInput: JsonObject | undefined;
 	class CaptureVault extends VaultService {
-		override async createCollection(organizationId: string, _input: JsonObject): Promise<JsonObject> {
+		override async createCollection(organizationId: string, input: JsonObject): Promise<JsonObject> {
 			calls.push({ method: 'POST', organizationId });
+			if (input.name === 'Form collection') formInput = input;
 			return { id: 'created' };
 		}
 		override async editCollection(organizationId: string, id: string, _input: JsonObject): Promise<JsonObject> {
@@ -484,6 +763,27 @@ test('local API organization collection mutations accept body organization IDs a
 		body,
 	});
 	expect(create.status).toBe(200);
+	const uppercaseCreate = await f.request(`/object/org-collection?organizationid=${organizationId.toUpperCase()}`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body,
+	});
+	expect(uppercaseCreate.status).toBe(200);
+	const formCreate = await f.request(`/object/org-collection?organizationid=${organizationId}`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+		body: new URLSearchParams({
+			name: 'Form collection',
+			'groups[0][id]': 'group-id',
+			'users[0][id]': 'member-id',
+		}),
+	});
+	expect(formCreate.status).toBe(200);
+	expect(formInput).toMatchObject({
+		name: 'Form collection',
+		groups: [{ id: 'group-id' }],
+		users: [{ id: 'member-id' }],
+	});
 	const edit = await f.request('/object/org-collection/22222222-2222-2222-2222-222222222222', {
 		method: 'PUT',
 		headers: { 'Content-Type': 'application/json' },
@@ -507,6 +807,8 @@ test('local API organization collection mutations accept body organization IDs a
 		expect((await invalidDelete.json()).message).toContain('is not a GUID.');
 	}
 	expect(calls).toEqual([
+		{ method: 'POST', organizationId },
+		{ method: 'POST', organizationId },
 		{ method: 'POST', organizationId },
 		{ method: 'PUT', id: '22222222-2222-2222-2222-222222222222', organizationId },
 	]);
@@ -608,6 +910,30 @@ test('local API uses native template envelopes, object discriminators, HEAD and 
 	expect(statusOptions.status).toBe(200);
 	expect(statusOptions.headers.get('Allow')).toBe('HEAD, GET');
 	expect(await statusOptions.text()).toBe('');
+});
+test('local API only returns new item templates when the connected Vaultwarden release supports them', async () => {
+	for (const [version, supported] of [['1.36.0', false], ['1.37.4', true]] as const) {
+		const fetcher = (async input => {
+			const url = String(input);
+			if (url.endsWith('/api/config')) return Response.json({ server: { name: 'Vaultwarden' } });
+			if (url.endsWith('/api/version')) return Response.json(version);
+			throw new Error(`Unexpected server request: ${url}`);
+		}) as typeof fetch;
+		const { request } = fixture(fetcher);
+		const response = await request('/object/template/item.bankaccount');
+		if (supported) {
+			expect(response.status).toBe(200);
+			expect(await response.json()).toMatchObject({
+				data: { template: { accountNumber: '000123456789', bankName: 'Acme Bank' } },
+			});
+		} else {
+			expect(response.status).toBe(400);
+			expect(await response.json()).toMatchObject({
+				success: false,
+				message: 'Bank account item type is not available.',
+			});
+		}
+	}
 });
 test('local API rejects file Send creation without accessing a host file', async () => {
 	const { request } = fixture();

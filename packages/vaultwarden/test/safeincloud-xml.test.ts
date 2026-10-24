@@ -68,3 +68,47 @@ test('SafeInCloud XML maps card brands using the full reference patterns', () =>
 	));
 	expect(cards.map(card => (card.card as JsonObject).brand)).toEqual(['Amex', 'Discover', 'Visa']);
 });
+
+test('SafeInCloud XML selects the first hidden field with any pinned password alias', () => {
+	const result = items(parseSafeInCloudXml(
+		'<database><card title="Aliases">'
+			+ '<field name="Other" type="secret">first hidden value</field>'
+			+ '<field name="Pass Phrase" type="password">matching alias</field>'
+			+ '</card></database>',
+	));
+	expect(result[0]?.login).toMatchObject({ password: 'matching alias' });
+	expect(result[0]?.fields).toEqual([{ name: 'Other', value: 'first hidden value', type: 1 }]);
+});
+
+test('SafeInCloud XML retains the fallback hidden field when it becomes the password', () => {
+	const result = items(parseSafeInCloudXml(
+		'<database><card title="Fallback"><field name="Secret value" type="secret">first hidden value</field></card></database>',
+	));
+	expect(result[0]?.login).toMatchObject({ password: 'first hidden value' });
+	expect(result[0]?.fields).toEqual([{ name: 'Secret value', value: 'first hidden value', type: 1 }]);
+});
+
+test('SafeInCloud XML prefixes multiline fields with the reference blank-name label', () => {
+	const value = 'x'.repeat(201);
+	const result = items(parseSafeInCloudXml(
+		`<database><card title="Long"><field name="">${value}</field></card></database>`,
+	));
+	expect(result[0]?.notes).toBe(`: ${value}\n`);
+});
+
+test('SafeInCloud XML trims, prefixes, and truncates website URIs in reference order', () => {
+	const domain = `${'a'.repeat(995)}.com`;
+	const result = items(parseSafeInCloudXml(
+		`<database><card title="Long URI"><field name="Website" type="website">  ${domain}  </field></card></database>`,
+	));
+	const uri = ((result[0]?.login as JsonObject).uris as JsonObject[])[0]?.uri;
+	expect(uri).toBe(`http://${domain}`.slice(0, 1000));
+	expect(String(uri)).toHaveLength(1000);
+});
+
+test('SafeInCloud XML imports cards under every database node like the reference selector', () => {
+	const result = items(parseSafeInCloudXml(
+		'<root><database><card title="First"/></database><database><card title="Second"/></database></root>',
+	));
+	expect(result.map(item => item.name)).toEqual(['First', 'Second']);
+});

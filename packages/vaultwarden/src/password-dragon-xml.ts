@@ -35,9 +35,7 @@ export function parsePasswordDragonXml(source: string, organization = false): Js
 	}
 	if (!root) throw new Error('Invalid Password Dragon XML.');
 	const records: Element[] = [];
-	let hasManager = false;
 	const collectRecords = (element: Element): void => {
-		if (element.tagName === 'PasswordManager') hasManager = true;
 		for (let index = 0; index < element.childNodes.length; index++) {
 			const node = element.childNodes.item(index);
 			if (node?.nodeType !== 1) continue;
@@ -47,7 +45,6 @@ export function parsePasswordDragonXml(source: string, organization = false): Js
 		}
 	};
 	collectRecords(root);
-	if (!hasManager) throw new Error('Missing PasswordManager root node.');
 	const folders: JsonObject[] = [], folderIds = new Map<string, string>(), items: VaultItem[] = [];
 	const addFolder = (raw: string, result: VaultItem): void => {
 		const name = raw.replace(/\\/g, '/').replace(/^\/+/, ''), id = folderIds.get(name) ?? randomUUID();

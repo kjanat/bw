@@ -132,16 +132,14 @@ function normalizeNegativeGeneratorValues(argv: readonly string[]): string[] {
 /** The reference CLI lowercases object names and IDs before command dispatch. */
 function normalizeObjectArguments(argv: readonly string[]): string[] {
 	const result = [...argv];
-	const positions: Record<string, { object: number; id?: number }> = {
-		list: { object: 1 },
-		get: { object: 1, id: 2 },
-		create: { object: 1 },
-		edit: { object: 1, id: 2 },
-		delete: { object: 1, id: 2 },
-		restore: { object: 1, id: 2 },
-		archive: { object: 1, id: 2 },
-		confirm: { object: 1, id: 2 },
-		report: { object: 1 },
+	const positions: Record<string, { values: readonly string[]; id?: number }> = {
+		create: { values: ['--session', '--organizationid', '--file', '--itemid'] },
+		edit: { values: ['--session', '--organizationid'], id: 1 },
+		delete: { values: ['--session', '--organizationid', '--itemid'], id: 1 },
+		restore: { values: ['--session'], id: 1 },
+		archive: { values: ['--session'], id: 1 },
+		confirm: { values: ['--organizationid', '--session'], id: 1 },
+		report: { values: ['--session'] },
 	};
 	for (let index = 0; index < result.length; index++) {
 		const token = result[index]!;
@@ -152,13 +150,23 @@ function normalizeObjectArguments(argv: readonly string[]): string[] {
 		}
 		const positionsForCommand = positions[token];
 		if (positionsForCommand) {
-			const objectIndex = index + positionsForCommand.object;
-			if (result[objectIndex] && !result[objectIndex]!.startsWith('-')) {
-				result[objectIndex] = result[objectIndex]!.toLowerCase();
-			}
-			if (positionsForCommand.id !== undefined) {
-				const idIndex = index + positionsForCommand.id;
-				if (result[idIndex] && !result[idIndex]!.startsWith('-')) result[idIndex] = result[idIndex]!.toLowerCase();
+			let positional = 0;
+			let optionsEnded = false;
+			for (let argument = index + 1; argument < result.length; argument++) {
+				const value = result[argument]!;
+				if (value === '--') {
+					optionsEnded = true;
+					continue;
+				}
+				if (!optionsEnded && value.startsWith('-')) {
+					const equals = value.indexOf('=');
+					const option = equals < 0 ? value : value.slice(0, equals);
+					if (equals < 0 && positionsForCommand.values.includes(option)) argument++;
+					continue;
+				}
+				if (positional === 0) result[argument] = value.toLowerCase();
+				if (positionsForCommand.id === positional) result[argument] = value.toLowerCase();
+				positional++;
 			}
 		}
 		return result;

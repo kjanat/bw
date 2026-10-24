@@ -140,6 +140,9 @@ test('SSO email 2FA retries the same code once and requests delivery using the p
 	const client = new VaultwardenClient('https://vault.example', {
 		deviceId: 'fixture-device',
 		fetch: (async (url: unknown, init: RequestInit) => {
+			if (String(url).endsWith('/api/config')) {
+				return Response.json({ environment: { vault: 'https://web.example.net/vault' } });
+			}
 			if (String(url).endsWith('/profile')) return Response.json({ id: 'user', email });
 			if (String(url).endsWith('/send-email-login')) {
 				emailRequests++;
@@ -183,7 +186,7 @@ test('SSO email 2FA retries the same code once and requests delivery using the p
 				rpId: 'vault.example',
 				allowCredentials: [{ id: 'Y3JlZGVudGlhbA', type: 'public-key' }],
 			});
-			expect(challenge.webAuthnOrigin).toBe('https://vault.example');
+			expect(challenge.webAuthnOrigin).toBe('https://web.example.net');
 			await challenge.requestEmail();
 			return { provider: 1, token: '123456' };
 		},

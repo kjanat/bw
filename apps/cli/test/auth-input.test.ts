@@ -2,7 +2,14 @@ import { test, expect } from 'bun:test';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { masterPassword, apiCredentials, loginEmail, answerLoginChallenge, duoCallbackToken } from '#auth-input';
+import {
+	masterPassword,
+	apiCredentials,
+	loginEmail,
+	answerLoginChallenge,
+	duoCallbackToken,
+	supportedLoginProviders,
+} from '#auth-input';
 
 test('master-password sources follow bw precedence and read only a file first line', async () => {
 	const dir = await mkdtemp(join(tmpdir(), 'vw-auth-input-'));
@@ -16,6 +23,8 @@ test('master-password sources follow bw precedence and read only a file first li
 			'positional-value',
 		);
 		expect(await masterPassword({ file, envName, noInteraction: true })).toBe('file-value');
+		await writeFile(file, 'classic-mac-password\rignored-line\r', { mode: 0o600 });
+		expect(await masterPassword({ file, envName, noInteraction: true })).toBe('classic-mac-password');
 		expect(await masterPassword({ envName, noInteraction: true })).toBe('environment-value');
 		await writeFile(file, '\nignored', { mode: 0o600 });
 		await expect(masterPassword({ file, envName, noInteraction: true })).rejects.toThrow('required');
@@ -48,6 +57,12 @@ test('noninteractive challenges never send email or prompt for a code', async ()
 	))
 		.rejects.toThrow('Supply --method and --code');
 	expect(requests).toBe(0);
+});
+test('recovery-code challenges are offered as a supported login provider', () => {
+	expect(supportedLoginProviders({
+		providers: [0, 8],
+		requestEmail: async () => {},
+	})).toEqual([0, 8]);
 });
 test('Duo callback extraction binds the browser redirect to Vaultwarden’s signed request redirect', () => {
 	const redirectUri = 'https://vault.example/duo-redirect-connector.html?client=cli';

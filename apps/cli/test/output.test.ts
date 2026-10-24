@@ -1,6 +1,13 @@
 import { expect, test } from 'bun:test';
 import type { RuntimeAdapter } from '@kjanat/dreamcli/runtime';
-import { outputSuccess, responseData, responseMessage, withOutputPolicy } from '#output';
+import {
+	getObjectResponse,
+	listObjectResponse,
+	outputSuccess,
+	responseData,
+	responseMessage,
+	withOutputPolicy,
+} from '#output';
 import { quickSendResult, sendResponseData } from '#send-commands';
 
 test('get organization-collection response matches the bw response projection', () => {
@@ -32,6 +39,8 @@ test('create and edit folder response match the bw folder response model', () =>
 	const expected = { object: 'folder', id: 'folder-id', name: 'Personal' };
 	expect(responseData('create', { object: 'folder' }, folder)).toEqual(expected);
 	expect(responseData('edit', { object: 'folder' }, folder)).toEqual(expected);
+	expect(getObjectResponse('folder', folder)).toEqual(expected);
+	expect(listObjectResponse('folders', folder)).toEqual(expected);
 });
 
 test('config getter and saved-file responses preserve bw message semantics', () => {

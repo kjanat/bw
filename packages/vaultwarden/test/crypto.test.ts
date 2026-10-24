@@ -1,6 +1,63 @@
 import { expect, test } from 'bun:test';
-import { decrypt, deriveMasterKey, encrypt, stretchKey, encryptAttachment, decryptAttachment } from '#crypto';
+import {
+	decrypt,
+	deriveMasterKey,
+	encrypt,
+	stretchKey,
+	encryptAttachment,
+	encryptedAttachmentSize,
+	decryptAttachment,
+} from '#crypto';
 import { decryptItem, personalItems } from '#vault';
+import { createAccountKeyMaterial, decryptSharedKey, encryptSharedKey } from '#crypto';
+import { constants, createPrivateKey, createPublicKey, privateDecrypt, publicEncrypt } from 'node:crypto';
+
+test('micro509 account keys interoperate with Node RSA-OAEP SHA-256 and legacy SHA-1', async () => {
+	const material = await createAccountKeyMaterial('fixture-password', 'fixture@example.com', {
+		type: 0,
+		iterations: 1,
+	});
+	const privateDer = decrypt(material.encryptedPrivateKey, material.userKey);
+	try {
+		const privateKey = createPrivateKey({ key: privateDer, format: 'der', type: 'pkcs8' });
+		const publicKey = createPublicKey({ key: Buffer.from(material.publicKey, 'base64'), format: 'der', type: 'spki' });
+		expect(publicKey.asymmetricKeyDetails?.modulusLength).toBe(2048);
+		expect(createPublicKey(privateKey).export({ format: 'der', type: 'spki' })).toEqual(
+			Buffer.from(material.publicKey, 'base64'),
+		);
+		const sharedKey = Buffer.alloc(64, 42);
+		for (const [type, oaepHash] of [[3, 'sha256'], [4, 'sha1']] as const) {
+			const encrypted = publicEncrypt(
+				{ key: publicKey, padding: constants.RSA_PKCS1_OAEP_PADDING, oaepHash },
+				sharedKey,
+			);
+			expect(await decryptSharedKey(`${type}.${encrypted.toString('base64')}`, privateDer)).toEqual(sharedKey);
+			await expect(decryptSharedKey(`${type === 3 ? 4 : 3}.${encrypted.toString('base64')}`, privateDer))
+				.rejects.toThrow('Organization key authentication failed.');
+			encrypted[0] = encrypted[0]! ^ 1;
+			await expect(decryptSharedKey(`${type}.${encrypted.toString('base64')}`, privateDer))
+				.rejects.toThrow('Organization key authentication failed.');
+		}
+		const wrapped = await encryptSharedKey(sharedKey, material.publicKey);
+		expect(wrapped.startsWith('3.')).toBe(true);
+		expect(
+			privateDecrypt(
+				{ key: privateKey, padding: constants.RSA_PKCS1_OAEP_PADDING, oaepHash: 'sha256' },
+				Buffer.from(wrapped.slice(2), 'base64'),
+			),
+		).toEqual(sharedKey);
+		await expect(decryptSharedKey(wrapped, new Uint8Array([1, 2, 3])))
+			.rejects.toThrow('Organization key authentication failed.');
+		await expect(decryptSharedKey('2.invalid', privateDer)).rejects.toThrow('Unsupported organization key envelope.');
+		await expect(decryptSharedKey('3.A===', privateDer)).rejects.toThrow('Unsupported organization key envelope.');
+		await expect(encryptSharedKey(sharedKey, 'invalid')).rejects.toThrow('Invalid member public key.');
+		await expect(encryptSharedKey(new Uint8Array(32), material.publicKey))
+			.rejects.toThrow('Expected a 512-bit organization key.');
+	} finally {
+		privateDer.fill(0);
+		material.userKey.fill(0);
+	}
+});
 
 // Independent known-answer vectors from bitwarden/sdk-internal at 4ea5e6f.
 test('PBKDF2 matches the Bitwarden SDK vector and normalizes the email', async () => {
@@ -91,6 +148,9 @@ test('reports excluded organization items and omits deleted items', () => {
 
 test('binary attachment encryption authenticates content and exact byte layout', () => {
 	const key = Buffer.alloc(64, 4);
+	for (const size of [0, 1, 15, 16, 17, 31, 32]) {
+		expect(encryptedAttachmentSize(size)).toBe(encryptAttachment(Buffer.alloc(size), key).length);
+	}
 	const value = Buffer.from([0, 255, 128, 0, 17]);
 	const encrypted = encryptAttachment(value, key);
 	expect(encrypted[0]).toBe(2);

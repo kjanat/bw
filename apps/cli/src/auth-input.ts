@@ -62,6 +62,21 @@ export function duoCallbackToken(input: string, authorizationUrl: string): strin
 	}
 	return `${code}|${state}`;
 }
+const twoFactorProviderNames: Record<number, string> = {
+	0: 'Authenticator (TOTP)',
+	1: 'Email code',
+	2: 'Duo (browser)',
+	3: 'YubiKey OTP',
+	7: 'Security key (WebAuthn)',
+	8: 'Recovery code',
+};
+export function supportedLoginProviders(challenge: LoginChallenge): number[] {
+	return challenge.providers.filter(provider =>
+		twoFactorProviderNames[provider]
+		&& (provider !== 2 || challenge.duoAuthUrl)
+		&& (provider !== 7 || (challenge.webAuthnOptions && challenge.webAuthnOrigin))
+	);
+}
 export async function answerLoginChallenge(
 	challenge: LoginChallenge,
 	preferred?: number,
@@ -70,23 +85,12 @@ export async function answerLoginChallenge(
 	if (noInteraction || !process.stdin.isTTY) {
 		throw new Error('Two-factor authentication is required. Supply --method and --code (or VW_2FA_TOKEN).');
 	}
-	const names: Record<number, string> = {
-		0: 'Authenticator (TOTP)',
-		1: 'Email code',
-		2: 'Duo (browser)',
-		3: 'YubiKey OTP',
-		7: 'Security key (WebAuthn)',
-	};
-	const supported = challenge.providers.filter(provider =>
-		names[provider]
-		&& (provider !== 2 || challenge.duoAuthUrl)
-		&& (provider !== 7 || (challenge.webAuthnOptions && challenge.webAuthnOrigin))
-	);
+	const supported = supportedLoginProviders(challenge);
 	let provider = preferred;
 	if (provider === undefined) {
 		if (supported.length === 1) provider = supported[0];
 		else if (supported.length > 1) {
-			const choices = supported.map(value => ({ value: String(value), label: names[value]! }));
+			const choices = supported.map(value => ({ value: String(value), label: twoFactorProviderNames[value]! }));
 			const answer = await terminalPrompt({
 				kind: 'select',
 				message: 'Two-factor method',
@@ -98,7 +102,7 @@ export async function answerLoginChallenge(
 	}
 	if (provider === undefined || !supported.includes(provider)) {
 		throw new Error(
-			'No supported two-factor method selected. Supported methods: TOTP, email, Duo, YubiKey OTP, and WebAuthn.',
+			'No supported two-factor method selected. Supported methods: TOTP, email, Duo, YubiKey OTP, WebAuthn, and recovery code.',
 		);
 	}
 	if (provider === 1) await challenge.requestEmail();
@@ -119,9 +123,9 @@ export async function answerLoginChallenge(
 			challenge.webAuthnOrigin!,
 		);
 	} else {
-		token = await secretPrompt('Verification code:');
+		token = await secretPrompt(provider === 8 ? 'Recovery code:' : 'Verification code:');
 	}
-	if (!token) throw new Error('A verification code is required.');
+	if (!token) throw new Error(provider === 8 ? 'A recovery code is required.' : 'A verification code is required.');
 	return { provider, token };
 }
 
@@ -134,7 +138,7 @@ export interface PasswordSource {
 /** bw precedence: a positional value, then the file's first line, then a named environment variable. */
 export async function masterPassword(source: PasswordSource): Promise<string> {
 	let value = source.positional;
-	if (!value && source.file) value = (await readFile(source.file, 'utf8')).split(/\r?\n/, 1)[0];
+	if (!value && source.file) value = (await readFile(source.file, 'utf8')).split(/\r\n|\n|\r/, 1)[0];
 	else if (!value && !source.file) value = process.env[source.envName ?? 'VW_PASSWORD'];
 	if (value === undefined && !source.noInteraction && process.stdin.isTTY) {
 		value = await secretPrompt('Master password:');

@@ -1,4 +1,5 @@
 import { getHostname } from 'tldts';
+import lunr from 'lunr';
 import { object } from '#client';
 import type { VaultItem } from '#models';
 
@@ -80,15 +81,108 @@ export function searchItems(items: readonly VaultItem[], query: string): VaultIt
 	const terms = normalizeSearch(query.trim()).split(/\s+/).filter(Boolean);
 	return items.filter(item => {
 		const hosts = item.type === 1 && Array.isArray(item.login?.uris)
-			? item.login.uris.map(value => {
-				const uri = object(value);
-				if (uri.match === 4 || typeof uri.uri !== 'string' || /^(data|about|file):/.test(uri.uri.trim())) return '';
-				return getHostname(uri.uri, { validHosts: ['localhost'] }) ?? '';
+			? item.login.uris.flatMap(value => {
+				if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+				const uri = value as { match?: unknown; uri?: unknown };
+				if (
+					uri.match === 4 || typeof uri.uri !== 'string' || !uri.uri.trim()
+					|| /^(data|about|file):/i.test(uri.uri.trim())
+				) return [];
+				return [getHostname(uri.uri, { validHosts: ['localhost'] }) ?? ''];
 			})
 			: [];
-		const targets = [item.name, subtitle(item), string(item.notes), ...hosts].map(normalizeSearch);
+		const targets = [string(item.name), subtitle(item), string(item.notes), ...hosts].map(normalizeSearch);
 		return terms.every(term =>
 			targets.some(target => target.includes(term)) || (term.length >= 8 && item.id?.toLowerCase().startsWith(term))
 		);
 	});
+}
+
+/** Lunr-style search for callers that explicitly opt into the extended syntax. */
+export function searchItemsAdvanced(items: readonly VaultItem[], query: string): VaultItem[] {
+	const builder = new lunr.Builder();
+	builder.ref('id');
+	builder.field('shortid', { boost: 100 });
+	builder.field('name', { boost: 10 });
+	builder.field('subtitle', { boost: 5 });
+	builder.field('notes');
+	builder.field('login.username');
+	builder.field('login.uris', { boost: 2 });
+	builder.field('fields');
+	builder.field('fields_joined');
+	builder.field('attachments');
+	builder.field('attachments_joined');
+	builder.field('organizationid');
+	const indexed = new Map<string, VaultItem>();
+	for (const item of items) {
+		if (typeof item.id !== 'string') continue;
+		indexed.set(item.id, item);
+		const login = object(item.login ?? {});
+		const customFields = Array.isArray(item.fields)
+			? item.fields.flatMap(field => {
+				if (!field || typeof field !== 'object' || Array.isArray(field)) return [];
+				const values = typeof field.name === 'string' ? [field.name] : [];
+				if (typeof field.value === 'string' && (field.type === undefined || field.type === 0)) values.push(field.value);
+				return values.filter(value => value.trim());
+			})
+			: [];
+		const attachments = Array.isArray(item.attachments)
+			? item.attachments.flatMap(value => {
+				if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+				const fileName = value.fileName;
+				return typeof fileName === 'string' && fileName.trim() ? [fileName] : [];
+			})
+			: [];
+		const uris = item.type === 1 && Array.isArray(login.uris)
+			? login.uris.flatMap(value => {
+				if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+				const uri = value as { match?: unknown; uri?: unknown };
+				if (typeof uri.uri !== 'string' || !uri.uri) return [];
+				const source = uri.uri;
+				const regex = uri.match === 4;
+				const host = regex ? undefined : getHostname(source, { validHosts: ['localhost'] });
+				const port = source.match(/:(\d+)(?:[/?#]|$)/)?.[1];
+				let processed = source;
+				if (!regex) {
+					const protocolIndex = processed.indexOf('://');
+					if (protocolIndex > -1) processed = processed.slice(protocolIndex + 3);
+					const queryIndex = processed.search(/[?&#]/);
+					if (queryIndex > -1) processed = processed.slice(0, queryIndex);
+				}
+				return [
+					...(host ? [host, ...(port ? [`${host}:${port}`, port] : [])] : []),
+					processed,
+				];
+			})
+			: [];
+		const name = string(item.name);
+		const itemSubtitle = item.type === 3 ? subtitle(item).replace(/\*/g, '') : subtitle(item);
+		const notes = string(item.notes);
+		builder.add({
+			id: item.id,
+			shortid: item.id.slice(0, 8),
+			name: normalizeSearch(name),
+			subtitle: normalizeSearch(itemSubtitle),
+			notes: normalizeSearch(notes),
+			'login.username': normalizeSearch(string(login.username)),
+			'login.uris': uris,
+			fields: customFields,
+			fields_joined: customFields.join(' '),
+			attachments,
+			attachments_joined: attachments.map(fileName => {
+				const extension = fileName.lastIndexOf('.');
+				return extension > -1 ? fileName.slice(0, extension) : fileName;
+			}).join(' '),
+			organizationid: string(item.organizationId),
+		});
+	}
+	try {
+		const results = builder.build().search(normalizeSearch(query.trim()));
+		return results.flatMap(result => {
+			const item = indexed.get(result.ref);
+			return item ? [item] : [];
+		});
+	} catch {
+		return [];
+	}
 }

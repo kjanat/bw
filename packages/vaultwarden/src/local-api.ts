@@ -3,10 +3,10 @@ import { object, text } from '#client';
 import type { GeneratorOptions } from '#generator';
 import { parseGeneratorNumber } from '#generator';
 import { localApiObject as apiObject } from '#local-api-models';
-import type { ItemFilter, VaultFolder, VaultItem } from '#models';
+import type { EditVaultItem, ItemFilter, VaultFolder, VaultItem } from '#models';
 import { PasswordExposureClient } from '#reports';
 import type { SendInput } from '#sends';
-import { template } from '#templates';
+import { templateForServer } from '#templates';
 import { totp } from '#totp';
 import { MultipleResultsError, VaultObjectNotFoundError } from '#search';
 import type { VaultService } from '#vault-service';
@@ -17,7 +17,7 @@ export interface LocalApiBackend {
 	status(): Promise<JsonObject>;
 	sync(force: boolean): Promise<void>;
 	lock(): Promise<void>;
-	unlock(password: string): Promise<string>;
+	unlock(password: string | null): Promise<string>;
 	generate(options: GeneratorOptions): Promise<string>;
 	run<T>(mutate: boolean, operation: (vault: VaultService) => T | Promise<T>, online?: boolean): Promise<T>;
 }
@@ -83,12 +83,25 @@ function queryValue(query: URLSearchParams, key: string): string | null {
 	const camel = key.replace(/id$/, 'Id');
 	return query.get(key) ?? (camel === key ? null : query.get(camel));
 }
+function listFilterValue(query: URLSearchParams, key: string): string | null {
+	const camel = key.replace(/id$/, 'Id');
+	const values = query.getAll(key);
+	if (values.length > 1) return '\0';
+	if (values[0]) return values[0];
+	if (camel === key) return values[0] ?? null;
+	const camelValues = query.getAll(camel);
+	if (camelValues.length > 1) return '\0';
+	return camelValues[0] ?? values[0] ?? null;
+}
 function requiredOption(query: URLSearchParams, key: string, message: string): string {
 	const value = queryValue(query, key);
 	if (!value) throw new Error(message);
 	return value;
 }
 const isGuid = (value: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+function sameIdentifier(value: unknown, id: string): boolean {
+	return typeof value === 'string' && value.toLowerCase() === id.toLowerCase();
+}
 function requiredGuidOption(query: URLSearchParams, key: string, plural = false): string {
 	const value = queryValue(query, key);
 	if (!value) throw new Error(`\`${key}\` ${plural ? 'options' : 'option'} is required.`);
@@ -105,12 +118,14 @@ function collectionOrganizationId(query: URLSearchParams, data: JsonObject): str
 	}
 	if (!isGuid(organizationId)) throw new Error(`\`${organizationId}\` is not a GUID.`);
 	if (
-		option && typeof data.organizationId === 'string' && data.organizationId.trim() && option !== data.organizationId
+		option && typeof data.organizationId === 'string' && data.organizationId.trim()
+		&& !sameIdentifier(option, data.organizationId)
 	) {
 		throw new Error('The organizationid query option does not match the request organizationId property.');
 	}
-	data.organizationId = organizationId;
-	return organizationId;
+	const normalized = organizationId.toLowerCase();
+	data.organizationId = normalized;
+	return normalized;
 }
 async function bodyBytes(request: Request, maximum: number): Promise<Uint8Array> {
 	if (Number(request.headers.get('Content-Length')) > maximum) throw new Error('Request body is too large.');
@@ -133,13 +148,105 @@ async function bodyBytes(request: Request, maximum: number): Promise<Uint8Array>
 		reader.releaseLock();
 	}
 }
-async function jsonBody(request: Request): Promise<unknown> {
+function formSegments(key: string): string[] | undefined {
+	const match = /^([^\x5B\x5D]+)((?:\x5B[^\x5B\x5D]*\x5D)*)$/.exec(key);
+	if (!match) return undefined;
+	const brackets = [...match[2]!.matchAll(/\x5B([^\x5B\x5D]*)\x5D/g)].map(bracket => bracket[1]!);
+	// koa-bodyparser's qs parser defaults to depth 5. It keeps deeper brackets
+	// as a literal final key instead of discarding the parameter.
+	const segments = [match[1]!, ...brackets.slice(0, 5)];
+	if (brackets.length > 5) segments.push(brackets.slice(5).map(segment => `[${segment}]`).join(''));
+	if (segments.some(segment => Object.prototype.hasOwnProperty.call(Object.prototype, segment))) {
+		return undefined;
+	}
+	return segments;
+}
+function formArraySegment(segment: string | undefined): boolean {
+	return segment === '' || (segment !== undefined && /^\d+$/.test(segment) && Number(segment) <= 20);
+}
+function assignFormValue(root: Record<string, unknown>, segments: string[], value: string): void {
+	let target: Record<string, unknown> | unknown[] = root;
+	for (let index = 0; index < segments.length; index++) {
+		const segment = segments[index]!;
+		const last = index === segments.length - 1;
+		if (Array.isArray(target)) {
+			const slot = segment === '' ? target.length : /^\d+$/.test(segment) ? Number(segment) : -1;
+			if (slot < 0 || slot > 20) return;
+			if (last) {
+				const previous = target[slot];
+				target[slot] = previous === undefined
+					? value
+					: Array.isArray(previous)
+					? [...previous, value]
+					: [previous, value];
+				return;
+			}
+			const nextArray = formArraySegment(segments[index + 1]);
+			const existing: unknown = target[slot];
+			const child: Record<string, unknown> | unknown[] = existing && typeof existing === 'object'
+				? existing as Record<string, unknown> | unknown[]
+				: nextArray
+				? []
+				: Object.create(null) as Record<string, unknown>;
+			if (existing === undefined) target[slot] = child;
+			target = child;
+			continue;
+		}
+		if (!segment) return;
+		if (last) {
+			const previous = target[segment];
+			target[segment] = previous === undefined
+				? value
+				: Array.isArray(previous)
+				? [...previous, value]
+				: [previous, value];
+			return;
+		}
+		const nextArray = formArraySegment(segments[index + 1]);
+		const existing: unknown = target[segment];
+		const child: Record<string, unknown> | unknown[] = existing && typeof existing === 'object'
+			? existing as Record<string, unknown> | unknown[]
+			: nextArray
+			? []
+			: Object.create(null) as Record<string, unknown>;
+		if (existing === undefined) target[segment] = child;
+		target = child;
+	}
+}
+function compactFormArrays(value: unknown): unknown {
+	if (Array.isArray(value)) return value.filter(entry => entry !== undefined).map(compactFormArrays);
+	if (value && typeof value === 'object') {
+		for (const key of Object.keys(value)) {
+			(value as Record<string, unknown>)[key] = compactFormArrays((value as Record<string, unknown>)[key]);
+		}
+	}
+	return value;
+}
+async function parsedBody(request: Request): Promise<unknown> {
 	const mediaType = request.headers.get('Content-Type')?.split(';')[0]?.trim().toLowerCase();
 	// Match koa-bodyparser 4.4.1 defaults used by the pinned bw serve command.
-	if (!mediaType || !jsonMediaTypes.has(mediaType)) return {};
-	const bytes = await bodyBytes(request, 1024 * 1024);
+	if (
+		!mediaType
+		|| (!jsonMediaTypes.has(mediaType) && mediaType !== 'application/x-www-form-urlencoded')
+	) return {};
+	const maximum = mediaType === 'application/x-www-form-urlencoded' ? 56 * 1024 : 1024 * 1024;
+	const bytes = await bodyBytes(request, maximum);
 	try {
-		return JSON.parse(new TextDecoder().decode(bytes));
+		const source = new TextDecoder().decode(bytes);
+		if (jsonMediaTypes.has(mediaType)) {
+			if (source.length === 0) return {};
+			const first = source.trimStart()[0];
+			if (first !== '{' && first !== '[') throw new SyntaxError('Invalid JSON body.');
+			return JSON.parse(source);
+		}
+		const form = new URLSearchParams(source), result: Record<string, unknown> = Object.create(null);
+		let parameters = 0;
+		for (const [key, value] of form) {
+			if (parameters++ >= 1000) break;
+			const segments = formSegments(key);
+			if (segments) assignFormValue(result, segments, value);
+		}
+		return compactFormArrays(result);
 	} finally {
 		bytes.fill(0);
 	}
@@ -216,19 +323,20 @@ async function list(
 	if (kind === 'items') {
 		const filter: ItemFilter = {
 			search: query.get('search') ?? undefined,
-			folderId: queryValue(query, 'folderid') ?? undefined,
-			organizationId: queryValue(query, 'organizationid') ?? undefined,
-			collectionId: queryValue(query, 'collectionid') ?? undefined,
+			folderId: listFilterValue(query, 'folderid') ?? undefined,
+			organizationId: listFilterValue(query, 'organizationid') ?? undefined,
+			collectionId: listFilterValue(query, 'collectionid') ?? undefined,
 			trash: boolean(query, 'trash'),
 			archived: boolean(query, 'archived'),
 		};
-		const items = query.get('url') ? await vault.listItemsForUrl(query.get('url')!, filter) : vault.listItems(filter);
+		const url = query.get('url');
+		const items = url?.trim() ? await vault.listItemsForUrl(url, filter) : await vault.listItems(filter);
 		return items.map(value => apiObject('item', value));
 	}
 	const values = kind === 'folders'
 		? vault.listFolders()
 		: kind === 'collections'
-		? vault.listCollections()
+		? await vault.listCollections()
 		: kind === 'organizations'
 		? vault.listOrganizations()
 		: kind === 'org-collections'
@@ -277,9 +385,9 @@ function searchSends(values: JsonObject[], rawQuery: string): JsonObject[] {
 		const file = object(send.file ?? {}), content = object(send.text ?? {});
 		if (
 			(query.length >= 8 && (
-				(typeof send.id === 'string' && send.id.startsWith(query))
+				(typeof send.id === 'string' && send.id.toLowerCase().startsWith(query))
 				|| (typeof send.accessId === 'string' && send.accessId.toLocaleLowerCase().startsWith(query))
-				|| (typeof file.id === 'string' && file.id.startsWith(query))
+				|| (typeof file.id === 'string' && file.id.toLowerCase().startsWith(query))
 			))
 			|| (typeof send.notes === 'string' && send.notes.toLowerCase().includes(query))
 			|| (typeof content.text === 'string' && content.text.toLowerCase().includes(query))
@@ -295,9 +403,9 @@ async function get(
 	query: URLSearchParams,
 	originalId = id,
 ): Promise<unknown> {
-	if (kind === 'template') return templateResult(template(id));
+	if (kind === 'template') return templateResult(await templateForServer(id, () => vault.client));
 	if (kind === 'folder') return apiObject(kind, vault.findFolder(id));
-	if (kind === 'collection') return apiObject(kind, vault.findCollection(id));
+	if (kind === 'collection') return apiObject(kind, await vault.findCollection(id));
 	if (kind === 'organization') return apiObject(kind, vault.findOrganization(id));
 	if (kind === 'org-collection') {
 		if (!isGuid(id)) throw new Error(`\`${id}\` is not a GUID.`);
@@ -305,7 +413,7 @@ async function get(
 	}
 	if (kind === 'send') {
 		if (!isGuid(originalId)) throw new Error(`\`${originalId}\` is not a GUID.`);
-		return { ...vault.sends.get(id), object: 'send' };
+		return apiObject('send', vault.sends.get(id));
 	}
 	if (kind === 'fingerprint') return stringResult(await vault.fingerprint(id));
 	if (kind === 'attachment') {
@@ -323,7 +431,7 @@ async function get(
 			file.contents.fill(0);
 		}
 	}
-	if (kind === 'item') return apiObject('item', vault.findItem(id));
+	if (kind === 'item') return apiObject('item', await vault.findItem(id));
 	if (!['password', 'username', 'uri', 'notes', 'totp', 'exposed'].includes(kind)) {
 		throw new Error('Unknown object.');
 	}
@@ -336,17 +444,24 @@ async function get(
 			: item.type === 1
 			? item.login?.[field]
 			: undefined;
-	const item = vault.findItem(
+	const item = await vault.findItem(
 		id,
 		item => {
 			const found = value(item);
-			return !(['password', 'totp', 'exposed'].includes(kind) && item.viewPassword === false)
-				&& typeof found === 'string' && (kind === 'uri' ? found !== '' : found.trim().length > 0);
+			return typeof found === 'string' && (kind === 'uri' ? found !== '' : found.trim().length > 0);
 		},
 	);
+	if (item.viewPassword === false && ['password', 'totp', 'exposed'].includes(kind)) {
+		throw new Error(kind === 'totp' ? 'No TOTP available for this login.' : 'No password available for this login.');
+	}
 	const raw = text(value(item));
+	if (kind === 'totp') {
+		const code = totp(raw);
+		if (!vault.canAccessTotp(text(item.id))) throw new Error('Premium status is required to use this feature.');
+		return stringResult(code);
+	}
 	return stringResult(
-		kind === 'totp' ? totp(raw) : kind === 'exposed' ? String(await new PasswordExposureClient().count(raw)) : raw,
+		kind === 'exposed' ? String(await new PasswordExposureClient().count(raw)) : raw,
 	);
 }
 /** A bw-compatible local API handler. It never reads passwords from host files or environment variables. */
@@ -356,7 +471,9 @@ export function createLocalApiHandler(
 ): (request: Request) => Promise<Response> {
 	let tail = Promise.resolve();
 	return async request => {
-		if (!localApiRequestAllowed(request, options)) return failure('Forbidden.', 403);
+		if (!localApiRequestAllowed(request, options)) {
+			return new Response('Forbidden', { status: 403, headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
+		}
 		// Lock, unlock and mutations share the host application's session. Keep their ordering deterministic.
 		const previous = tail;
 		let release!: () => void;
@@ -408,8 +525,9 @@ export function createLocalApiHandler(
 				await backend.lock();
 				result = messageResult('Your vault is locked.');
 			} else if (route.length === 1 && method === 'POST' && route[0] === 'unlock') {
-				const body = object(await jsonBody(request));
-				const session = await backend.unlock(text(body.password));
+				const body = object(await parsedBody(request));
+				const password = typeof body.password === 'string' && body.password.length ? body.password : null;
+				const session = await backend.unlock(password);
 				result = {
 					...messageResult('Your vault is now unlocked!', unlockGuidance(session)),
 					raw: session,
@@ -462,11 +580,15 @@ export function createLocalApiHandler(
 			} else if (
 				route[0] === 'object' && ((route.length === 2 && method === 'POST') || (route.length === 3 && method === 'PUT'))
 			) {
-				const body = await jsonBody(request), kind = parts[1]!.toLowerCase(), id = parts[2]?.toLowerCase();
+				const body = await parsedBody(request), kind = parts[1]!.toLowerCase(), id = parts[2]?.toLowerCase();
 				result = await backend.run<unknown>(true, vault => {
 					if (kind === 'item-collections' && id) return vault.editItemCollections(id, stringArray(body));
 					const data = object(body);
-					if (kind === 'item') return id ? vault.editItem(id, data as VaultItem) : vault.createItem(data as VaultItem);
+					if (kind === 'item') {
+						return id
+							? vault.editItem(id, data as EditVaultItem)
+							: vault.createItem(data as VaultItem);
+					}
 					if (kind === 'folder') {
 						return id
 							? vault.editFolder(id, data as VaultFolder)
@@ -513,7 +635,7 @@ export function createLocalApiHandler(
 			} else if (route[0] === 'move' && route.length === 3 && method === 'POST') {
 				// The pinned Serve route passes Koa's parsed body to ShareCommand as-is;
 				// collection values are checked during access lookup, not prevalidated here.
-				const collections = await jsonBody(request) as string[];
+				const collections = await parsedBody(request) as string[];
 				result = await backend.run(true, vault => vault.moveItem(parts[1]!, parts[2]!, collections));
 				result = apiObject('item', object(result));
 			} else if (['restore', 'archive', 'confirm'].includes(route[0]!) && route.length === 3 && method === 'POST') {

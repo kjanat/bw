@@ -23,7 +23,7 @@ test('account revisions accept integer timestamps and deletion signals, preservi
 	}
 });
 test('cipher-type writes use and cache the Vaultwarden release version', async () => {
-	for (const [version, supported] of [['1.36.0', false], ['1.37.4', true]] as const) {
+	for (const [version, supported] of [['1.36.0', false], ['1.37.4-rc', false], ['1.37.4', true]] as const) {
 		let requests = 0;
 		const api = new VaultwardenClient('https://vault.example/base', {
 			services: { api: 'https://api.example/prefix' },
@@ -34,12 +34,44 @@ test('cipher-type writes use and cache the Vaultwarden release version', async (
 				return json(version);
 			}),
 		});
-		if (supported) await api.assertCipherTypeSupported(6);
-		else {await expect(api.assertCipherTypeSupported(6)).rejects.toThrow(
-				'bank account requires Vaultwarden 1.37.4 or newer; this server reports 1.36.0',
-			);}
-		if (supported) await api.assertCipherTypeSupported(8);
+		for (const [type, name] of [[6, 'bank account'], [7, "driver's license"], [8, 'passport']] as const) {
+			if (supported) await api.assertCipherTypeSupported(type);
+			else {
+				await expect(api.assertCipherTypeSupported(type)).rejects.toThrow(
+					`${name} requires Vaultwarden 1.37.4 or newer; this server reports ${version}`,
+				);
+			}
+		}
 		expect(requests).toBe(2);
+	}
+});
+test('server capability discovery retries failed config and version requests on the same client', async () => {
+	let configRequests = 0, versionRequests = 0;
+	const api = new VaultwardenClient('https://vault.example', {
+		fetch: transport(url => {
+			if (url.endsWith('/config')) {
+				configRequests++;
+				return configRequests === 1 ? json({}, 503) : json({ server: { name: 'Vaultwarden' } });
+			}
+			if (url.endsWith('/version')) {
+				versionRequests++;
+				return versionRequests === 1 ? json({}, 503) : json('1.37.4');
+			}
+			throw new Error(`Unexpected request: ${url}`);
+		}),
+	});
+	await expect(api.assertCipherTypeSupported(6)).rejects.toThrow('HTTP 503');
+	await expect(api.assertCipherTypeSupported(6)).rejects.toThrow('HTTP 503');
+	await api.assertCipherTypeSupported(6);
+	expect(configRequests).toBe(2);
+	expect(versionRequests).toBe(2);
+});
+test('server version discovery rejects malformed SemVer before capability gating', async () => {
+	for (const version of ['1.37.4-', '1.37.4+build..7', '01.37.4']) {
+		const api = new VaultwardenClient('https://vault.example', {
+			fetch: transport(url => url.endsWith('/config') ? json({ server: { name: 'Vaultwarden' } }) : json(version)),
+		});
+		await expect(api.assertCipherTypeSupported(6)).rejects.toThrow('Vaultwarden returned an invalid server version.');
 	}
 });
 test('cipher-type compatibility checks do not apply Vaultwarden release limits to Bitwarden', async () => {

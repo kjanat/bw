@@ -93,7 +93,7 @@ export async function loginWithPassword(
 			const answer = await options.onTwoFactor({
 				providers,
 				duoAuthUrl: duoAuthUrl(error),
-				...(webAuthn ? { webAuthnOptions: webAuthn, webAuthnOrigin: new URL(client.server).origin } : {}),
+				...(webAuthn ? { webAuthnOptions: webAuthn, webAuthnOrigin: await client.webAuthnOrigin() } : {}),
 				requestEmail: async () => {
 					if (!providers.includes(1)) {
 						throw new Error('Email two-factor authentication is unavailable.', { cause: error });

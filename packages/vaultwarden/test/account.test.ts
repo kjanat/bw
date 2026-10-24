@@ -34,6 +34,9 @@ test('password challenge resumes one grant, requests email explicitly, and never
 		fetch: transport((url, init) => {
 			requests.push(url);
 			if (url.endsWith('/prelogin')) return Response.json({ kdf: 0, kdfIterations: 10000 });
+			if (url.endsWith('/api/config')) {
+				return Response.json({ environment: { vault: 'https://web.example.net/vault' } });
+			}
 			if (url.endsWith('/send-email-login')) {
 				const body = JSON.parse(String(init.body));
 				expect(body.email).toBe(email);
@@ -74,7 +77,7 @@ test('password challenge resumes one grant, requests email explicitly, and never
 				rpId: 'example.com',
 				allowCredentials: [{ id: 'Y3JlZGVudGlhbA', type: 'public-key' }],
 			});
-			expect(challenge.webAuthnOrigin).toBe('https://example.com');
+			expect(challenge.webAuthnOrigin).toBe('https://web.example.net');
 			expect(Object.keys(challenge).sort()).toEqual([
 				'duoAuthUrl',
 				'providers',
@@ -91,6 +94,33 @@ test('password challenge resumes one grant, requests email explicitly, and never
 	expect(challenges).toBe(1);
 	expect(grants).toBe(2);
 	expect(requests.filter(url => url.endsWith('/send-email-login'))).toHaveLength(1);
+});
+test('password login submits the Vaultwarden recovery-code provider and token', async () => {
+	const email = 'recovery@example.com', password = 'synthetic-password';
+	const master = await deriveMasterKey(password, email, { type: 0, iterations: 10000 });
+	const stretched = stretchKey(master), userKey = Buffer.alloc(64, 11);
+	const wrapped = encrypt(userKey, stretched);
+	master.fill(0);
+	stretched.fill(0);
+	let grants = 0;
+	const api = new VaultwardenClient('https://vault.example.com', {
+		fetch: transport((_url, init) => {
+			if (String(_url).endsWith('/prelogin')) return Response.json({ kdf: 0, kdfIterations: 10000 });
+			const body = new URLSearchParams(String(init.body));
+			if (++grants === 1) return Response.json({ TwoFactorProviders: [8] }, { status: 400 });
+			expect(body.get('twoFactorProvider')).toBe('8');
+			expect(body.get('twoFactorToken')).toBe('recovery-token');
+			return Response.json({ ...base, refresh_token: 'refresh-token', Key: wrapped });
+		}),
+	});
+	const account = await loginWithPassword(api, email, password, undefined, {
+		onTwoFactor: async challenge => {
+			expect(challenge.providers).toEqual([8]);
+			return { provider: 8, token: 'recovery-token' };
+		},
+	});
+	expect(account.email).toBe(email);
+	expect(grants).toBe(2);
 });
 test('challenge cancellation, invalid provider and rejected retry do not loop or send unsolicited email', async () => {
 	for (const scenario of ['cancel', 'invalid', 'retry', 'no-callback', 'email-unavailable']) {

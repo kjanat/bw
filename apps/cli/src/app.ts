@@ -4,7 +4,14 @@ import { reportCommand } from '#report-commands';
 import { deviceApprovalCommand } from '#device-approval-command';
 import { CLI_PACKAGE, versionCommands } from '#version-commands';
 import { authorizeSso } from '#sso-login';
-import { outputIsResponse, outputPolicyPlugin, outputResponseError, outputCommand as command } from '#output';
+import {
+	getObjectResponse,
+	listObjectResponse,
+	outputIsResponse,
+	outputPolicyPlugin,
+	outputResponseError,
+	outputCommand as command,
+} from '#output';
 import { serveCommand } from '#serve-command';
 import { sendCommands, receiveCommand } from '#send-commands';
 import { arg, cli, flag, plugin } from '@kjanat/dreamcli';
@@ -28,11 +35,12 @@ import {
 	totp,
 	object,
 	accountUserId,
+	templateForServer,
 	type JsonObject,
 } from '@kjanat/vaultwarden';
 import { writeAttachment, writeStdout } from '#files';
 import { toolCommands } from '#tool-commands';
-import { vaultCommands, template } from '#vault-commands';
+import { vaultCommands } from '#vault-commands';
 import { dataDirectory, openSession, sealSession, withStore, type State } from '#store';
 
 const sessionFlag = () => flag.string().sensitive().env('VW_SESSION').describe('Unlock session (or VW_SESSION)');
@@ -58,6 +66,7 @@ function accountAccessPlugin(directory: string) {
 		'receive',
 		'root',
 		'sdk-version',
+		'serve',
 		'status',
 		'update',
 	]);
@@ -208,7 +217,7 @@ export function createApp(directory = dataDirectory()) {
 		.flag(
 			'method',
 			flag.number({ int: true, min: 0 }).describe(
-				'Two-factor provider: 0=TOTP, 1=email, 2=Duo, 3=YubiKey, 7=WebAuthn',
+				'Two-factor provider: 0=TOTP, 1=email, 2=Duo, 3=YubiKey, 7=WebAuthn, 8=recovery code',
 			),
 		)
 		.flag('code', flag.string().sensitive().env('VW_2FA_TOKEN'))
@@ -357,10 +366,16 @@ export function createApp(directory = dataDirectory()) {
 			withStore(directory, async (state, save) => {
 				if (!state.account) throw new Error('Log in first.');
 				if (flags.last) {
-					out.log(state.lastSync ?? '');
+					if (state.lastSync != null) out.log(state.lastSync);
+					else if (outputIsResponse()) out.log('');
 					return;
 				}
-				await sync(state, save, flags.force);
+				try {
+					await sync(state, save, flags.force);
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					throw new Error(`Syncing failed: ${message}`, { cause: error });
+				}
 				out.log('Syncing complete.');
 			})
 		);
@@ -444,18 +459,19 @@ export function createApp(directory = dataDirectory()) {
 		.flag('folderid', flag.string()).flag('organizationid', flag.string()).flag('collectionid', flag.string())
 		.flag('trash', flag.boolean()).flag('archived', flag.boolean())
 		.action(async ({ args, flags, out }) => {
+			const objectType = args.object.toLowerCase();
 			if (
-				!['items', 'folders', 'collections', 'organizations', 'org-collections', 'org-members'].includes(args.object)
+				!['items', 'folders', 'collections', 'organizations', 'org-collections', 'org-members'].includes(objectType)
 			) {
 				throw new Error('Unknown object.');
 			}
-			if (args.object === 'org-collections' || args.object === 'org-members') {
+			if (objectType === 'org-collections' || objectType === 'org-members') {
 				if (!flags.organizationid) throw new Error('`organizationid` option is required.');
 				if (!isGuid(flags.organizationid)) throw new Error(`\`${flags.organizationid}\` is not a GUID.`);
 			}
 			out.json(
 				await runVault(flags.session, false, async vault => {
-					if (args.object === 'items') {
+					if (objectType === 'items') {
 						const filter = {
 							search: flags.search,
 							folderId: flags.folderid,
@@ -466,25 +482,25 @@ export function createApp(directory = dataDirectory()) {
 						};
 						const items = flags.url?.trim()
 							? await vault.listItemsForUrl(flags.url, filter)
-							: vault.listItems(filter);
+							: await vault.listItems(filter);
 						return items.map(item => vaultItemResponse(item));
 					}
-					const values = args.object === 'folders'
+					const values = objectType === 'folders'
 						? vault.listFolders()
-						: args.object === 'collections'
-						? vault.listCollections()
-						: args.object === 'org-collections'
+						: objectType === 'collections'
+						? await vault.listCollections()
+						: objectType === 'org-collections'
 						? await vault.listOrganizationCollections(flags.organizationid!)
-						: args.object === 'org-members'
+						: objectType === 'org-members'
 						? await vault.listOrganizationMembers(flags.organizationid!)
 						: vault.listOrganizations();
 					return values.filter(value =>
-						(args.object === 'org-members' || !flags.search?.trim()
+						(objectType === 'org-members' || !flags.search?.trim()
 							|| (typeof value.name === 'string' && value.name.toLowerCase().includes(flags.search!.toLowerCase())))
-						&& (!flags.organizationid || args.object !== 'collections'
+						&& (!flags.organizationid || objectType !== 'collections'
 							|| value.organizationId === flags.organizationid)
-					);
-				}, args.object === 'org-collections' || args.object === 'org-members'),
+					).map(value => listObjectResponse(objectType, value));
+				}, objectType === 'org-collections' || objectType === 'org-members'),
 			);
 		});
 	const get = command('get').description('Read vault objects, secret fields, or object templates')
@@ -494,6 +510,8 @@ export function createApp(directory = dataDirectory()) {
 			flag.string(),
 		).flag('output', flag.path()).flag('hibp-url', flag.string())
 		.action(async ({ args, flags, out }) => {
+			const objectType = args.object.toLowerCase();
+			const id = args.id.toLowerCase();
 			if (
 				![
 					'item',
@@ -511,16 +529,16 @@ export function createApp(directory = dataDirectory()) {
 					'org-collection',
 					'organization',
 					'template',
-				].includes(args.object)
+				].includes(objectType)
 			) throw new Error('Unknown object.');
-			if (args.object === 'attachment') {
+			if (objectType === 'attachment') {
 				if (!flags.itemid) throw new Error('--itemid <itemid> required.');
 				let attachment: { fileName: string; contents: Buffer };
 				try {
 					attachment = await runVault(
 						flags.session,
 						false,
-						vault => vault.getAttachment(flags.itemid!, args.id),
+						vault => vault.getAttachment(flags.itemid!, id),
 						true,
 					);
 				} catch (error) {
@@ -536,54 +554,55 @@ export function createApp(directory = dataDirectory()) {
 				return;
 			}
 
-			if (args.object === 'template') {
-				out.json(template(args.id));
+			if (objectType === 'template') {
+				const result = await withStore(directory, async state => templateForServer(id, () => client(state)));
+				out.json(result);
 				return;
 			}
-			if (args.object === 'org-collection') {
+			if (objectType === 'org-collection') {
 				if (!flags.organizationid) throw new Error('`organizationid` option is required.');
-				if (!isGuid(args.id)) throw new Error(`\`${args.id}\` is not a GUID.`);
+				if (!isGuid(id)) throw new Error(`\`${id}\` is not a GUID.`);
 				if (!isGuid(flags.organizationid)) throw new Error(`\`${flags.organizationid}\` is not a GUID.`);
 			}
 			let result: unknown;
 			try {
 				result = await runVault(flags.session, false, async vault => {
-					if (args.object === 'send') return vault.sends.get(args.id);
-					if (args.object === 'fingerprint') return vault.fingerprint(args.id);
-					if (args.object === 'org-collection') return vault.getOrganizationCollection(flags.organizationid!, args.id);
-					if (args.object === 'folder') return vault.findFolder(args.id);
-					if (args.object === 'collection') return vault.findCollection(args.id);
-					if (args.object === 'organization') return vault.findOrganization(args.id);
+					if (objectType === 'send') return vault.sends.get(id);
+					if (objectType === 'fingerprint') return vault.fingerprint(id);
+					if (objectType === 'org-collection') return vault.getOrganizationCollection(flags.organizationid!, id);
+					if (objectType === 'folder') return vault.findFolder(id);
+					if (objectType === 'collection') return vault.findCollection(id);
+					if (objectType === 'organization') return vault.findOrganization(id);
 					const hasText = (value: unknown) => typeof value === 'string' && value.trim().length > 0;
-					const item = vault.findItem(args.id, item => {
-						if (args.object === 'item') return true;
-						if (args.object === 'notes') return hasText(item.notes);
+					const item = await vault.findItem(id, item => {
+						if (objectType === 'item') return true;
+						if (objectType === 'notes') return hasText(item.notes);
 						if (item.type !== 1 || !item.login) return false;
-						if (args.object === 'uri') {
+						if (objectType === 'uri') {
 							return Array.isArray(item.login.uris) && item.login.uris.length > 0
 								&& object(item.login.uris[0]).uri !== '';
 						}
-						return hasText(item.login[args.object === 'exposed' ? 'password' : args.object]);
+						return hasText(item.login[objectType === 'exposed' ? 'password' : objectType]);
 					});
-					if (args.object === 'item') return vaultItemResponse(item);
+					if (objectType === 'item') return vaultItemResponse(item);
 					const login = object(item.login ?? {});
-					if (item.viewPassword === false && ['password', 'totp', 'exposed'].includes(args.object)) {
+					if (item.viewPassword === false && ['password', 'totp', 'exposed'].includes(objectType)) {
 						throw new Error(
-							args.object === 'totp'
+							objectType === 'totp'
 								? 'No TOTP available for this login.'
 								: 'No password available for this login.',
 						);
 					}
-					const value = args.object === 'notes'
+					const value = objectType === 'notes'
 						? item.notes
-						: args.object === 'uri'
+						: objectType === 'uri'
 						? (Array.isArray(login.uris) ? object(login.uris[0] ?? {}).uri : undefined)
-						: login[args.object === 'exposed' ? 'password' : args.object];
+						: login[objectType === 'exposed' ? 'password' : objectType];
 					if (typeof value !== 'string') throw new Error('Requested field is absent.');
-					if (args.object === 'exposed') {
+					if (objectType === 'exposed') {
 						return String(await new PasswordExposureClient({ baseUrl: flags['hibp-url'] }).count(value));
 					}
-					if (args.object === 'totp') {
+					if (objectType === 'totp') {
 						const code = totp(value);
 						if (!vault.canAccessTotp(String(item.id))) {
 							throw new Error('Premium status is required to use this feature.');
@@ -591,14 +610,14 @@ export function createApp(directory = dataDirectory()) {
 						return code;
 					}
 					return value;
-				}, args.object === 'org-collection' || (args.object === 'fingerprint' && args.id !== 'me'));
+				}, objectType === 'org-collection' || (objectType === 'fingerprint' && id !== 'me'));
 			} catch (error) {
 				if (error instanceof MultipleResultsError && outputResponseError(error.message, error.ids)) throw error;
 				if (error instanceof VaultObjectNotFoundError) throw new Error('Not found.');
 				throw error;
 			}
 			if (typeof result === 'string') await writeStdout(result);
-			else out.json(result);
+			else out.json(getObjectResponse(objectType, result));
 		});
 	const lock = command('lock')
 		.description('Invalidate the current unlock session')

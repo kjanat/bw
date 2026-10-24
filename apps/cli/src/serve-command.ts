@@ -26,8 +26,7 @@ export function serveCommand(
 		.action(async ({ flags, out }) => {
 			let session = flags.session;
 			await withStore(directory, async state => {
-				if (!state.account) throw new Error('Log in before starting the local API.');
-				if (session) openSession(state, session).fill(0);
+				if (state.account && session) openSession(state, session).fill(0);
 			});
 			let port = effectiveServePort(flags.port);
 			const hostname = flags.hostname;
@@ -65,7 +64,12 @@ export function serveCommand(
 					}),
 				unlock: password =>
 					withStore(directory, async (state, save) => {
-						if (!state.account) throw new Error('Log in first.');
+						if (!state.account) throw new Error('No active account found');
+						if (password === null) {
+							throw new Error(
+								'Master password is required. Try again in interactive mode or provide a password file or environment variable.',
+							);
+						}
 						const key = await unlockAccount(state.account, password);
 						try {
 							const token = sealSession(state, key);

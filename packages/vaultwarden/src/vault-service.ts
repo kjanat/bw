@@ -1,9 +1,19 @@
 import { ApiError, field, type JsonObject, object, text, VaultwardenClient } from '#client';
-import { decrypt, decryptAttachment, decryptSharedKey, encrypt, encryptAttachment, encryptSharedKey } from '#crypto';
+import { vaultwardenCapabilities, vaultwardenVersionAtLeast } from '#capabilities';
+import {
+	decrypt,
+	decryptAttachment,
+	decryptSharedKey,
+	encrypt,
+	encryptAttachment,
+	encryptedAttachmentSize,
+	encryptSharedKey,
+} from '#crypto';
 import { fingerprintWords } from '#fingerprint';
 import { encryptItem } from '#item-codec';
-import type { ItemFilter, VaultFolder, VaultItem } from '#models';
+import type { EditVaultItem, ItemFilter, VaultFolder, VaultItem } from '#models';
 import { passwordHealth, type PasswordHealthOptions, type PasswordHealthRow } from '#reports';
+import { applicableOrganizationPolicies } from '#policy';
 import { findNamedObject, MultipleResultsError, searchItems, VaultObjectNotFoundError } from '#search';
 import { SendService } from '#sends';
 import {
@@ -18,13 +28,30 @@ import { filterItemsByUrl, type UriMatchOptions } from '#uri-match';
 import { decryptOwnedItem } from '#vault';
 import { randomBytes } from 'node:crypto';
 
-const idPath = (id: string) => encodeURIComponent(text(id));
+const normalizedId = (id: string) => text(id).toLowerCase();
+const idPath = (id: string) => encodeURIComponent(normalizedId(id));
+function sameId(value: unknown, id: string): boolean {
+	return typeof value === 'string' && normalizedId(value) === normalizedId(id);
+}
+function sameOptionalId(value: unknown, id: unknown): boolean {
+	return value == null || id == null ? value == null && id == null : typeof id === 'string' && sameId(value, id);
+}
 function array(value: unknown): JsonObject[] {
 	if (!Array.isArray(value)) throw new Error('Missing vault objects. Sync first.');
 	return value.map(object);
 }
 function matchesId(value: unknown, filter: string): boolean {
 	return filter === 'null' ? value == null : filter === 'notnull' ? value != null : value === filter;
+}
+function policyData(value: unknown): JsonObject {
+	if (typeof value === 'string') {
+		try {
+			return object(JSON.parse(value));
+		} catch {
+			return {};
+		}
+	}
+	return object(value);
 }
 /** Operates on an encrypted snapshot. No storage or terminal dependencies. Caller owns key lifetime. */
 export class VaultService {
@@ -68,18 +95,18 @@ export class VaultService {
 				groups.push(value.domains.filter((part): part is string => typeof part === 'string'));
 			}
 		}
-		const policy = array(this.snapshot.policies ?? []).find(value => value.type === 16 && value.enabled);
-		const policyMatch = policy ? object(policy.data ?? {}).uriMatchDetection : undefined;
+		const policy = applicableOrganizationPolicies(this.snapshot, 16)[0]?.policy;
+		const policyMatch = policy ? policyData(policy.data).uriMatchDetection : undefined;
 		const defaultMatch = typeof policyMatch === 'number' && policyMatch >= 0 && policyMatch <= 5
 			? policyMatch as UriMatchOptions['defaultMatch']
 			: options.defaultMatch;
-		return filterItemsByUrl(this.listItems(filter), url, {
+		return filterItemsByUrl(await this.listItems(filter), url, {
 			...options,
 			defaultMatch,
 			equivalentDomains: options.equivalentDomains ?? groups,
 		});
 	}
-	findItem(query: string, predicate: (item: VaultItem) => boolean = () => true): VaultItem {
+	async findItem(query: string, predicate: (item: VaultItem) => boolean = () => true): Promise<VaultItem> {
 		if (!query.trim()) throw new VaultObjectNotFoundError('Item not found.');
 		const byGuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(query);
 		const exact = array(this.snapshot.ciphers).find(item =>
@@ -87,10 +114,10 @@ export class VaultService {
 		);
 		const activeCiphers = array(this.snapshot.ciphers).filter(item => !item.deletedDate && !item.archivedDate);
 		const candidates = exact
-			? [this.getItem(text(exact.id))]
+			? [await this.getItem(text(exact.id))]
 			: byGuid
 			? []
-			: searchItems(activeCiphers.map(item => this.getItem(text(item.id))), query);
+			: searchItems(await Promise.all(activeCiphers.map(item => this.getItem(text(item.id)))), query);
 		if (candidates.length === 1 && this.isRestrictedItem(candidates[0]!)) {
 			throw new Error('Access to this item type is restricted by organizational policy.');
 		}
@@ -105,12 +132,13 @@ export class VaultService {
 		}
 		return matches[0]!;
 	}
-	passwordHealth(options: PasswordHealthOptions = {}): Promise<PasswordHealthRow[]> {
+	async passwordHealth(options: PasswordHealthOptions = {}): Promise<PasswordHealthRow[]> {
 		// bw's report reads all decrypted ciphers directly. Ordinary listing applies
 		// visibility and premium archive filters that must not affect report totals.
-		const items = array(field(this.snapshot, 'ciphers')).map(item =>
-			decryptOwnedItem(item, this.ownerKey(item)) as VaultItem
-		);
+		const items: VaultItem[] = [];
+		for (const item of array(field(this.snapshot, 'ciphers'))) {
+			items.push(decryptOwnedItem(item, await this.ownerKey(item)) as VaultItem);
+		}
 		return passwordHealth(items, options);
 	}
 	get sends(): SendService {
@@ -138,23 +166,42 @@ export class VaultService {
 		return new VaultService(this.client, this.accessToken, snapshot, this.userKey);
 	}
 	private readonly organizationKeys = new Map<string, Buffer>();
+	private readonly pendingOrganizationKeys = new Map<string, Promise<Buffer>>();
+	private keyGeneration = 0;
 	dispose(): void {
+		this.keyGeneration++;
 		for (const key of this.organizationKeys.values()) key.fill(0);
 		this.organizationKeys.clear();
+		this.pendingOrganizationKeys.clear();
 	}
-	private ownerKey(item: JsonObject): Uint8Array {
+	private async ownerKey(item: JsonObject): Promise<Uint8Array> {
 		if (!item.organizationId) return this.userKey;
-		const id = text(item.organizationId);
+		const id = normalizedId(text(item.organizationId));
 		const cached = this.organizationKeys.get(id);
 		if (cached) return cached;
+		const pending = this.pendingOrganizationKeys.get(id);
+		if (pending) return pending;
+		const request = this.decryptOrganizationKey(id, this.keyGeneration);
+		this.pendingOrganizationKeys.set(id, request);
+		try {
+			return await request;
+		} finally {
+			if (this.pendingOrganizationKeys.get(id) === request) this.pendingOrganizationKeys.delete(id);
+		}
+	}
+	private async decryptOrganizationKey(id: string, generation: number): Promise<Buffer> {
 		const profile = object(field(this.snapshot, 'profile'));
-		const organization = array(profile.organizations ?? []).find(org => org.id === id);
+		const organization = array(profile.organizations ?? []).find(org => sameId(org.id, id));
 		if (!organization) throw new Error('Organization key is not available. Sync first.');
 		const pair = profile.accountKeys ? object(object(profile.accountKeys).publicKeyEncryptionKeyPair ?? {}) : {};
 		const wrappedPrivateKey = text(profile.privateKey ?? pair.wrappedPrivateKey);
 		const privateKey = decrypt(wrappedPrivateKey, this.userKey);
 		try {
-			const key = decryptSharedKey(text(organization.key), privateKey);
+			const key = await decryptSharedKey(text(organization.key), privateKey);
+			if (generation !== this.keyGeneration) {
+				key.fill(0);
+				throw new Error('Organization key request was invalidated.');
+			}
 			if (key.length !== 64) {
 				key.fill(0);
 				throw new Error('Unsupported organization key length.');
@@ -174,27 +221,37 @@ export class VaultService {
 	findOrganization(query: string): JsonObject {
 		return findNamedObject(this.listOrganizations(), query);
 	}
-	findCollection(query: string): JsonObject {
-		return findNamedObject(this.listCollections(), query);
+	async findCollection(query: string): Promise<JsonObject> {
+		return findNamedObject(await this.listCollections(), query);
 	}
-	listCollections(): JsonObject[] {
-		return array(field(this.snapshot, 'collections') ?? []).map(collection => ({
-			...collection,
-			name: decrypt(text(collection.name), this.ownerKey(collection)).toString('utf8'),
-		}));
+	async listCollections(): Promise<JsonObject[]> {
+		const collections: JsonObject[] = [];
+		for (const collection of array(field(this.snapshot, 'collections') ?? [])) {
+			collections.push(await this.decodeCollection(collection));
+		}
+		return collections;
 	}
 	async listOrganizationCollections(organizationId: string): Promise<JsonObject[]> {
+		const organization = this.cachedOrganization(organizationId);
 		const response = await this.client.api(
 			this.accessToken,
 			'GET',
-			`/organizations/${idPath(organizationId)}/collections`,
+			organization.canViewAllCollections === true
+				? `/organizations/${idPath(organizationId)}/collections`
+				: '/collections',
 		);
-		return array(response.data).map(collection => this.decodeCollection({ ...collection, organizationId }));
+		const collections: JsonObject[] = [];
+		for (const collection of array(response.data).filter(value => sameId(value.organizationId, organizationId))) {
+			collections.push(await this.decodeCollection(collection));
+		}
+		return collections;
 	}
-	private decodeCollection(collection: JsonObject): JsonObject {
-		return { ...collection, name: decrypt(text(collection.name), this.ownerKey(collection)).toString('utf8') };
+	private async decodeCollection(collection: JsonObject): Promise<JsonObject> {
+		return { ...collection, name: decrypt(text(collection.name), await this.ownerKey(collection)).toString('utf8') };
 	}
 	async getOrganizationCollection(organizationId: string, id: string): Promise<JsonObject> {
+		this.cachedOrganization(organizationId);
+		await this.ownerKey({ organizationId });
 		const response = await this.client.api(
 			this.accessToken,
 			'GET',
@@ -210,14 +267,14 @@ export class VaultService {
 	}
 	private async saveCollection(organizationId: string, id: string | undefined, input: JsonObject): Promise<JsonObject> {
 		if (typeof input.name !== 'string' || !input.name.trim()) throw new Error('Collection name is required.');
-		if (input.organizationId && input.organizationId !== organizationId) {
+		if (input.organizationId && !sameId(input.organizationId, organizationId)) {
 			throw new Error('Collection organization does not match.');
 		}
 		const current = id && (input.groups == null || input.users == null)
-			? await this.getOrganizationCollection(organizationId, id)
+			? await this.getOrganizationCollection(normalizedId(organizationId), id)
 			: undefined;
 		const body = {
-			name: encrypt(Buffer.from(input.name), this.ownerKey({ organizationId })),
+			name: encrypt(Buffer.from(input.name), await this.ownerKey({ organizationId })),
 			groups: input.groups ?? current?.groups ?? [],
 			users: input.users ?? current?.users ?? (id ? [] : this.defaultCollectionUsers(organizationId)),
 			externalId: input.externalId ?? undefined,
@@ -235,7 +292,7 @@ export class VaultService {
 	}
 	private defaultCollectionUsers(organizationId: string): JsonObject[] {
 		const profile = object(field(this.snapshot, 'profile'));
-		const organization = array(profile.organizations ?? []).find(value => value.id === organizationId);
+		const organization = array(profile.organizations ?? []).find(value => sameId(value.id, organizationId));
 		if (!organization || typeof organization.organizationUserId !== 'string' || !organization.organizationUserId) {
 			throw new Error('Organization membership ID is not available. Sync first.');
 		}
@@ -249,63 +306,204 @@ export class VaultService {
 		);
 	}
 	async listOrganizationMembers(organizationId: string): Promise<JsonObject[]> {
+		this.cachedOrganization(organizationId);
 		return array(
 			(await this.client.api(this.accessToken, 'GET', `/organizations/${idPath(organizationId)}/users`)).data,
-		);
+		).map(user => ({
+			object: 'org-member',
+			id: user.id,
+			email: user.email,
+			name: user.name,
+			status: user.status,
+			type: user.type,
+			twoFactorEnabled: user.twoFactorEnabled,
+		}));
+	}
+	private cachedOrganization(id: string): JsonObject {
+		const profile = object(this.snapshot.profile);
+		const organization = array(profile.organizations ?? []).find(value => sameId(value.id, id));
+		if (!organization) throw new Error('Organization not found.');
+		return organization;
+	}
+	private async canWriteAnyCollection(organization: JsonObject): Promise<boolean> {
+		const type = organization.type;
+		const permissions = object(organization.permissions ?? {});
+		return type === 4 && permissions.editAnyCollection === true
+			|| (type === 0 || type === 1) && (
+					organization.allowAdminAccessToAllCollectionItems === true
+					|| await this.client.isVaultwardenServer()
+				);
 	}
 	async confirmMember(organizationId: string, id: string): Promise<void> {
+		const guid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+		if (!guid.test(id)) throw new Error(`\`${id}\` is not a GUID.`);
+		if (!guid.test(organizationId)) throw new Error(`\`${organizationId}\` is not a GUID.`);
 		const member = await this.client.api(
 			this.accessToken,
 			'GET',
 			`/organizations/${idPath(organizationId)}/users/${idPath(id)}`,
 		);
 		if (member.status !== 1) {
-			throw new Error(
-				member.status === 2 ? 'Member is already confirmed.' : 'Member must accept the invitation before confirmation.',
-			);
+			const statusMessage = member.status === 0
+				? 'User must accept the invitation before they can be confirmed.'
+				: member.status === 2
+				? 'User is already confirmed.'
+				: member.status === 3
+				? 'User is revoked and cannot be confirmed.'
+				: 'User is not in a valid state to be confirmed.';
+			throw new Error(statusMessage);
 		}
 		const user = await this.client.api(this.accessToken, 'GET', `/users/${idPath(text(member.userId))}/public-key`);
-		const key = encryptSharedKey(this.ownerKey({ organizationId }), text(user.publicKey));
+		const organizationKey = await this.ownerKey({ organizationId });
+		const key = await encryptSharedKey(organizationKey, text(user.publicKey));
+		const defaultUserCollectionName = encrypt(Buffer.from('My Items', 'utf8'), organizationKey);
 		await this.client.api(
 			this.accessToken,
 			'POST',
 			`/organizations/${idPath(organizationId)}/users/${idPath(id)}/confirm`,
-			{ key },
+			{ key, defaultUserCollectionName },
 		);
 	}
-	private validateCollections(organizationId: string, collections: string[]): void {
-		if (!Array.isArray(collections) || collections.some(id => typeof id !== 'string' || !id)) {
-			throw new Error('Expected an array of collection IDs.');
-		}
-		for (const id of collections) {
-			if (
-				!array(field(this.snapshot, 'collections') ?? []).some(collection =>
-					collection.id === id && collection.organizationId === organizationId
-				)
-			) throw new Error('Collection is unavailable or belongs to another organization. Sync first.');
-		}
+	private async hasVaultwardenManagedCipherWriteAccess(cipher: JsonObject): Promise<boolean> {
+		if (typeof cipher.organizationId !== 'string' || !(await this.client.isVaultwardenServer())) return false;
+		const organizationId = cipher.organizationId;
+		const collectionIds = Array.isArray(cipher.collectionIds) ? cipher.collectionIds : [];
+		const collections = array(this.snapshot.collections ?? []);
+		return collectionIds.some(id =>
+			typeof id === 'string' && collections.some(collection =>
+				sameId(collection.id, id)
+				&& sameId(collection.organizationId, organizationId)
+				&& collection.manage === true
+			)
+		);
 	}
-	private validateMoveCollections(organizationId: string, collections: string[]): void {
+	private async validateTargetCollections(organizationId: string, collections: string[]): Promise<void> {
 		if (!Array.isArray(collections)) {
 			throw new Error('Expected an array of collection IDs.');
 		}
-		const organization = array(object(this.snapshot.profile).organizations ?? []).find(value =>
-			typeof value.id === 'string' && value.id.toLowerCase() === organizationId.toLowerCase()
-		);
-		if (!organization) throw new Error('Organization not found.');
-		const type = organization.type;
-		const permissions = object(organization.permissions ?? {});
-		const canEditAllCiphers = type === 4 && permissions.editAnyCollection === true
-			|| organization.allowAdminAccessToAllCollectionItems === true && (type === 0 || type === 1);
+		const organization = this.cachedOrganization(organizationId);
+		if (collections.length === 0) {
+			await this.assertCollectionlessOrganizationWriteAllowed(organizationId);
+			return;
+		}
+		const canEditAllCiphers = await this.canWriteAnyCollection(organization);
 		const cached = array(this.snapshot.collections ?? []);
 		for (const id of collections) {
 			const collection = cached.find(value =>
-				typeof id === 'string' && value.id === id
-				&& typeof value.organizationId === 'string'
-				&& value.organizationId === organizationId
+				typeof id === 'string' && sameId(value.id, id)
+				&& sameId(value.organizationId, organizationId)
 			);
-			if (!collection || !canEditAllCiphers && collection.manage !== true && collection.readOnly === true) {
+			if (!collection || !canEditAllCiphers && collection.readOnly !== false) {
 				throw new Error('You do not have permission to add items to this collection.');
+			}
+		}
+	}
+	private async assertCollectionlessOrganizationWriteAllowed(organizationId: string): Promise<void> {
+		if (!(await this.client.isVaultwardenServer())) {
+			throw new Error('You must provide at least one collection id for this item.');
+		}
+		const serverVersion = await this.client.serverVersion();
+		if (
+			!vaultwardenVersionAtLeast(
+				serverVersion,
+				vaultwardenCapabilities.collectionlessOrganizationItems.fullAccessRequiredFrom,
+			)
+		) return;
+
+		const organization = this.cachedOrganization(organizationId);
+		const permissions = object(organization.permissions ?? {});
+		const confirmed = organization.status === 2;
+		const fullAccess = organization.type === 0 || organization.type === 1
+			|| organization.accessAll === true || permissions.editAnyCollection === true;
+		if (!confirmed || !fullAccess) throw new ApiError(400);
+	}
+	/** Prevent Vaultwarden's bulk importer from silently dropping collectionless ciphers. */
+	async assertOrganizationCollectionlessImportAllowed(organizationId: string): Promise<void> {
+		if (!(await this.client.isVaultwardenServer())) return;
+		// 1.36 treats Some([]) as an import permission; 1.37.4 requires a nonempty collection list.
+		const serverVersion = await this.client.serverVersion();
+		if (
+			!vaultwardenVersionAtLeast(
+				serverVersion,
+				vaultwardenCapabilities.collectionlessOrganizationItems.fullAccessRequiredFrom,
+			)
+		) return;
+		const organization = this.cachedOrganization(organizationId);
+		const permissions = object(organization.permissions ?? {});
+		const confirmed = organization.status === 2;
+		const fullAccess = organization.type === 0 || organization.type === 1
+			|| organization.accessAll === true || permissions.editAnyCollection === true;
+		if (!confirmed || !fullAccess) throw new ApiError(400);
+	}
+	/** Match Vaultwarden 1.37.4's organization import collection permission checks before any server mutation. */
+	async assertOrganizationImportCollectionsAllowed(
+		organizationId: string,
+		collectionIds: (string | undefined)[],
+	): Promise<void> {
+		if (!(await this.client.isVaultwardenServer())) return;
+		const serverVersion = await this.client.serverVersion();
+		if (
+			!vaultwardenVersionAtLeast(
+				serverVersion,
+				vaultwardenCapabilities.organizationImportCollectionAccess.preflightRequiredFrom,
+			)
+		) return;
+
+		const organization = this.cachedOrganization(organizationId);
+		const type = organization.type;
+		const permissions = object(organization.permissions ?? {});
+		const confirmed = organization.status === 2;
+		const fullAccess = type === 0 || type === 1 || organization.accessAll === true
+			|| type === 4 && permissions.editAnyCollection === true;
+		if (!confirmed) throw new ApiError(400);
+
+		const cached = array(this.snapshot.collections ?? []);
+		for (const id of collectionIds) {
+			const existing = id && cached.find(collection =>
+				sameId(collection.id, id)
+				&& sameId(collection.organizationId, organizationId)
+			);
+			if (existing) {
+				if (type !== 0 && type !== 1 && existing.readOnly !== false) throw new ApiError(400);
+			} else if (type !== 0 && type !== 1 && !fullAccess) {
+				throw new ApiError(400);
+			}
+		}
+	}
+	private async validateOrganizationCreateCollections(organizationId: string, collections: unknown): Promise<void> {
+		if (!Array.isArray(collections) || collections.some(id => typeof id !== 'string' || !id)) {
+			throw new Error('Expected an array of collection IDs.');
+		}
+		if (collections.length === 0) {
+			await this.assertCollectionlessOrganizationWriteAllowed(organizationId);
+			return;
+		}
+		await this.validateTargetCollections(organizationId, collections);
+	}
+	private async validateWritableCollections(
+		organizationId: string,
+		currentCollections: unknown,
+		collections: string[],
+	): Promise<void> {
+		if (
+			!Array.isArray(collections) || collections.some(id => typeof id !== 'string' || !id)
+			|| currentCollections !== undefined
+				&& (!Array.isArray(currentCollections)
+					|| currentCollections.some(id => typeof id !== 'string' || !id))
+		) {
+			throw new Error('Expected an array of collection IDs.');
+		}
+		const current = new Set((currentCollections as string[] | undefined ?? []).map(id => normalizedId(id)));
+		const desired = new Set(collections.map(normalizedId));
+		const changed = [...new Set([...current, ...desired])].filter(id => current.has(id) !== desired.has(id));
+		if (changed.length === 0) return;
+		const organization = this.cachedOrganization(organizationId);
+		const canEditAllCiphers = await this.canWriteAnyCollection(organization);
+		const cached = array(this.snapshot.collections ?? []);
+		for (const id of changed) {
+			const collection = cached.find(value => sameId(value.id, id) && sameId(value.organizationId, organizationId));
+			if (!collection || !canEditAllCiphers && collection.readOnly !== false) {
+				throw new Error('You do not have permission to edit this collection.');
 			}
 		}
 	}
@@ -314,19 +512,24 @@ export class VaultService {
 		if (!wire.organizationId) {
 			throw new Error('Item does not belong to an organization. Consider moving it first.');
 		}
-		if (wire.viewPassword === false) throw new Error('You do not have permission to edit this item');
+		if (
+			(wire.edit !== true || wire.viewPassword !== true)
+			&& !(await this.hasVaultwardenManagedCipherWriteAccess(wire))
+		) throw new Error('You do not have permission to edit this item');
 		const org = text(wire.organizationId);
-		this.validateCollections(org, collections);
+		// Vaultwarden permits collection management when any assigned collection grants manage access.
+		await this.validateWritableCollections(org, wire.collectionIds, collections);
 		const updatedWire = await this.client.api(this.accessToken, 'PUT', `/ciphers/${idPath(id)}/collections`, {
 			collectionIds: collections,
 		});
-		return decryptOwnedItem(updatedWire, this.ownerKey(updatedWire)) as VaultItem;
+		return decryptOwnedItem(updatedWire, await this.ownerKey(updatedWire)) as VaultItem;
 	}
 	async moveItem(id: string, organizationId: string, collectionIds: string[]): Promise<VaultItem> {
 		const cipherId = id.toLowerCase(), targetOrganizationId = organizationId.toLowerCase();
 		let existing = this.wire(cipherId);
 		if (existing.organizationId) throw new Error('Only personal items can be moved to an organization.');
-		this.validateMoveCollections(targetOrganizationId, collectionIds);
+		if (typeof existing.type === 'number') await this.client.assertCipherTypeSupported(existing.type);
+		await this.validateTargetCollections(targetOrganizationId, collectionIds);
 		if (!existing.key && Array.isArray(existing.attachments)) {
 			const legacyAttachments = existing.attachments.map(object).filter(attachment => !attachment.key);
 			if (legacyAttachments.length) {
@@ -352,7 +555,7 @@ export class VaultService {
 				}
 			}
 		}
-		const owner = this.ownerKey({ organizationId: targetOrganizationId });
+		const owner = await this.ownerKey({ organizationId: targetOrganizationId });
 		const key = existing.key ? decrypt(text(existing.key), this.userKey) : randomBytes(64);
 		try {
 			// For legacy items, generate a fresh item key; never wrap the user's account key for an organization.
@@ -395,11 +598,11 @@ export class VaultService {
 		}
 	}
 	private wire(id: string): JsonObject {
-		const found = array(field(this.snapshot, 'ciphers')).find(item => item.id === id);
+		const found = array(field(this.snapshot, 'ciphers')).find(item => sameId(item.id, id));
 		if (!found) throw new Error('Item not found. Sync and use its ID.');
 		return found;
 	}
-	listItems(filter: ItemFilter = {}): VaultItem[] {
+	async listItems(filter: ItemFilter = {}): Promise<VaultItem[]> {
 		const profile = object(this.snapshot.profile);
 		const canArchive = profile.premium === true || profile.premiumPersonally === true
 			|| profile.premiumFromOrganization === true;
@@ -417,15 +620,19 @@ export class VaultService {
 					? !Array.isArray(item.collectionIds) || item.collectionIds.length === 0
 					: filter.collectionId === 'notnull'
 					? Array.isArray(item.collectionIds) && item.collectionIds.length > 0
-					: Array.isArray(item.collectionIds) && item.collectionIds.includes(filter.collectionId),
+					: Array.isArray(item.collectionIds)
+						&& item.collectionIds.some(id => id === filter.collectionId),
 			].filter(value => value !== undefined);
 			return !filters.length || filters.some(Boolean);
-		}).map(item => decryptOwnedItem(item, this.ownerKey(item)) as VaultItem);
-		return filter.search ? searchItems(items, filter.search) : items;
+		});
+		const decrypted: VaultItem[] = [];
+		for (const item of items) decrypted.push(decryptOwnedItem(item, await this.ownerKey(item)) as VaultItem);
+		return filter.search ? searchItems(decrypted, filter.search) : decrypted;
 	}
-	private isRestrictedItem(item: VaultItem): boolean {
-		const policies = [...array(this.snapshot.policies ?? []), ...array(this.snapshot.policiesNew ?? [])]
-			.filter(policy => policy.type === 15 && policy.enabled);
+	/** Whether an encrypted or decrypted cipher is hidden by an active item-type policy. */
+	isRestrictedItem(item: { type?: unknown; organizationId?: unknown }): boolean {
+		const organizations = array(object(this.snapshot.profile).organizations ?? []);
+		const policies = applicableOrganizationPolicies(this.snapshot, 15).map(value => value.policy);
 		if (!policies.length) return false;
 		const restrictedTypes = (policy: JsonObject): number[] => {
 			let data = policy.data;
@@ -439,46 +646,39 @@ export class VaultService {
 			return Array.isArray(data) ? data.filter((type): type is number => typeof type === 'number') : [3];
 		};
 		const allRestrictedTypes = new Set(policies.flatMap(restrictedTypes));
-		if (!allRestrictedTypes.has(item.type)) return false;
-		const profile = object(this.snapshot.profile);
-		const allowedOrganizationIds = array(profile.organizations ?? []).filter(organization => {
-			const policy = policies.find(value => value.organizationId === organization.id);
-			return !policy || !restrictedTypes(policy).includes(item.type);
+		if (typeof item.type !== 'number' || !allRestrictedTypes.has(item.type)) return false;
+		const itemType = item.type;
+		const allowedOrganizationIds = organizations.filter(organization => {
+			const policy = policies.find(value => sameId(value.organizationId, text(organization.id)));
+			return !policy || !restrictedTypes(policy).includes(itemType);
 		}).map(organization => text(organization.id).toLowerCase());
-		return !item.organizationId || !allowedOrganizationIds.includes(item.organizationId.toLowerCase());
+		return typeof item.organizationId !== 'string'
+			|| !allowedOrganizationIds.includes(item.organizationId.toLowerCase());
 	}
 	private personalOwnershipPolicyApplies(): boolean {
-		const organizations = array(object(this.snapshot.profile).organizations ?? []);
-		return array(this.snapshot.policies ?? []).some(policy =>
-			policy.type === 5 && policy.enabled === true
-			&& organizations.some(organization =>
-				typeof organization.id === 'string'
-				&& organization.id.toLowerCase() === text(policy.organizationId).toLowerCase()
-				&& organization.status === 2
-				&& typeof organization.type === 'number'
-				&& organization.type >= 2
-			)
-		);
+		return applicableOrganizationPolicies(this.snapshot, 5).length > 0;
 	}
-	getItem(id: string): VaultItem {
+	async getItem(id: string): Promise<VaultItem> {
 		const wire = this.wire(id);
-		return decryptOwnedItem(wire, this.ownerKey(wire)) as VaultItem;
+		return decryptOwnedItem(wire, await this.ownerKey(wire)) as VaultItem;
 	}
 	canAccessTotp(id: string): boolean {
 		if (this.hasPremiumAccess()) return true;
 		const cipher = this.wire(id);
 		return Boolean(cipher.organizationId) && cipher.organizationUseTotp === true;
 	}
-	canAccessAttachment(id: string): boolean {
-		return this.hasPremiumAccess() || Boolean(this.wire(id).organizationId);
+	/** Vaultwarden authorizes attachments by cipher access and does not apply Bitwarden's premium gate. */
+	async canAccessAttachment(id: string): Promise<boolean> {
+		return this.hasPremiumAccess() || Boolean(this.wire(id).organizationId) || await this.client.isVaultwardenServer();
 	}
 	private hasPremiumAccess(): boolean {
 		const profile = object(this.snapshot.profile);
 		return profile.premium === true || profile.premiumPersonally === true || profile.premiumFromOrganization === true;
 	}
 	/** Whether editing this archived item requires moving it back to the active vault. */
-	shouldUnarchiveBeforeEdit(id: string): boolean {
-		return Boolean(this.wire(id).archivedDate) && !this.hasPremiumAccess();
+	async shouldUnarchiveBeforeEdit(id: string): Promise<boolean> {
+		return Boolean(this.wire(id).archivedDate) && !this.hasPremiumAccess()
+			&& !(await this.client.isVaultwardenServer());
 	}
 	listFolders(): VaultFolder[] {
 		return array(field(this.snapshot, 'folders') ?? []).map(folder => ({
@@ -487,31 +687,72 @@ export class VaultService {
 		}));
 	}
 	getFolder(id: string): VaultFolder {
-		const folder = this.listFolders().find(folder => folder.id === id);
+		const folder = this.listFolders().find(folder => sameId(folder.id, id));
 		if (!folder) throw new Error('Folder not found.');
 		return folder;
 	}
 	findFolder(query: string): VaultFolder {
 		return findNamedObject(this.listFolders(), query);
 	}
-	private encodeItem(input: VaultItem, existing?: JsonObject): JsonObject {
+	private async encodeItem(input: VaultItem, existing?: JsonObject): Promise<JsonObject> {
 		if (typeof input.name !== 'string' || !input.name.trim()) throw new Error('Item name is required.');
 		if (!Number.isInteger(input.type) || ![1, 2, 3, 4, 5, 6, 7, 8].includes(input.type)) {
 			throw new Error('Unsupported item type.');
 		}
-		const owner = this.ownerKey(input);
-		if (existing && (input.organizationId ?? null) !== (existing.organizationId ?? null)) {
+		const owner = await this.ownerKey(input);
+		if (existing && !sameOptionalId(input.organizationId, existing.organizationId)) {
 			throw new Error('Use move to change item ownership.');
 		}
 		let itemKey: Buffer | undefined;
+		let previousItemKey: Buffer | undefined;
+		let explicitItemKey: Buffer | undefined;
 		try {
-			// Keep the current item key on edits: attachment keys and unknown encrypted data depend on it.
-			itemKey = existing ? (existing.key ? decrypt(text(existing.key), owner) : undefined) : randomBytes(64);
+			// bw edit accepts a raw base64 item key. Serialized EncStrings are display data and are ignored.
+			const requestedKey = input.key;
+			if (requestedKey != null && !(typeof requestedKey === 'string' && /^\d+\./.test(requestedKey))) {
+				if (
+					typeof requestedKey !== 'string'
+					|| !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(requestedKey)
+				) {
+					throw new Error('Invalid item key; expected a base64-encoded 512-bit key.');
+				}
+				explicitItemKey = Buffer.from(requestedKey, 'base64');
+				if (explicitItemKey.length !== 64 || explicitItemKey.toString('base64') !== requestedKey) {
+					explicitItemKey.fill(0);
+					explicitItemKey = undefined;
+					throw new Error('Invalid item key; expected a base64-encoded 512-bit key.');
+				}
+			}
+			previousItemKey = existing?.key ? decrypt(text(existing.key), owner) : Buffer.from(owner);
+			// Keep the current key for ordinary edits so attachments and encrypted data remain readable.
+			itemKey = explicitItemKey ?? (existing ? Buffer.from(previousItemKey) : randomBytes(64));
 			const plain = { ...input };
 			delete plain.key;
 			if (existing?.attachments) plain.attachments = undefined; // Attachment metadata has its own endpoint.
 			const encoded = encryptItem(plain, itemKey ?? owner);
-			encoded.key = existing ? (existing.key ?? null) : encrypt(itemKey!, owner);
+			encoded.key = existing && !explicitItemKey && !existing.key ? null : encrypt(itemKey!, owner);
+			if (existing && explicitItemKey && Array.isArray(existing.attachments)) {
+				const attachments2: JsonObject = {};
+				for (const value of existing.attachments) {
+					const attachment = object(value);
+					const attachmentId = text(attachment.id);
+					const next: JsonObject = {
+						fileName: encrypt(decrypt(text(attachment.fileName), previousItemKey!), itemKey!),
+						lastKnownRevisionDate: existing.revisionDate ?? null,
+					};
+					const attachmentKey = attachment.key
+						? decrypt(text(attachment.key), previousItemKey!)
+						: Buffer.from(previousItemKey!);
+					try {
+						// Legacy attachment bytes use the old item key; wrap it as their per-file key.
+						next.key = encrypt(attachmentKey, itemKey!);
+					} finally {
+						attachmentKey.fill(0);
+					}
+					attachments2[attachmentId] = next;
+				}
+				encoded.attachments2 = attachments2;
+			}
 			encoded.encryptedFor = text(object(field(this.snapshot, 'profile')).id);
 			const revision = existing ? text(input.revisionDate ?? existing.revisionDate) : null;
 			if (revision && !Number.isFinite(Date.parse(revision))) throw new Error('Invalid item revision date.');
@@ -522,6 +763,8 @@ export class VaultService {
 			return encoded;
 		} finally {
 			itemKey?.fill(0);
+			previousItemKey?.fill(0);
+			explicitItemKey?.fill(0);
 		}
 	}
 	async createItem(input: VaultItem): Promise<VaultItem> {
@@ -529,31 +772,65 @@ export class VaultService {
 		if (this.isRestrictedItem(input)) {
 			throw new Error('Creating this item type is restricted by organizational policy.');
 		}
-		const encoded = this.encodeItem(input);
+		if (input.organizationId) {
+			await this.validateOrganizationCreateCollections(input.organizationId, input.collectionIds ?? []);
+		}
+		const encoded = await this.encodeItem(input);
 		const wire = await this.client.api(
 			this.accessToken,
 			'POST',
 			input.organizationId ? '/ciphers/create' : '/ciphers',
 			input.organizationId ? { cipher: encoded, collectionIds: input.collectionIds ?? [] } : encoded,
 		);
-		return decryptOwnedItem(wire, this.ownerKey(wire)) as VaultItem;
+		return decryptOwnedItem(wire, await this.ownerKey(wire)) as VaultItem;
 	}
-	async editItem(id: string, input: VaultItem): Promise<VaultItem> {
-		const existing = this.wire(id);
+	async editItem(id: string, input: EditVaultItem): Promise<VaultItem> {
+		const cipherId = id.toLowerCase();
+		const existing = this.wire(cipherId);
 		await this.client.assertCipherTypeSupported(input.type);
-		if (existing.edit === false) throw new Error('You do not have permission to edit this item');
+		if (
+			existing.edit !== true && !(await this.hasVaultwardenManagedCipherWriteAccess(existing))
+		) throw new Error('You do not have permission to edit this item');
 		if (existing.deletedDate) throw new Error('You may not edit a deleted item. Use the restore command first.');
-		if (this.isRestrictedItem(existing as VaultItem)) {
-			throw new Error('Editing this item type is restricted by organizational policy.');
-		}
 		if (!existing.organizationId && this.personalOwnershipPolicyApplies()) {
 			throw new Error(
 				'An organization policy restricts editing this cipher. Please use the share command first before modifying it.',
 			);
 		}
-		const editable = structuredClone(input);
+		if (input.organizationId != null && !sameOptionalId(input.organizationId, existing.organizationId)) {
+			throw new Error('Use move to change item ownership.');
+		}
+		const editable = decryptOwnedItem(existing, await this.ownerKey(existing)) as VaultItem;
+		editable.type = input.type;
+		if (input.key != null) editable.key = input.key;
+		if (input.folderId !== undefined) editable.folderId = input.folderId;
+		if (input.collectionIds !== undefined) editable.collectionIds = structuredClone(input.collectionIds);
+		if (input.name !== undefined) editable.name = input.name;
+		if (input.notes !== undefined) editable.notes = input.notes;
+		if (input.favorite !== undefined) editable.favorite = input.favorite;
+		if (input.reprompt !== undefined) editable.reprompt = input.reprompt;
+		if (input.fields !== undefined) editable.fields = structuredClone(input.fields);
+		const section = input.type === 1 ? 'login' : input.type === 2 ? 'secureNote' : input.type === 3
+			? 'card'
+			: input.type === 4
+			? 'identity'
+			: input.type === 5
+			? 'sshKey'
+			: input.type === 6
+			? 'bankAccount'
+			: input.type === 7
+			? 'driversLicense'
+			: 'passport';
+		if (input[section] !== undefined) editable[section] = structuredClone(input[section]);
+		if (input.passwordHistory !== undefined) editable.passwordHistory = structuredClone(input.passwordHistory);
+		for (const date of ['creationDate', 'revisionDate', 'deletedDate', 'archivedDate'] as const) {
+			if (input[date] !== undefined) (editable as JsonObject)[date] = input[date];
+		}
+		if (this.isRestrictedItem(editable)) {
+			throw new Error('Editing this item type is restricted by organizational policy.');
+		}
 		if (existing.viewPassword === false) {
-			const original = decryptOwnedItem(existing, this.ownerKey(existing));
+			const original = decryptOwnedItem(existing, await this.ownerKey(existing));
 			const originalLogin = object(original.login);
 			const login = object(editable.login);
 			if (login.password == null && originalLogin.password != null) login.password = originalLogin.password;
@@ -578,15 +855,19 @@ export class VaultService {
 		const wire = await this.client.api(
 			this.accessToken,
 			'PUT',
-			`/ciphers/${idPath(id)}`,
-			this.encodeItem(editable, existing),
+			`/ciphers/${idPath(cipherId)}`,
+			await this.encodeItem(editable, existing),
 		);
-		return decryptOwnedItem(wire, this.ownerKey(wire)) as VaultItem;
+		return decryptOwnedItem(wire, await this.ownerKey(wire)) as VaultItem;
 	}
 	async deleteItem(id: string, permanent = false): Promise<void> {
-		const wire = this.wire(id);
+		const cipherId = id.toLowerCase();
+		const wire = this.wire(cipherId);
 		const permissions = object(wire.permissions ?? {});
-		if (permissions.delete === false || wire.edit === false) {
+		if (
+			permissions.delete !== true
+			&& !(await this.hasVaultwardenManagedCipherWriteAccess(wire))
+		) {
 			throw new Error('You do not have permission to delete this item.');
 		}
 		if (this.isRestrictedItem(wire as VaultItem)) {
@@ -595,7 +876,7 @@ export class VaultService {
 		await this.client.api(
 			this.accessToken,
 			permanent ? 'DELETE' : 'PUT',
-			`/ciphers/${idPath(id)}${permanent ? '' : '/delete'}`,
+			`/ciphers/${idPath(cipherId)}${permanent ? '' : '/delete'}`,
 		);
 	}
 	async restoreItem(id: string): Promise<void> {
@@ -604,7 +885,10 @@ export class VaultService {
 		if (!archived && !wire.deletedDate) throw new Error('Cipher is not in trash.');
 		if (wire.deletedDate) {
 			const permissions = object(wire.permissions ?? {});
-			if (permissions.restore === false || wire.edit === false) {
+			if (
+				permissions.restore !== true
+				&& !(await this.hasVaultwardenManagedCipherWriteAccess(wire))
+			) {
 				throw new Error('You do not have permission to restore this item');
 			}
 		}
@@ -615,16 +899,19 @@ export class VaultService {
 		);
 	}
 	async archiveItem(id: string): Promise<void> {
-		const wire = this.wire(id);
-		if (!this.hasPremiumAccess()) throw new Error('Premium status is required to use this feature.');
+		const cipherId = id.toLowerCase();
+		const wire = this.wire(cipherId);
+		if (!this.hasPremiumAccess() && !(await this.client.isVaultwardenServer())) {
+			throw new Error('Premium status is required to use this feature.');
+		}
 		if (wire.archivedDate && !wire.deletedDate) throw new Error('Item is already archived.');
 		if (wire.deletedDate) {
 			throw new Error('Item is in the trash, the item must be restored before archiving.');
 		}
-		await this.client.api(this.accessToken, 'PUT', `/ciphers/${idPath(id)}/archive`);
+		await this.client.api(this.accessToken, 'PUT', `/ciphers/${idPath(cipherId)}/archive`);
 	}
-	private itemKey(wire: JsonObject): Buffer {
-		const owner = this.ownerKey(wire);
+	private async itemKey(wire: JsonObject): Promise<Buffer> {
+		const owner = await this.ownerKey(wire);
 		return wire.key ? decrypt(text(wire.key), owner) : Buffer.from(owner);
 	}
 	async createAttachment(itemId: string, fileName: string, contents: Uint8Array): Promise<JsonObject> {
@@ -637,12 +924,14 @@ export class VaultService {
 		enforceEntitlement: boolean,
 	): Promise<JsonObject> {
 		if (!fileName || fileName.includes('\0')) throw new Error('Attachment file name is required.');
-		if (contents.length > 525 * 1024 * 1024 - 65) throw new Error('Attachment exceeds the supported size.');
+		if (encryptedAttachmentSize(contents.length) > vaultwardenCapabilities.fileUploads.maximumEncryptedBytes) {
+			throw new Error('Attachment exceeds the supported size.');
+		}
 		const item = this.wire(itemId);
-		if (enforceEntitlement && !this.canAccessAttachment(itemId)) {
+		if (enforceEntitlement && !(await this.canAccessAttachment(itemId))) {
 			throw new Error('Premium status is required to use this feature.');
 		}
-		const itemKey = this.itemKey(item);
+		const itemKey = await this.itemKey(item);
 		const attachmentKey = randomBytes(64);
 		try {
 			const ciphertext = encryptAttachment(contents, attachmentKey);
@@ -656,7 +945,12 @@ export class VaultService {
 				if (response.fileUploadType !== 0) throw new Error('Unsupported attachment upload provider.');
 				const form = new FormData();
 				form.set('data', new Blob([new Uint8Array(ciphertext)]), 'encrypted');
-				await this.client.uploadAttachment(this.accessToken, itemId, attachmentId, form);
+				await this.client.uploadAttachment(
+					this.accessToken,
+					normalizedId(itemId),
+					normalizedId(attachmentId),
+					form,
+				);
 			} catch {
 				try {
 					await this.client.api(
@@ -670,7 +964,7 @@ export class VaultService {
 				throw new Error('Attachment upload failed; incomplete metadata was removed.');
 			}
 			const wire = object(response.cipherResponse ?? response.cipherMiniResponse);
-			return decryptOwnedItem(wire, this.ownerKey(wire));
+			return decryptOwnedItem(wire, await this.ownerKey(wire));
 		} finally {
 			itemKey.fill(0);
 			attachmentKey.fill(0);
@@ -684,11 +978,11 @@ export class VaultService {
 		idOrName: string,
 		enforceEntitlement: boolean,
 	): Promise<{ fileName: string; contents: Buffer }> {
-		const resolvedItemId = text(this.findItem(itemId).id);
+		const resolvedItemId = text((await this.findItem(itemId)).id);
 		const item = this.wire(resolvedItemId);
 		const attachments = array(item.attachments ?? []);
 		if (attachments.length === 0) throw new Error('No attachments available for this item.');
-		const itemKey = this.itemKey(item);
+		const itemKey = await this.itemKey(item);
 		try {
 			const query = idOrName.toLowerCase();
 			if (!query) throw new Error('Attachment not found.');
@@ -704,7 +998,7 @@ export class VaultService {
 				}
 				throw new Error(`Attachment \`${idOrName}\` was not found.`);
 			}
-			if (enforceEntitlement && !this.canAccessAttachment(resolvedItemId)) {
+			if (enforceEntitlement && !(await this.canAccessAttachment(resolvedItemId))) {
 				throw new Error('Premium status is required to use this feature.');
 			}
 			const attachment = matches[0]!.attachment;
@@ -742,7 +1036,7 @@ export class VaultService {
 		if (attachments.length === 0) throw new Error('No attachments available for this item.');
 		const attachment = attachments.find(value => text(value.id).toLowerCase() === id.toLowerCase());
 		if (!attachment) throw new Error('Attachment `' + id + '` was not found.');
-		if (enforceEntitlement && !this.canAccessAttachment(itemId)) {
+		if (enforceEntitlement && !(await this.canAccessAttachment(itemId))) {
 			throw new Error('Premium status is required to use this feature.');
 		}
 		await this.client.api(

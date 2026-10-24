@@ -686,6 +686,17 @@ test('legacy Password Boss card expiry uses local calendar fields like bw', () =
 	}
 });
 
+test('legacy Password Boss preserves bw malformed expiry behavior', () => {
+	const result = parseExternalJson(
+		'passwordbossjson',
+		JSON.stringify({
+			folders: [],
+			items: [{ type: 'CreditCard', identifiers: { expires: 'not-a-date' } }],
+		}),
+	);
+	expect(items(result)[0]!.card).toMatchObject({ expMonth: 'NaN', expYear: 'NaN' });
+});
+
 test('legacy Password Boss preserves a folder whose source ID matches its name', () => {
 	const result = parseExternalJson(
 		'passwordbossjson',

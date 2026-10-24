@@ -3,8 +3,10 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
+import { constants, createPublicKey, generateKeyPairSync, publicEncrypt } from 'node:crypto';
 import { sealSession, withStore } from '#store';
-import { deriveMasterKey, deriveSendKey, encrypt, encryptItem, stretchKey } from '@kjanat/vaultwarden';
+import { collectionOrganizationId } from '#vault-commands';
+import { decrypt, deriveMasterKey, deriveSendKey, encrypt, encryptItem, stretchKey } from '@kjanat/vaultwarden';
 
 const executable = new URL('../dist/main.js', import.meta.url).pathname;
 async function run(
@@ -30,6 +32,12 @@ async function run(
 		stderr: await new Response(child.stderr).text(),
 	};
 }
+test('org collection create/edit treat whitespace organization options as absent', () => {
+	const organizationId = '11111111-1111-1111-1111-111111111111';
+	expect(collectionOrganizationId('   ', { organizationId })).toBe(organizationId);
+	expect(collectionOrganizationId(organizationId.toUpperCase(), { organizationId })).toBe(organizationId);
+	expect(() => collectionOrganizationId('   ', {})).toThrow('An organization id is required');
+});
 test('built Node CLI exposes DreamCLI help and validates commands', { timeout: 15000 }, async () => {
 	const dir = await mkdtemp(join(tmpdir(), 'vw-cli-'));
 	try {
@@ -98,6 +106,19 @@ test('built Node CLI exposes DreamCLI help and validates commands', { timeout: 1
 		]);
 		expect(unknownEdit.code).toBe(1);
 		expect(unknownEdit.stderr).toContain('Unknown object.');
+		const flagsBeforeEditObject = await run(dir, [
+			'edit',
+			'--session',
+			'Synthetic-SESSION',
+			'UNSUPPORTED-OBJECT',
+			'Synthetic-ID',
+			Buffer.from('{}').toString('base64'),
+		]);
+		expect(flagsBeforeEditObject.code).toBe(1);
+		expect(flagsBeforeEditObject.stderr).toContain('Unknown object.');
+		const flagsBeforeCreateObject = await run(dir, ['create', '--session', 'Synthetic-SESSION', 'ITEM']);
+		expect(flagsBeforeCreateObject.code).toBe(1);
+		expect(flagsBeforeCreateObject.stderr).toContain('`requestJson` was not provided.');
 		const unknownRestore = await run(dir, ['restore', 'unsupported-object', 'synthetic-id']);
 		expect(unknownRestore.code).toBe(1);
 		expect(unknownRestore.stderr).toContain('Unknown object.');
@@ -280,7 +301,57 @@ test('get templates require login but do not require an unlocked vault', async (
 		});
 		const item = await run(dir, ['--raw', 'get', 'TEMPLATE', 'ITEM']);
 		expect(item.code).toBe(0);
-		expect(JSON.parse(item.stdout)).toMatchObject({ type: 1, name: 'Item name' });
+		expect(JSON.parse(item.stdout)).toEqual({
+			type: 1,
+			name: 'Item name',
+			notes: 'Some notes about this item.',
+			favorite: false,
+			fields: [],
+			reprompt: 0,
+			passwordHistory: [],
+		});
+		expect(JSON.parse((await run(dir, ['get', 'template', 'item.login'])).stdout)).toEqual({
+			uris: [],
+			username: 'jdoe',
+			password: 'myp@ssword123',
+			totp: 'JBSWY3DPEHPK3PXP',
+			fido2Credentials: [],
+		});
+		expect(JSON.parse((await run(dir, ['get', 'template', 'item.login.uri'])).stdout)).toEqual({
+			uri: 'https://google.com',
+		});
+		expect(JSON.parse((await run(dir, ['get', 'template', 'item.field'])).stdout)).toEqual({
+			name: 'Field name',
+			value: 'Some value',
+			type: 0,
+		});
+		expect(JSON.parse((await run(dir, ['get', 'template', 'item.card'])).stdout)).toEqual({
+			cardholderName: 'John Doe',
+			brand: 'visa',
+			number: '4242424242424242',
+			expMonth: '04',
+			expYear: '2023',
+			code: '123',
+		});
+		expect(JSON.parse((await run(dir, ['get', 'template', 'item.identity'])).stdout)).toEqual({
+			title: 'Mr',
+			firstName: 'John',
+			middleName: 'William',
+			lastName: 'Doe',
+			address1: '123 Any St',
+			address2: 'Apt #123',
+			city: 'New York',
+			state: 'NY',
+			postalCode: '10001',
+			country: 'US',
+			company: 'Acme Inc.',
+			email: 'john@company.com',
+			phone: '5555551234',
+			ssn: '000-123-4567',
+			username: 'jdoe',
+			passportNumber: 'US-123456789',
+			licenseNumber: 'D123-12-123-12333',
+		});
 		const collection = await run(dir, ['get', 'template', 'collection']);
 		expect(JSON.parse(collection.stdout)).toEqual({
 			organizationId: '00000000-0000-0000-0000-000000000000',
@@ -291,6 +362,149 @@ test('get templates require login but do not require an unlocked vault', async (
 		expect(JSON.parse(secureNote.stdout)).toEqual({ type: 0 });
 		const collections = await run(dir, ['get', 'template', 'item-collections']);
 		expect(JSON.parse(collections.stdout)).toEqual(['collection-id1', 'collection-id2']);
+		const orgCollection = JSON.parse((await run(dir, ['get', 'template', 'org-collection'])).stdout);
+		expect(orgCollection.groups).toHaveLength(2);
+		expect(orgCollection.users).toHaveLength(2);
+		expect(orgCollection.groups[0]).toEqual({
+			id: '00000000-0000-0000-0000-000000000000',
+			readOnly: false,
+			hidePasswords: false,
+			manage: false,
+		});
+		for (const object of ['send.text', 'send.file']) {
+			const invalid = await run(dir, ['get', 'template', object]);
+			expect(invalid.code).toBe(1);
+			expect(invalid.stderr).toContain(`Invalid template object. Use \`bw send template ${object}\` instead.`);
+		}
+		const unknown = await run(dir, ['get', 'template', 'item.unknown']);
+		expect(unknown.code).toBe(1);
+		expect(unknown.stderr).toContain('Unknown template object.');
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('new cipher templates follow the connected Vaultwarden version while locked', async () => {
+	const server = createServer((request, response) => {
+		if (request.url === '/api/config') {
+			response.writeHead(200, { 'Content-Type': 'application/json' });
+			response.end(JSON.stringify({ server: { name: 'Vaultwarden' } }));
+		} else if (request.url === '/api/version') {
+			response.writeHead(200, { 'Content-Type': 'application/json' });
+			response.end(JSON.stringify(serverVersion));
+		} else {
+			response.writeHead(404).end();
+		}
+	});
+	let serverVersion = '1.36.0';
+	await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+	const address = server.address();
+	if (!address || typeof address === 'string') throw new Error('Expected a TCP test server address.');
+	const dir = await mkdtemp(join(tmpdir(), 'vw-template-capability-'));
+	try {
+		await withStore(dir, async (state, save) => {
+			state.server = `http://127.0.0.1:${address.port}`;
+			state.account = {
+				email: 'synthetic@example.test',
+				kdf: { type: 0, iterations: 10000 },
+				encryptedUserKey: 'synthetic-wrapped-key',
+				accessToken: 'synthetic-token',
+				refreshToken: 'synthetic-refresh',
+				expiresAt: Date.now() + 3600000,
+			};
+			await save();
+		});
+		for (const name of ['item.bankaccount', 'item.driverslicense', 'item.passport']) {
+			const unavailable = await run(dir, ['get', 'template', name]);
+			expect(unavailable.code).toBe(1);
+			expect(unavailable.stderr).toContain('item type is not available.');
+		}
+		serverVersion = '1.37.4';
+		const expectedTemplates: Record<string, object> = {
+			'item.bankaccount': {
+				bankName: 'Acme Bank',
+				nameOnAccount: 'John Doe',
+				accountType: 'checking',
+				accountNumber: '000123456789',
+				routingNumber: '000000000',
+				branchNumber: '000',
+				pin: '1234',
+				swiftCode: 'ACMEUS33',
+				iban: 'GB00ACME12345600000001',
+				bankContactPhone: '1-800-123-4567',
+			},
+			'item.driverslicense': {
+				firstName: 'Jane',
+				middleName: 'A.',
+				lastName: 'Smith',
+				dateOfBirth: '1990-01-15',
+				licenseNumber: 'D12345678',
+				issuingCountry: 'US',
+				issuingState: 'CA',
+				issueDate: '2020-06-01',
+				expirationDate: '2028-06-01',
+				issuingAuthority: 'California DMV',
+				licenseClass: 'C',
+			},
+			'item.passport': {
+				surname: 'Smith',
+				givenName: 'Jane',
+				dateOfBirth: '1990-01-15',
+				sex: 'F',
+				birthPlace: 'Los Angeles, CA',
+				nationality: 'USA',
+				issuingCountry: 'US',
+				passportNumber: 'A12345678',
+				passportType: 'P',
+				nationalIdentificationNumber: '123-45-6789',
+				issuingAuthority: 'U.S. Department of State',
+				issueDate: '2020-06-01',
+				expirationDate: '2030-06-01',
+			},
+		};
+		for (const name of Object.keys(expectedTemplates)) {
+			const available = await run(dir, ['get', 'template', name]);
+			expect(available.code).toBe(0);
+			expect(JSON.parse(available.stdout)).toEqual(expectedTemplates[name]);
+		}
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+		await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+	}
+});
+
+test('Send templates match the pinned bw JSON shape for text and file Sends', async () => {
+	const dir = await mkdtemp(join(tmpdir(), 'vw-send-template-'));
+	try {
+		for (
+			const [kind, type, content] of [
+				['text', 0, { text: 'Text contained in the send.', hidden: false }],
+				['file', 1, { fileName: 'file attachment location' }],
+			] as const
+		) {
+			const result = await run(dir, ['send', 'template', kind]);
+			expect(result.code).toBe(0);
+			const value = JSON.parse(result.stdout);
+			const { deletionDate, ...template } = value;
+			expect(template).toEqual({
+				object: 'send',
+				type,
+				name: 'Send name',
+				notes: 'Some notes about this send.',
+				text: type === 0 ? content : null,
+				file: type === 1 ? content : null,
+				maxAccessCount: null,
+				expirationDate: null,
+				password: null,
+				emails: null,
+				disabled: false,
+				hideEmail: false,
+			});
+			const parsedDeletionDate = Date.parse(deletionDate);
+			expect(Number.isFinite(parsedDeletionDate)).toBe(true);
+			expect(parsedDeletionDate).toBeGreaterThan(Date.now());
+			expect(parsedDeletionDate).toBeLessThanOrEqual(Date.now() + 7 * 86400000 + 1000);
+		}
 	} finally {
 		await rm(dir, { recursive: true, force: true });
 	}
@@ -392,6 +606,12 @@ test('get misses use bw not-found text; quiet suppresses secrets without changin
 		});
 		const before = await withStore(dir, async state => JSON.stringify(state));
 		expect((await run(dir, ['get', 'password', id, '--session', session])).stdout).toBe('  {"private":true}  ');
+		const uppercaseGet = await run(dir, ['get', '--session', session, 'ITEM', id.toUpperCase()]);
+		expect(uppercaseGet.code).toBe(0);
+		expect(JSON.parse(uppercaseGet.stdout)).toMatchObject({ id, name: 'Private' });
+		const uppercaseList = await run(dir, ['list', '--session', session, '--search', 'Private', 'ITEMS']);
+		expect(uppercaseList.code).toBe(0);
+		expect(JSON.parse(uppercaseList.stdout).map((item: { id: string }) => item.id)).toEqual([id]);
 		const missing = await run(dir, [
 			'get',
 			'item',
@@ -429,6 +649,15 @@ test('get misses use bw not-found text; quiet suppresses secrets without changin
 test('CLI responses redact secrets when Vaultwarden denies password visibility', async () => {
 	const dir = await mkdtemp(join(tmpdir(), 'vw-hidden-passwords-'));
 	const key = Buffer.alloc(64, 23), id = 'abcdef02-0000-0000-0000-000000000002';
+	const paths: string[] = [];
+	const server = createServer((request, response) => {
+		paths.push(request.url ?? '');
+		response.setHeader('Content-Type', 'application/json');
+		response.end(JSON.stringify({ server: { name: 'Bitwarden' } }));
+	});
+	await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+	const address = server.address();
+	if (!address || typeof address === 'string') throw new Error('Missing fixture address.');
 	const secrets = [
 		'hidden-password-sentinel',
 		'hidden-totp-sentinel',
@@ -438,7 +667,7 @@ test('CLI responses redact secrets when Vaultwarden denies password visibility',
 	try {
 		let session = '';
 		await withStore(dir, async (state, save) => {
-			state.server = 'https://example.com';
+			state.server = `http://127.0.0.1:${address.port}`;
 			state.account = {
 				email: 'synthetic@example.com',
 				kdf: { type: 0, iterations: 10000 },
@@ -504,6 +733,17 @@ test('CLI responses redact secrets when Vaultwarden denies password visibility',
 		const noPremiumTotp = await run(dir, ['get', 'totp', 'totp-item', '--session', session]);
 		expect(noPremiumTotp.code).toBe(1);
 		expect(noPremiumTotp.stderr).toContain('Premium status is required to use this feature.');
+		const noPremiumFileSend = await run(dir, [
+			'send',
+			'create',
+			Buffer.from(JSON.stringify({ type: 1, file: { fileName: join(dir, 'missing-send-file') } })).toString('base64'),
+			'--session',
+			session,
+		]);
+		expect(noPremiumFileSend.code).toBe(1);
+		expect(noPremiumFileSend.stderr).toContain('Premium status is required to use this feature.');
+		expect(noPremiumFileSend.stderr).not.toContain('ENOENT');
+		expect(paths).toEqual(['/api/config']);
 		const secretResponse = await run(dir, [
 			'--response',
 			'--pretty',
@@ -519,15 +759,29 @@ test('CLI responses redact secrets when Vaultwarden denies password visibility',
 			data: { object: 'string', data: 'visible-password' },
 		});
 	} finally {
+		await new Promise<void>(resolve => server.close(() => resolve()));
 		key.fill(0);
 		await rm(dir, { recursive: true, force: true });
 	}
 });
 
-test('list applies organization and search filters only where bw supports them', async () => {
+test('list applies organization and search filters only where bw supports them', { timeout: 15000 }, async () => {
 	const dir = await mkdtemp(join(tmpdir(), 'vw-list-filters-'));
 	const key = Buffer.alloc(64, 41);
-	const organizationId = '11111111-1111-1111-1111-111111111111';
+	const organizationId = 'abcdef11-1111-1111-1111-111111111111';
+	const organizationKey = Buffer.alloc(64, 42);
+	const rsa = generateKeyPairSync('rsa', {
+		modulusLength: 2048,
+		publicKeyEncoding: { type: 'spki', format: 'der' },
+		privateKeyEncoding: { type: 'pkcs8', format: 'der' },
+	});
+	const wrappedOrganizationKey = `3.${
+		publicEncrypt({
+			key: createPublicKey({ key: rsa.publicKey, format: 'der', type: 'spki' }),
+			oaepHash: 'sha256',
+			padding: constants.RSA_PKCS1_OAEP_PADDING,
+		}, organizationKey).toString('base64')
+	}`;
 	const paths: string[] = [];
 	const server = createServer((request, response) => {
 		paths.push(request.url!);
@@ -563,14 +817,19 @@ test('list applies organization and search filters only where bw supports them',
 			state.vault = {
 				profile: {
 					id: 'synthetic-user',
+					privateKey: encrypt(rsa.privateKey, key),
 					organizations: [
 						{
 							id: organizationId,
 							name: 'First organization',
 							email: 'billing@example.test',
-							key: 'private-key',
+							key: wrappedOrganizationKey,
 						},
-						{ id: '22222222-2222-2222-2222-222222222222', name: 'Second organization', key: 'private-key' },
+						{
+							id: '22222222-2222-2222-2222-222222222222',
+							name: 'Second organization',
+							key: wrappedOrganizationKey,
+						},
 					],
 				},
 				folders: [{
@@ -586,20 +845,65 @@ test('list applies organization and search filters only where bw supports them',
 					externalId: null,
 					manage: true,
 					internalField: 'must not escape response projection',
+				}, {
+					id: 'organization-collection',
+					name: encrypt(Buffer.from('Organization collection'), organizationKey),
+					organizationId,
+					externalId: null,
+					manage: true,
 				}],
-				ciphers: [],
+				ciphers: [{
+					...encryptItem({ type: 1, name: 'Compatibility Search Login', login: { username: 'search-user' } }, key),
+					id: 'search-item-id',
+				}, {
+					...encryptItem({ type: 1, name: 'Ordinary Login', login: { username: 'ordinary-user' } }, key),
+					id: 'ordinary-item-id',
+				}],
 			};
 			session = sealSession(state, key);
 			await save();
 		});
 		const folders = await run(dir, ['list', 'folders', '--organizationid', 'missing', '--session', session]);
 		expect(folders.code).toBe(0);
-		expect(JSON.parse(folders.stdout).map((folder: { name: string }) => folder.name)).toEqual(['Private folder']);
+		expect(JSON.parse(folders.stdout)).toEqual([{ object: 'folder', id: 'folder-id', name: 'Private folder' }]);
+		const allItems = await run(dir, ['list', 'items', '--session', session]);
+		expect(allItems.code, allItems.stderr).toBe(0);
+		expect(JSON.parse(allItems.stdout).map((item: { id: string }) => item.id)).toEqual([
+			'search-item-id',
+			'ordinary-item-id',
+		]);
+		const advancedItemSearch = await run(dir, [
+			'list',
+			'items',
+			'--search',
+			'>name:compatibility',
+			'--session',
+			session,
+		]);
+		expect(advancedItemSearch.code, advancedItemSearch.stderr).toBe(0);
+		expect(JSON.parse(advancedItemSearch.stdout)).toEqual([]);
+		const shortItemSearch = await run(dir, ['list', 'items', '--search', 'p', '--session', session]);
+		expect(shortItemSearch.code).toBe(0);
+		expect(JSON.parse(shortItemSearch.stdout).map((item: { id: string }) => item.id)).toEqual(['search-item-id']);
 		const whitespaceSearchFolders = await run(dir, ['list', 'folders', '--search', '   ', '--session', session]);
 		expect(whitespaceSearchFolders.code).toBe(0);
 		expect(JSON.parse(whitespaceSearchFolders.stdout).map((folder: { name: string }) => folder.name)).toEqual([
 			'Private folder',
 		]);
+		const collections = await run(dir, ['list', 'collections', '--session', session]);
+		expect(JSON.parse(collections.stdout)).toEqual([{
+			object: 'collection',
+			id: 'collection-id',
+			organizationId: null,
+			name: 'Private collection',
+			externalId: null,
+		}, {
+			object: 'collection',
+			id: 'organization-collection',
+			organizationId,
+			name: 'Organization collection',
+			externalId: null,
+		}]);
 		const folderResponse = await run(dir, ['--response', 'list', 'folders', '--session', session]);
 		expect(JSON.parse(folderResponse.stdout)).toEqual({
 			success: true,
@@ -616,9 +920,37 @@ test('list applies organization and search filters only where bw supports them',
 					organizationId: null,
 					name: 'Private collection',
 					externalId: null,
+				}, {
+					object: 'collection',
+					id: 'organization-collection',
+					organizationId,
+					name: 'Organization collection',
+					externalId: null,
 				}],
 			},
 		});
+		const organizationCollections = await run(dir, [
+			'list',
+			'collections',
+			'--organizationid',
+			organizationId,
+			'--session',
+			session,
+		]);
+		expect(organizationCollections.code).toBe(0);
+		expect(JSON.parse(organizationCollections.stdout).map((collection: { id: string }) => collection.id)).toEqual([
+			'organization-collection',
+		]);
+		const uppercaseOrganizationFilter = await run(dir, [
+			'list',
+			'collections',
+			'--organizationid',
+			organizationId.toUpperCase(),
+			'--session',
+			session,
+		]);
+		expect(uppercaseOrganizationFilter.code).toBe(0);
+		expect(JSON.parse(uppercaseOrganizationFilter.stdout)).toEqual([]);
 		for (
 			const [object, id, expected] of [
 				['folder', 'Private folder', { object: 'folder', id: 'folder-id', name: 'Private folder' }],
@@ -640,6 +972,9 @@ test('list applies organization and search filters only where bw supports them',
 				],
 			] as const
 		) {
+			const normal = await run(dir, ['get', object, id, '--session', session]);
+			expect(normal.code).toBe(0);
+			expect(JSON.parse(normal.stdout)).toEqual(expected);
 			const result = await run(dir, ['--response', 'get', object, id, '--session', session]);
 			expect(result.code).toBe(0);
 			expect(JSON.parse(result.stdout)).toEqual({ success: true, data: expected });
@@ -653,7 +988,10 @@ test('list applies organization and search filters only where bw supports them',
 			session,
 		]);
 		expect(organizations.code).toBe(0);
-		expect(JSON.parse(organizations.stdout)).toHaveLength(2);
+		expect(JSON.parse(organizations.stdout)).toEqual([
+			{ object: 'organization', id: organizationId, name: 'First organization' },
+			{ object: 'organization', id: '22222222-2222-2222-2222-222222222222', name: 'Second organization' },
+		]);
 		const organizationResponse = await run(dir, [
 			'--response',
 			'list',
@@ -701,14 +1039,13 @@ test('list applies organization and search filters only where bw supports them',
 		]);
 		expect(members.code).toBe(0);
 		expect(JSON.parse(members.stdout)).toEqual([{
-			object: 'unexpected-upstream-tag',
+			object: 'org-member',
 			id: 'member-id',
 			email: 'member@example.test',
 			name: 'Synthetic member',
 			status: 2,
 			type: 0,
 			twoFactorEnabled: true,
-			internalField: 'must not escape response projection',
 		}]);
 		const memberResponse = await run(dir, [
 			'--response',
@@ -752,13 +1089,116 @@ test('list applies organization and search filters only where bw supports them',
 			expect(invalidCollection.code).toBe(1);
 			expect(invalidCollection.stderr).toContain('is not a GUID.');
 		}
+		for (const [id, org] of [['not-a-guid', organizationId], ['00000000-0000-0000-0000-000000000001', 'not-a-guid']]) {
+			const invalidConfirmation = await run(dir, [
+				'confirm',
+				'org-member',
+				id!,
+				'--organizationid',
+				org!,
+				'--session',
+				session,
+			]);
+			expect(invalidConfirmation.code).toBe(1);
+			expect(invalidConfirmation.stderr).toContain('is not a GUID.');
+		}
 		expect(paths).toEqual([
 			`/api/organizations/${organizationId}/users`,
 			`/api/organizations/${organizationId}/users`,
 		]);
 	} finally {
 		key.fill(0);
+		organizationKey.fill(0);
+		rsa.privateKey.fill(0);
 		server.closeAllConnections();
+		await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('built CLI edit preserves omitted cipher data and sends an explicit folder clear', async () => {
+	const dir = await mkdtemp(join(tmpdir(), 'vw-built-edit-'));
+	const key = Buffer.alloc(64, 36);
+	const cipherId = '11111111-2222-4333-8444-555555555555';
+	const original = {
+		...encryptItem({
+			type: 1,
+			name: 'Before edit',
+			notes: 'preserved note',
+			favorite: true,
+			login: { username: 'preserved-user', password: 'preserved-secret' },
+			fields: [{ name: 'preserved field', value: 'preserved value', type: 0 }],
+		}, key),
+		id: cipherId,
+		key: null,
+		edit: true,
+		permissions: { delete: true, restore: true },
+		folderId: 'folder-id',
+		revisionDate: '2026-01-01T00:00:00.000Z',
+	};
+	let submitted: Record<string, unknown> | undefined;
+	const server = createServer(async (request, response) => {
+		if (request.method === 'GET' && request.url === '/api/accounts/revision-date') {
+			response.writeHead(200, { 'Content-Type': 'application/json' }).end('1');
+			return;
+		}
+		if (request.method === 'GET' && request.url === '/api/sync?excludeDomains=false') {
+			response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({
+				profile: { id: 'synthetic-user' },
+				ciphers: [submitted ? { ...submitted, id: cipherId, revisionDate: '2026-02-01T00:00:00.000Z' } : original],
+				folders: [],
+			}));
+			return;
+		}
+		if (request.method !== 'PUT' || request.url !== `/api/ciphers/${cipherId}`) {
+			response.writeHead(404).end('{}');
+			return;
+		}
+		let body = '';
+		for await (const chunk of request) body += chunk;
+		submitted = JSON.parse(body);
+		response.writeHead(200, { 'Content-Type': 'application/json' });
+		response.end(JSON.stringify({ ...submitted, id: cipherId, revisionDate: '2026-02-01T00:00:00.000Z' }));
+	});
+	await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+	const address = server.address();
+	if (!address || typeof address === 'string') throw new Error('Missing built-edit fixture address.');
+	try {
+		let session = '';
+		await withStore(dir, async (state, save) => {
+			state.server = `http://127.0.0.1:${address.port}`;
+			state.account = {
+				email: 'synthetic@example.test',
+				kdf: { type: 0, iterations: 10000 },
+				encryptedUserKey: 'synthetic-wrapped-key',
+				accessToken: 'synthetic-access-token',
+				refreshToken: 'synthetic-refresh-token',
+				expiresAt: Date.now() + 3600000,
+			};
+			state.vault = {
+				profile: { id: 'synthetic-user' },
+				ciphers: [original],
+				folders: [],
+			};
+			session = sealSession(state, key);
+			await save();
+		});
+		const encoded = Buffer.from(JSON.stringify({ type: 1, name: 'After edit', folderId: null })).toString('base64');
+		const result = await run(dir, ['edit', 'item', cipherId, encoded, '--session', session]);
+		if (result.code !== 0) throw new Error(`Built edit failed: ${result.stderr}`);
+		expect(result.code).toBe(0);
+		expect(JSON.parse(result.stdout)).toMatchObject({ name: 'After edit', notes: 'preserved note' });
+		expect(submitted).toMatchObject({ favorite: true, folderId: null });
+		expect(decrypt(String(submitted!.name), key).toString()).toBe('After edit');
+		expect(decrypt(String(submitted!.notes), key).toString()).toBe('preserved note');
+		const login = submitted!.login as Record<string, string>;
+		expect(decrypt(String(login.username), key).toString()).toBe('preserved-user');
+		expect(decrypt(String(login.password), key).toString()).toBe('preserved-secret');
+		const [field] = submitted!.fields as Record<string, unknown>[];
+		expect(decrypt(String(field!.name), key).toString()).toBe('preserved field');
+		expect(decrypt(String(field!.value), key).toString()).toBe('preserved value');
+	} finally {
+		key.fill(0);
 		await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
 		await rm(dir, { recursive: true, force: true });
 	}
@@ -1139,7 +1579,11 @@ test('sync reads its last date offline, checks revisions, and forces full downlo
 			};
 			await save();
 		});
-		expect((await run(dir, ['sync', '--last'])).stdout).toBe('\n');
+		expect((await run(dir, ['sync', '--last'])).stdout).toBe('');
+		expect(JSON.parse((await run(dir, ['--response', 'sync', '--last'])).stdout)).toEqual({
+			success: true,
+			data: { object: 'string', data: null },
+		});
 		expect(paths).toEqual([]);
 		expect((await run(dir, ['sync'])).stdout.trim()).toBe('Syncing complete.');
 		expect(downloads).toBe(1);
@@ -1175,11 +1619,15 @@ test('sync reads its last date offline, checks revisions, and forces full downlo
 		expect(downloads).toBe(3);
 		const beforeFailure = (await run(dir, ['sync', '--last'])).stdout;
 		revision = NaN; // JSON null is an invalid revision, not permission to skip the download.
-		expect((await run(dir, ['sync'])).code).toBe(1);
+		const invalidRevision = await run(dir, ['sync']);
+		expect(invalidRevision.code).toBe(1);
+		expect(invalidRevision.stderr).toContain('Syncing failed:');
 		expect((await run(dir, ['sync', '--last'])).stdout).toBe(beforeFailure);
 		expect(downloads).toBe(3);
 		revision = -1;
-		expect((await run(dir, ['sync'])).code).toBe(1);
+		const failedRequest = await run(dir, ['sync']);
+		expect(failedRequest.code).toBe(1);
+		expect(failedRequest.stderr).toContain('Syncing failed: Account was deleted. Log in again.');
 		expect((await run(dir, ['status'])).stdout).toContain('unauthenticated');
 	} finally {
 		await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));

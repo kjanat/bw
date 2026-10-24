@@ -24,7 +24,7 @@ async function password(
 		throw new Error('Choose one password source.');
 	}
 	if (value !== undefined) return value;
-	if (file) return (await readFile(file, 'utf8')).split(/\r?\n/, 1)[0] ?? '';
+	if (file) return (await readFile(file, 'utf8')).split(/\r\n|\r|\n/, 1)[0] ?? '';
 	const secret = process.env[env ?? fallback];
 	if (env && secret === undefined) throw new Error('The selected password environment variable is unset.');
 	return secret;

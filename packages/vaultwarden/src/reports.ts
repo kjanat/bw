@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
 import zxcvbn from 'zxcvbn';
 import { object, text, serverUrl } from '#client';
 import type { VaultItem } from '#models';
@@ -144,6 +144,9 @@ function exposureCount(source: string, suffix: string): number {
 	}
 	return 0;
 }
+function passwordIdentity(password: string, key: Uint8Array): string {
+	return createHmac('sha256', key).update(password, 'utf8').digest('hex');
+}
 /** Decrypted items are input only; result rows never include passwords, usernames, or hashes. */
 export async function passwordHealth(
 	items: readonly VaultItem[],
@@ -153,10 +156,12 @@ export async function passwordHealth(
 		item.type === 1 && !item.deletedDate && typeof item.login?.password === 'string' && item.login.password !== ''
 	);
 	options.onStart?.(logins.length);
+	const identityKey = randomBytes(32);
 	const reuse = new Map<string, number>();
 	for (const item of logins) {
 		const password = text(object(item.login).password);
-		reuse.set(password, (reuse.get(password) ?? 0) + 1);
+		const identity = passwordIdentity(password, identityKey);
+		reuse.set(identity, (reuse.get(identity) ?? 0) + 1);
 	}
 	const exposure = options.checkExposed === false ? undefined : options.exposure ?? new PasswordExposureClient();
 	const pending = new Map<string, Promise<number>>();
@@ -164,7 +169,8 @@ export async function passwordHealth(
 		return await Promise.all(logins.map(async item => {
 			const login = object(item.login);
 			const password = text(login.password);
-			const count = reuse.get(password)!;
+			const identity = passwordIdentity(password, identityKey);
+			const count = reuse.get(identity)!;
 			const row: PasswordHealthRow = {
 				object: 'password-health',
 				id: text(item.id),
@@ -176,10 +182,10 @@ export async function passwordHealth(
 				exposedError: null,
 			};
 			if (exposure) {
-				let request = pending.get(password);
+				let request = pending.get(identity);
 				if (!request) {
 					request = exposure.count(password);
-					pending.set(password, request);
+					pending.set(identity, request);
 				}
 				try {
 					const found = await request;
@@ -196,5 +202,6 @@ export async function passwordHealth(
 	} finally {
 		reuse.clear();
 		pending.clear();
+		identityKey.fill(0);
 	}
 }

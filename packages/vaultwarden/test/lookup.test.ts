@@ -1,6 +1,6 @@
 import { test, expect } from 'bun:test';
 import { fingerprintWords } from '#fingerprint';
-import { findNamedObject, searchItems } from '#search';
+import { findNamedObject, searchItems, searchItemsAdvanced } from '#search';
 import { matchesUri, matchUriRegex } from '#uri-match';
 import { VaultwardenClient } from '#client';
 import { VaultService } from '#vault-service';
@@ -132,6 +132,11 @@ const items: VaultItem[] = [
 		type: 1,
 		name: 'Café Work',
 		notes: 'Archived project',
+		fields: [
+			{ name: 'Recovery', value: 'backup phrase', type: 0 },
+			{ name: 'Private', value: 'excluded-hidden-field', type: 1 },
+		],
+		attachments: [{ fileName: 'medical-report.pdf' }],
 		login: {
 			username: 'alice@company.com',
 			password: 'do-not-search-this',
@@ -204,6 +209,72 @@ test('basic item search ANDs normalized terms across display fields, URI hostnam
 		expect(searchItems(items, query)).toEqual([]);
 	}
 	expect(searchItems(items, 'work missing')).toEqual([]);
+	expect(searchItems(items, '>name:cafe')).toEqual([]);
+});
+test('basic CLI item search filters single-character and CJK queries without advanced syntax dispatch', () => {
+	expect(searchItems([items[6]!], 'x')).toEqual([]);
+	const han = { ...items[0]!, id: 'han-id', name: '密碼' };
+	expect(searchItems([han, items[1]!], '密').map(item => item.id)).toEqual(['han-id']);
+	expect(searchItems(items, '>')).toEqual([]);
+});
+test('basic item search ignores malformed and empty URI rows like the reference CLI', () => {
+	const malformed = {
+		...items[0]!,
+		login: {
+			...items[0]!.login,
+			uris: [null, 'bad row', {}, { uri: '   ' }, { uri: 'https://accounts.example.com/login' }],
+		},
+	} as unknown as VaultItem;
+	expect(searchItems([malformed], 'accounts')).toEqual([malformed]);
+	expect(searchItems([malformed], 'not-a-host')).toEqual([]);
+	const unnamed = { ...items[0]!, name: null } as unknown as VaultItem;
+	expect(searchItems([unnamed], 'accounts')).toEqual([unnamed]);
+});
+test('explicit library Lunr search supports fields without indexing secret custom-field values', () => {
+	for (
+		const [query, expected] of [
+			['>shortid:12345678', items[0]!],
+			['>name:cafe', items[0]!],
+			['>subtitle:9876', items[1]!],
+			['>notes:archived', items[0]!],
+			['>login.username:alice@company.com', items[0]!],
+			['>login.uris:accounts.example.com', items[0]!],
+			['>fields_joined:backup', items[0]!],
+			['>attachments_joined:medical', items[0]!],
+		] as const
+	) {
+		expect(searchItemsAdvanced(items, query.slice(1)).map(item => item.id), query).toEqual([expected.id]);
+	}
+	expect(
+		searchItemsAdvanced(
+			[{ ...items[0]!, organizationId: 'organization-advanced-search' }],
+			'organizationid:organization-advanced-search',
+		),
+	).toHaveLength(1);
+	expect(searchItemsAdvanced(items, 'login.uris:excluded')).toEqual([]);
+	expect(searchItemsAdvanced(items, 'login.uris:https')).toEqual([]);
+	expect(
+		searchItemsAdvanced(
+			[{ ...items[1]!, login: { uris: [{ uri: 'https://accounts.example.com' }] } }],
+			'login.uris:accounts.example.com',
+		),
+	).toEqual([]);
+	expect(searchItemsAdvanced(items, 'fields:excluded-hidden-field')).toEqual([]);
+	expect(searchItemsAdvanced(items, 'name:(')).toEqual([]);
+	const malformedUri = {
+		...items[0]!,
+		login: { ...items[0]!.login, uris: [null, 'bad row', { uri: 'https://accounts.example.com' }] },
+	} as unknown as VaultItem;
+	expect(searchItemsAdvanced([malformedUri], 'login.uris:accounts.example.com')).toEqual([malformedUri]);
+	const malformedMetadata = {
+		...items[0]!,
+		fields: [null, { name: 'Recovery', value: 'searchable', type: 0 }],
+		attachments: [null, { fileName: 'valid.pdf' }],
+	} as unknown as VaultItem;
+	expect(searchItemsAdvanced([malformedMetadata], 'fields:searchable')).toEqual([malformedMetadata]);
+	expect(searchItemsAdvanced([malformedMetadata], 'attachments_joined:valid')).toEqual([malformedMetadata]);
+	expect(searchItemsAdvanced([{ ...items[0]!, attachments: [{ fileName: '.env' }] }], 'attachments_joined:env'))
+		.toEqual([]);
 });
 test('URI matching honors all six strategies, domain boundaries, private suffixes, ports, IDNs and the google script exclusion', async () => {
 	expect(await matchesUri({ uri: 'https://login.example.co.uk', match: 0 }, 'https://www.example.co.uk/other')).toBe(
@@ -262,21 +333,23 @@ test('vault lookups filter before resolving ambiguity and distinguish ID reads f
 	};
 	const vault = new VaultService(new VaultwardenClient('https://example.com'), 'token', snapshot, key);
 	try {
-		expect(() => vault.findItem('cafe work')).toThrow('More than one result was found.');
-		expect(vault.findItem('cafe work', item => item.type === 1).id).toBe(items[0]!.id);
-		expect(() => vault.findItem('Archived only')).toThrow('not found');
-		expect(vault.findItem(clear[2]!.id!).name).toBe('Archived only');
-		expect(vault.findItem(clear[3]!.id!).name).toBe('Deleted');
+		await expect(vault.findItem('cafe work')).rejects.toThrow('More than one result was found.');
+		expect((await vault.findItem('cafe work', item => item.type === 1)).id).toBe(items[0]!.id);
+		expect(await vault.listItems({ search: '>name:cafe' })).toEqual([]);
+		await expect(vault.findItem('>name:cafe')).rejects.toThrow('not found');
+		await expect(vault.findItem('Archived only')).rejects.toThrow('not found');
+		expect((await vault.findItem(clear[2]!.id!)).name).toBe('Archived only');
+		expect((await vault.findItem(clear[3]!.id!)).name).toBe('Deleted');
 		expect((await vault.listItemsForUrl('https://alias.test')).map(item => item.id)).toEqual([items[0]!.id]);
-		expect(vault.listItems({ collectionId: 'null' })).toHaveLength(2);
-		expect(vault.listItems({ collectionId: 'notnull' })).toHaveLength(0);
+		expect(await vault.listItems({ collectionId: 'null' })).toHaveLength(2);
+		expect(await vault.listItems({ collectionId: 'notnull' })).toHaveLength(0);
 	} finally {
 		vault.dispose();
 		key.fill(0);
 	}
 });
 
-test('a missing UUID never falls back to matching another item by name or notes', () => {
+test('a missing UUID never falls back to matching another item by name or notes', async () => {
 	const key = Buffer.alloc(64, 5), missing = 'aaaaaaaa-0000-0000-0000-000000000099';
 	const item: VaultItem = {
 		id: 'bbbbbbbb-0000-0000-0000-000000000001',
@@ -289,8 +362,8 @@ test('a missing UUID never falls back to matching another item by name or notes'
 		ciphers: [transformItem(item, key, 'encrypt')],
 	}, key);
 	try {
-		expect(() => vault.findItem(missing)).toThrow('not found');
-		expect(() => vault.findItem(' ')).toThrow('not found');
+		await expect(vault.findItem(missing)).rejects.toThrow('not found');
+		await expect(vault.findItem(' ')).rejects.toThrow('not found');
 	} finally {
 		vault.dispose();
 		key.fill(0);

@@ -1,13 +1,16 @@
 import { hkdfSync, pbkdf2Sync, randomBytes } from 'node:crypto';
 import { ApiError, VaultwardenClient, object, text, serverUrl, type JsonObject } from '#client';
-import { encrypt, decrypt, encryptAttachment, decryptAttachment } from '#crypto';
+import { vaultwardenCapabilities } from '#capabilities';
+import { encrypt, decrypt, encryptAttachment, encryptedAttachmentSize, decryptAttachment } from '#crypto';
 import { MultipleResultsError } from '#search';
 
 export interface SendInput extends JsonObject {
+	object?: 'send';
 	type: 0 | 1;
 	name: string;
-	text?: { text: string; hidden?: boolean };
-	file?: { fileName: string };
+	text?: { text: string; hidden?: boolean } | null;
+	file?: { fileName: string } | null;
+	emails?: string[] | null;
 	password?: string | null;
 	deletionDate?: string;
 	expirationDate?: string | null;
@@ -21,6 +24,17 @@ export class SendPasswordRequired extends Error {
 		super(incorrect ? 'The Send password is incorrect.' : 'A Send password is required.');
 	}
 }
+const maxBitwardenSendContentSize = 500 * 1024 * 1024;
+export function assertSendFileSize(plaintextSize: number, vaultwarden: boolean): void {
+	if (!Number.isSafeInteger(plaintextSize) || plaintextSize < 0) throw new Error('Invalid Send file size.');
+	if (vaultwarden) {
+		if (encryptedAttachmentSize(plaintextSize) > vaultwardenCapabilities.fileUploads.maximumEncryptedBytes) {
+			throw new Error('Send file exceeds the 525 MiB Vaultwarden limit.');
+		}
+	} else if (plaintextSize > maxBitwardenSendContentSize) {
+		throw new Error('Send file exceeds the 500 MiB limit.');
+	}
+}
 /** Sends use full HKDF (extract and expand), unlike account master-key stretching. */
 export function deriveSendKey(seed: Uint8Array): Buffer {
 	if (seed.length !== 16) throw new Error('Invalid Send key seed.');
@@ -32,13 +46,16 @@ export function hashSendPassword(password: string, seed: Uint8Array): string {
 }
 export function sendTemplate(type: 0 | 1 = 0): SendInput {
 	return {
+		object: 'send',
 		type,
 		name: 'Send name',
 		notes: 'Some notes about this send.',
-		...(type === 0 ? { text: { text: 'Text to send', hidden: false } } : { file: { fileName: 'file.txt' } }),
+		text: type === 0 ? { text: 'Text contained in the send.', hidden: false } : null,
+		file: type === 1 ? { fileName: 'file attachment location' } : null,
+		emails: null,
+		maxAccessCount: null,
 		deletionDate: new Date(Date.now() + 7 * 86400000).toISOString(),
 		expirationDate: null,
-		maxAccessCount: null,
 		password: null,
 		disabled: false,
 		hideEmail: false,
@@ -70,7 +87,7 @@ function decodedSend(raw: JsonObject, seed: Uint8Array, server?: string): JsonOb
 function validate(input: SendInput, requireFutureDeletion = false): void {
 	if (input.type !== 0 && input.type !== 1) throw new Error('Vaultwarden supports text and file Sends only.');
 	if (typeof input.name !== 'string' || !input.name.trim()) throw new Error('A Send name is required.');
-	if (input.emails != null && (!Array.isArray(input.emails) || input.emails.length)) {
+	if (input.emails != null) {
 		throw new Error('Vaultwarden does not support email-verification Sends.');
 	}
 	if (input.password != null && typeof input.password !== 'string') throw new Error('Invalid Send password.');
@@ -131,9 +148,17 @@ export class SendService {
 	list(): JsonObject[] {
 		return this.records().map(raw => this.decode(raw));
 	}
+	private async canAccessFileSend(): Promise<boolean> {
+		return this.hasPremiumAccess() || await this.client.isVaultwardenServer();
+	}
+	async assertCanCreate(type: 0 | 1): Promise<void> {
+		if (type === 1 && !(await this.canAccessFileSend())) {
+			throw new Error('Premium status is required to use this feature.');
+		}
+	}
 	get(query: string, type?: 0 | 1): JsonObject {
 		const records = this.records();
-		const exact = records.find(value => value.id === query);
+		const exact = records.find(value => typeof value.id === 'string' && value.id.toLowerCase() === query.toLowerCase());
 		if (exact && (type === undefined || exact.type === type)) return this.decode(exact);
 		if (exact) throw new Error('Not found.');
 		const matches = records.map(value => this.decode(value)).filter(value =>
@@ -147,9 +172,7 @@ export class SendService {
 		return matches[0]!;
 	}
 	async create(input: SendInput, file?: Uint8Array): Promise<JsonObject> {
-		if (input.type === 1 && !this.hasPremiumAccess()) {
-			throw new Error('Premium status is required to use this feature.');
-		}
+		await this.assertCanCreate(input.type);
 		return this.save(
 			{ ...input, deletionDate: input.deletionDate ?? sendTemplate().deletionDate },
 			randomBytes(16),
@@ -159,7 +182,7 @@ export class SendService {
 	}
 	async edit(id: string, patch: JsonObject): Promise<JsonObject> {
 		const current = this.get(id);
-		if (current.type === 1 && !this.hasPremiumAccess()) {
+		if (current.type === 1 && !(await this.canAccessFileSend())) {
 			throw new Error('Premium status is required to use this feature.');
 		}
 		if (patch.type !== undefined && patch.type !== current.type) throw new Error('A Send cannot change type.');
@@ -190,7 +213,10 @@ export class SendService {
 			if (input.type === 0) data.text = { text: enc(input.text!.text), hidden: input.text!.hidden ?? false };
 			else if (!id) {
 				if (contents === undefined || !input.file?.fileName) throw new Error('A Send file and filename are required.');
-				if (contents.length > 500 * 1024 * 1024) throw new Error('Send file exceeds the 500 MiB limit.');
+				const isVaultwarden = contents.length > maxBitwardenSendContentSize
+					? await this.client.isVaultwardenServer()
+					: false;
+				assertSendFileSize(contents.length, isVaultwarden);
 				encrypted = encryptAttachment(contents, key);
 				data.file = { fileName: enc(input.file.fileName) };
 				data.fileLength = encrypted.length;

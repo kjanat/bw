@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { command, flag, plugin } from '@kjanat/dreamcli';
 import type { RuntimeAdapter } from '@kjanat/dreamcli/runtime';
+import { organizationCollectionResponse } from '@kjanat/vaultwarden';
 
 interface OutputPolicy {
 	quiet: boolean;
@@ -67,32 +68,6 @@ function responseError(message: unknown): string {
 	return String(message).replace(/^Unexpected error: /, '');
 }
 
-function organizationCollectionResponse(source: Record<string, unknown>): unknown {
-	const selections = (values: unknown) =>
-		Array.isArray(values)
-			? values.map(selection => {
-				const fields = selection && typeof selection === 'object' && !Array.isArray(selection)
-					? selection as Record<string, unknown>
-					: {};
-				return {
-					id: fields.id,
-					readOnly: fields.readOnly,
-					hidePasswords: fields.hidePasswords ?? false,
-					manage: fields.manage,
-				};
-			})
-			: values;
-	return {
-		object: 'org-collection',
-		id: source.id,
-		organizationId: source.organizationId,
-		name: source.name,
-		externalId: source.externalId,
-		groups: selections(source.groups),
-		users: selections(source.users),
-	};
-}
-
 export function responseMessage(
 	commandName: string,
 	args: Record<string, unknown>,
@@ -111,10 +86,12 @@ export function responseMessage(
 		commandName === 'generate'
 		|| commandName === 'encode'
 		|| (commandName === 'send' && !flags.fullObject)
-		|| (commandName === 'sync' && !!flags.last)
 		|| (commandName === 'config' && !configSetting)
 	) {
 		return { object: 'string', data: String(value) };
+	}
+	if (commandName === 'sync' && flags.last) {
+		return { object: 'string', data: value === '' ? null : String(value) };
 	}
 	if (
 		commandName === 'export'
@@ -150,6 +127,80 @@ export function outputResponseError(message: string, data?: unknown): boolean {
 	return true;
 }
 
+/** Serialize list entries through the same response models in normal and response modes. */
+export function listObjectResponse(objectType: string, value: unknown): unknown {
+	const itemObject = ({
+		items: 'cipher',
+		folders: 'folder',
+		collections: 'collection',
+		organizations: 'organization',
+		'org-collections': 'collection',
+		'org-members': 'org-member',
+	} as Record<string, string>)[objectType];
+	if (!itemObject || !value || typeof value !== 'object' || Array.isArray(value)) return value;
+	const source = value as Record<string, unknown>;
+	if (itemObject === 'folder') return { object: itemObject, id: source.id, name: source.name };
+	if (itemObject === 'collection') {
+		return {
+			object: itemObject,
+			id: source.id,
+			organizationId: source.organizationId,
+			name: source.name,
+			externalId: source.externalId,
+		};
+	}
+	if (itemObject === 'organization') {
+		return {
+			object: itemObject,
+			id: source.id,
+			name: source.name,
+			status: source.status,
+			type: source.type,
+			enabled: source.enabled,
+		};
+	}
+	if (itemObject === 'org-member') {
+		return {
+			object: itemObject,
+			id: source.id,
+			email: source.email,
+			name: source.name,
+			status: source.status,
+			type: source.type,
+			twoFactorEnabled: source.twoFactorEnabled,
+		};
+	}
+	return 'object' in source ? source : { object: itemObject, ...source };
+}
+
+/** Serialize standalone object reads through the reference command response models. */
+export function getObjectResponse(objectType: string, value: unknown): unknown {
+	if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+	const source = value as Record<string, unknown>;
+	if (objectType === 'folder') return { object: 'folder', id: source.id, name: source.name };
+	if (objectType === 'collection') {
+		return {
+			object: 'collection',
+			id: source.id,
+			organizationId: source.organizationId,
+			name: source.name,
+			externalId: source.externalId,
+		};
+	}
+	if (objectType === 'organization') {
+		return {
+			object: 'organization',
+			id: source.id,
+			name: source.name,
+			status: source.status,
+			type: source.type,
+			enabled: source.enabled,
+		};
+	}
+	if (objectType === 'org-collection') return organizationCollectionResponse(source);
+	return value;
+}
+
 export function responseData(commandName: string, args: Record<string, unknown>, value: unknown): unknown {
 	if (commandName === 'status') {
 		const status = value && typeof value === 'object' ? value as Record<string, unknown> : {};
@@ -163,6 +214,7 @@ export function responseData(commandName: string, args: Record<string, unknown>,
 		return { object: 'template', template };
 	}
 	if (commandName === 'get' && args.object === 'template') return { object: 'template', template: value };
+	if (commandName === 'get') return getObjectResponse(String(args.object).toLowerCase(), value);
 	if (commandName === 'template') {
 		const template = value && typeof value === 'object' && !('object' in value)
 			? { object: 'send', ...value }
@@ -173,88 +225,15 @@ export function responseData(commandName: string, args: Record<string, unknown>,
 		(commandName === 'create' || commandName === 'edit')
 		&& value && typeof value === 'object' && !Array.isArray(value)
 	) {
-		const source = value as Record<string, unknown>;
-		if (args.object === 'folder') return { object: 'folder', id: source.id, name: source.name };
-		if (args.object === 'org-collection') return organizationCollectionResponse(source);
-	}
-	if (commandName === 'get' && value && typeof value === 'object' && !Array.isArray(value)) {
-		const source = value as Record<string, unknown>;
-		if (args.object === 'folder') return { object: 'folder', id: source.id, name: source.name };
-		if (args.object === 'collection') {
-			return {
-				object: 'collection',
-				id: source.id,
-				organizationId: source.organizationId,
-				name: source.name,
-				externalId: source.externalId,
-			};
-		}
-		if (args.object === 'organization') {
-			return {
-				object: 'organization',
-				id: source.id,
-				name: source.name,
-				status: source.status,
-				type: source.type,
-				enabled: source.enabled,
-			};
-		}
-		if (args.object === 'org-collection') {
-			return organizationCollectionResponse(source);
-		}
+		return getObjectResponse(String(args.object).toLowerCase(), value);
 	}
 	if (commandName === 'get' && typeof value === 'string') return { object: 'string', data: value };
 	if (Array.isArray(value)) {
-		const itemObject = commandName === 'list'
-			? ({
-				items: 'cipher',
-				folders: 'folder',
-				collections: 'collection',
-				organizations: 'organization',
-				'org-collections': 'collection',
-				'org-members': 'org-member',
-			} as Record<string, string>)[String(args.object)]
-			: undefined;
+		const itemObject = commandName === 'list' ? String(args.object).toLowerCase() : undefined;
 		return {
 			object: 'list',
 			data: itemObject
-				? value.map(item => {
-					if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
-					const source = item as Record<string, unknown>;
-					if (itemObject === 'folder') return { object: itemObject, id: source.id, name: source.name };
-					if (itemObject === 'collection') {
-						return {
-							object: itemObject,
-							id: source.id,
-							organizationId: source.organizationId,
-							name: source.name,
-							externalId: source.externalId,
-						};
-					}
-					if (itemObject === 'org-member' || itemObject === 'organization') {
-						if (itemObject === 'organization') {
-							return {
-								object: itemObject,
-								id: source.id,
-								name: source.name,
-								status: source.status,
-								type: source.type,
-								enabled: source.enabled,
-							};
-						}
-						return {
-							object: itemObject,
-							id: source.id,
-							email: source.email,
-							name: source.name,
-							status: source.status,
-							type: source.type,
-							twoFactorEnabled: source.twoFactorEnabled,
-						};
-					}
-					if ('object' in source) return source;
-					return { object: itemObject, ...item };
-				})
+				? value.map(item => listObjectResponse(itemObject, item))
 				: value,
 		};
 	}

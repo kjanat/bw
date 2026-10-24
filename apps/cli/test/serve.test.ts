@@ -34,11 +34,14 @@ try {
       peer=net.connect(port,'127.0.0.1'); await once(peer,'connect');
       [accepted]=await connection; accepted.pause();
       address='fd+connected://3';
-    } else address='fd+listening://3';
+    } else if(mode==='listening') address='fd+listening://3';
+    else { address='127.0.0.1'; await new Promise(resolve=>parent.close(resolve)); parent=undefined; }
   }
   const stdio=['ignore','pipe','pipe'];
-  if(mode!=='unix') stdio.push((mode==='connected'?accepted:parent)._handle.fd);
-  child=spawn(process.execPath,[executable,'serve','--hostname',address],{
+  if(mode==='connected'||mode==='listening') stdio.push((mode==='connected'?accepted:parent)._handle.fd);
+  const args=[executable,'serve','--hostname',address];
+  if(mode==='unauth') args.push('--port',String(port));
+  child=spawn(process.execPath,args,{
     env:{PATH:process.env.PATH,VW_APPDATA_DIR:directory},stdio,
   });
   const exited=once(child,'exit');
@@ -47,11 +50,26 @@ try {
   parent?.close();
   await new Promise((resolve,reject)=>{
     let output='';
-    child.stderr.on('data',data=>{ output+=data; if(output.includes('Listening on '+address)) resolve(); });
+    const ready=mode==='unauth'?'Listening on http://'+address+':'+port:'Listening on '+address;
+    child.stderr.on('data',data=>{ output+=data; if(output.includes(ready)) resolve(); });
     child.once('error',reject); child.once('exit',()=>reject(Error('Listener exited before startup')));
   });
   let result;
-  if(mode==='connected') {
+  if(mode==='unauth') {
+    const request=path=>new Promise((resolve,reject)=>{
+      const incoming=http.get({host:'127.0.0.1',port,path,headers:{Host:'localhost:'+port,Connection:'close'}},response=>{
+        let output=''; response.setEncoding('utf8'); response.on('data',data=>output+=data);
+        response.on('end',()=>resolve({status:response.statusCode,body:JSON.parse(output)}));
+      }); incoming.on('error',reject);
+    });
+    result=await request('/status');
+    if(result.status!==200||result.body.data.template.status!=='unauthenticated') throw Error('Unexpected unauthenticated status');
+    result=await request('/generate?length=8');
+    if(result.status!==200||result.body.data.data.length!==8) throw Error('Public generation failed while logged out');
+    result=await request('/list/object/items');
+    if(result.status!==400||result.body.message!=='You are not logged in.') throw Error('Vault route did not report the logged-out state');
+    child.kill('SIGTERM');
+  } else if(mode==='connected') {
     let output=''; peer.setEncoding('utf8'); peer.on('data',data=>output+=data);
     const ended=once(peer,'end');
     peer.write('GET /status HTTP/1.1\r\nHost: localhost:8087\r\nConnection: close\r\n\r\n');
@@ -77,40 +95,46 @@ try {
 } catch(error) { console.error(error.message); process.exitCode=1; }
 finally { clearTimeout(timeout); child?.kill('SIGKILL'); peer?.destroy(); accepted?.destroy(); parent?.close(); }
 `;
-for (const mode of ['unix', 'listening', 'connected']) {
-	test(`built Node serve supports ${mode} sockets and closes cleanly`, async () => {
-		const dir = await mkdtemp(join(tmpdir(), 'vw-listener-'));
-		try {
-			await withStore(dir, async (state, save) => {
-				state.server = 'https://example.com';
-				state.account = {
-					email: 'fixture@example.com',
-					kdf: { type: 0, iterations: 600000 },
-					accessToken: `header.${
-						Buffer.from(JSON.stringify({ sub: '11111111-1111-1111-1111-111111111111' })).toString('base64url')
-					}.signature`,
-					refreshToken: 'synthetic-refresh',
-					expiresAt: Date.now() + 3600000,
-					encryptedUserKey: 'locked-fixture-key',
-				};
-				await save();
-			});
-			const executable = new URL('../dist/main.js', import.meta.url).pathname;
-			const child = Bun.spawn(['node', '--input-type=module', '-e', harness, mode, executable, dir], {
-				stdout: 'pipe',
-				stderr: 'pipe',
-				env: { PATH: process.env.PATH },
-			});
-			const [code, stdout, stderr] = await Promise.all([
-				child.exited,
-				new Response(child.stdout).text(),
-				new Response(child.stderr).text(),
-			]);
-			expect(stderr).toBe('');
-			expect(code).toBe(0);
-			expect(stdout.trim()).toBe(`PASS ${mode}`);
-		} finally {
-			await rm(dir, { recursive: true, force: true });
-		}
-	}, 15000);
+for (const mode of ['unix', 'listening', 'connected', 'unauth']) {
+	test(
+		`built Node serve supports ${mode === 'unauth' ? 'logged-out startup' : `${mode} sockets`} and closes cleanly`,
+		async () => {
+			const dir = await mkdtemp(join(tmpdir(), 'vw-listener-'));
+			try {
+				if (mode !== 'unauth') {
+					await withStore(dir, async (state, save) => {
+						state.server = 'https://example.com';
+						state.account = {
+							email: 'fixture@example.com',
+							kdf: { type: 0, iterations: 600000 },
+							accessToken: `header.${
+								Buffer.from(JSON.stringify({ sub: '11111111-1111-1111-1111-111111111111' })).toString('base64url')
+							}.signature`,
+							refreshToken: 'synthetic-refresh',
+							expiresAt: Date.now() + 3600000,
+							encryptedUserKey: 'locked-fixture-key',
+						};
+						await save();
+					});
+				}
+				const executable = new URL('../dist/main.js', import.meta.url).pathname;
+				const child = Bun.spawn(['node', '--input-type=module', '-e', harness, mode, executable, dir], {
+					stdout: 'pipe',
+					stderr: 'pipe',
+					env: { PATH: process.env.PATH },
+				});
+				const [code, stdout, stderr] = await Promise.all([
+					child.exited,
+					new Response(child.stdout).text(),
+					new Response(child.stderr).text(),
+				]);
+				expect(stderr).toBe('');
+				expect(code).toBe(0);
+				expect(stdout.trim()).toBe(`PASS ${mode}`);
+			} finally {
+				await rm(dir, { recursive: true, force: true });
+			}
+		},
+		15000,
+	);
 }

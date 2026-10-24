@@ -100,7 +100,7 @@ export async function loginWithSso(
 				const url = (value as Record<string, unknown>).AuthUrl;
 				return typeof url === 'string' ? url : undefined;
 			})(),
-			...(webAuthn ? { webAuthnOptions: webAuthn, webAuthnOrigin: new URL(client.server).origin } : {}),
+			...(webAuthn ? { webAuthnOptions: webAuthn, webAuthnOrigin: await client.webAuthnOrigin() } : {}),
 			requestEmail: async () => {
 				if (!providers.includes(1)) throw new Error('Email two-factor authentication is unavailable.');
 				await client.sendSsoEmailLogin();
