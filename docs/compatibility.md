@@ -519,17 +519,58 @@ Build, type checks, lint, and formatting checks passed for the new packages.
 ## Remaining work
 
 The complete scope is tracked in [implementation status](implementation-status.md).
-Outstanding work includes the remaining import adapters, transfer edge cases,
-legacy Send access protocols, remaining local API parity, live verification of
-legacy attachment migration during moves, additional authentication flows,
-global flag parity, newer item/encryption types, and an automated multi-version
-compatibility matrix. The newer cipher types now have live protocol coverage on
-both verified Vaultwarden releases under PBKDF2 and Argon2id; independent `bw`
-parity for those types remains outstanding.
+All 72 reference import format IDs are registered. Legacy Send access and legacy
+attachment migration during moves have live coverage, and the automated
+multi-version matrix exists. Those implementation milestones do not close the
+broader fidelity and verification work below.
+
+- [ ] Pass the complete hosted Vaultwarden 1.36.0/1.37.4 and Node 24/26 matrix
+      on the intended PR head. At head `45d9814` on 2026-10-25, build/types/lint/unit
+      tests and both 1.36.0 jobs passed; both 1.37.4 jobs were still running.
+      [Recorded run](https://github.com/kjanat/bw/actions/runs/40152113942).
+      A passing result on another head does not close this gate.
+- [ ] Finish command-by-command runtime comparisons against the pinned command
+      inventory: positional arguments, nested subcommands, validation order, filters,
+      aliases, templates, input precedence, noninteractive behavior, output/error
+      envelopes, and exit codes. Matching command names and options is insufficient.
+- [ ] Complete importer/exporter fidelity across relevant vendor versions,
+      personal and organization scopes, both KDFs, and both pinned servers. Include
+      malformed input, failure handling, size and record limits, attachment handling,
+      and round trips; registration of a format alone does not establish fidelity.
+- [ ] Finish local REST object projections, errors, envelopes, and status-code
+      comparisons beyond the routes and objects already independently checked.
+- [ ] Verify Duo OIDC with a live provider and WebAuthn/U2F with physical
+      authenticators. Classify and resolve the legacy Duo iframe flow separately:
+      it is not implemented by the current OIDC path.
+- [ ] Verify SSO email-factor delivery and SSO recovery against real servers,
+      and finish the remaining authentication/account-state audit. Request fixtures
+      and terminal prompt tests do not establish provider or server behavior.
+- [ ] Resolve capability/entitlement inconsistencies in production code,
+      including archived-item listing when Vaultwarden's synced premium fields are
+      false. Review the attachment size ceiling, email-restricted Send rejection,
+      and organization device-approval rejection currently applied to Bitwarden
+      connections too; gate or explicitly document each restriction as appropriate.
+- [ ] Complete applicable encryption/response-variant coverage and independent
+      cross-client round trips for item types 6–8. Exercise restrictive organization
+      policies through production operations against live Vaultwarden, with focused
+      regression coverage for each resulting behavior change.
+- [ ] Add a version-matched independent reference comparison for Vaultwarden
+      1.36.0. The pinned `bw` 2026.10.0 cannot parse that server's prelogin response;
+      our protocol checks are separate evidence, not a replacement comparison.
+- [ ] Reconcile this document, the implementation tracker, and the PR checklist
+      against the final command audit and exact tested head. Record each remaining
+      restriction or intentional deviation before claiming parity or marking the PR
+      ready.
+
+GitGuardian is excluded from this work at the user's request. Its check was
+skipped on the recorded head; it is not a compatibility completion requirement.
 
 Before claiming an operation is supported, implement it in the library, exercise
 it against disposable Vaultwarden, and add CLI coverage where applicable. Mocked
 protocol responses alone do not establish real-server compatibility.
+Close a checklist item only when its production behavior and required focused,
+live, and independent-reference evidence are recorded. Distinguish implemented
+behavior awaiting verification from behavior that still needs implementation.
 
 ## Reference CLI domain-setting limitation
 
