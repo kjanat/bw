@@ -2123,7 +2123,8 @@ test('authentication checks ignore unused password files and do not prompt', asy
 });
 
 for (const shell of ['zsh', 'bash', 'fish', 'powershell']) {
-	test(`schema-derived ${shell} completion parses`, async () => {
+	// A cold PowerShell/.NET start can exceed Bun's default five-second test budget on CI.
+	test(`schema-derived ${shell} completion parses`, { timeout: shell === 'powershell' ? 30000 : 5000 }, async () => {
 		const dir = await mkdtemp(join(tmpdir(), `vw-completion-${shell}-`));
 		try {
 			const generated = await run(dir, ['completion', '--shell', shell]);
@@ -2142,8 +2143,14 @@ for (const shell of ['zsh', 'bash', 'fish', 'powershell']) {
 				);
 				args = ['pwsh', '-NoProfile', '-NonInteractive', '-File', parser, '-Path', path];
 			}
-			const child = Bun.spawn(args, { stdout: 'ignore', stderr: 'pipe' });
+			const child = Bun.spawn(args, {
+				stdout: 'ignore',
+				stderr: 'pipe',
+				timeout: shell === 'powershell' ? 20000 : undefined,
+				killSignal: 'SIGKILL',
+			});
 			const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+			if (child.signalCode) throw new Error(`${shell} completion parser terminated with ${child.signalCode}.`);
 			if (code) throw new Error(`${shell} completion syntax failed: ${stderr}`);
 			if (shell === 'fish') {
 				const complete = Bun.spawn(['fish', '--no-config', '-c', 'source $argv[1]; complete -C "vw lo"', path], {
