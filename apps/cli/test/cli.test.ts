@@ -26,11 +26,12 @@ async function run(
 		child.stdin.write(stdinData);
 		child.stdin.end();
 	}
-	return {
-		code: await child.exited,
-		stdout: await new Response(child.stdout).text(),
-		stderr: await new Response(child.stderr).text(),
-	};
+	const [code, stdout, stderr] = await Promise.all([
+		child.exited,
+		new Response(child.stdout).text(),
+		new Response(child.stderr).text(),
+	]);
+	return { code, stdout, stderr };
 }
 test('org collection create/edit treat whitespace organization options as absent', () => {
 	const organizationId = '11111111-1111-1111-1111-111111111111';
@@ -38,7 +39,7 @@ test('org collection create/edit treat whitespace organization options as absent
 	expect(collectionOrganizationId(organizationId.toUpperCase(), { organizationId })).toBe(organizationId);
 	expect(() => collectionOrganizationId('   ', {})).toThrow('An organization id is required');
 });
-test('built Node CLI exposes DreamCLI help and validates commands', { timeout: 15000 }, async () => {
+test('built Node CLI exposes DreamCLI help and common flags', { timeout: 15000 }, async () => {
 	const dir = await mkdtemp(join(tmpdir(), 'vw-cli-'));
 	try {
 		const help = await run(dir, ['--help']);
@@ -59,6 +60,14 @@ test('built Node CLI exposes DreamCLI help and validates commands', { timeout: 1
 		expect(noInteraction.stdout.trim()).toHaveLength(5);
 		const directCommandNoInteraction = await run(dir, ['sdk-version', '--nointeraction']);
 		expect(directCommandNoInteraction.code).toBe(0);
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('built Node CLI validates noninteractive input and authenticated object names', { timeout: 15000 }, async () => {
+	const dir = await mkdtemp(join(tmpdir(), 'vw-cli-input-'));
+	try {
 		const protectedImport = join(dir, 'protected.json');
 		await writeFile(protectedImport, JSON.stringify({ passwordProtected: true }));
 		await withStore(dir, async (state, save) => {
@@ -122,10 +131,14 @@ test('built Node CLI exposes DreamCLI help and validates commands', { timeout: 1
 		const unknownRestore = await run(dir, ['restore', 'unsupported-object', 'synthetic-id']);
 		expect(unknownRestore.code).toBe(1);
 		expect(unknownRestore.stderr).toContain('Unknown object.');
-		await withStore(dir, async (state, save) => {
-			delete state.account;
-			await save();
-		});
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('built Node CLI gates logged-out vault commands before validating their inputs', { timeout: 15000 }, async () => {
+	const dir = await mkdtemp(join(tmpdir(), 'vw-cli-gating-'));
+	try {
 		const uppercaseObject = await run(dir, ['--raw', 'get', 'TEMPLATE', 'ITEM']);
 		expect(uppercaseObject.code).toBe(1);
 		expect(uppercaseObject.stderr).toContain('You are not logged in.');
@@ -254,6 +267,14 @@ test('built Node CLI exposes DreamCLI help and validates commands', { timeout: 1
 		expect(reportHelp.code).toBe(0);
 		expect(reportHelp.stdout).toContain('--no-check-exposed');
 		expect(reportHelp.stdout).not.toContain('[no-]check-exposed');
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('built Node CLI persists server configuration and applies clean-exit flags', { timeout: 15000 }, async () => {
+	const dir = await mkdtemp(join(tmpdir(), 'vw-cli-config-'));
+	try {
 		const config = await run(dir, [
 			'config',
 			'server',
@@ -2101,10 +2122,10 @@ test('authentication checks ignore unused password files and do not prompt', asy
 	}
 });
 
-test('schema-derived completions parse in all four shells and fish completes real command prefixes', async () => {
-	const dir = await mkdtemp(join(tmpdir(), 'vw-completion-'));
-	try {
-		for (const shell of ['zsh', 'bash', 'fish', 'powershell']) {
+for (const shell of ['zsh', 'bash', 'fish', 'powershell']) {
+	test(`schema-derived ${shell} completion parses`, async () => {
+		const dir = await mkdtemp(join(tmpdir(), `vw-completion-${shell}-`));
+		try {
 			const generated = await run(dir, ['completion', '--shell', shell]);
 			expect(generated.code).toBe(0);
 			expect(generated.stdout).toContain('login');
@@ -2121,7 +2142,7 @@ test('schema-derived completions parse in all four shells and fish completes rea
 				);
 				args = ['pwsh', '-NoProfile', '-NonInteractive', '-File', parser, '-Path', path];
 			}
-			const child = Bun.spawn(args, { stdout: 'pipe', stderr: 'pipe' });
+			const child = Bun.spawn(args, { stdout: 'ignore', stderr: 'pipe' });
 			const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
 			if (code) throw new Error(`${shell} completion syntax failed: ${stderr}`);
 			if (shell === 'fish') {
@@ -2129,12 +2150,24 @@ test('schema-derived completions parse in all four shells and fish completes rea
 					stdout: 'pipe',
 					stderr: 'pipe',
 				});
-				const output = await new Response(complete.stdout).text();
-				expect(await complete.exited).toBe(0);
+				const [code, output, stderr] = await Promise.all([
+					complete.exited,
+					new Response(complete.stdout).text(),
+					new Response(complete.stderr).text(),
+				]);
+				if (code) throw new Error(`fish completion failed: ${stderr}`);
 				expect(output).toContain('login');
 				expect(output).toContain('logout');
 			}
+		} finally {
+			await rm(dir, { recursive: true, force: true });
 		}
+	});
+}
+
+test('completion rejects missing and unsupported shells', async () => {
+	const dir = await mkdtemp(join(tmpdir(), 'vw-completion-invalid-'));
+	try {
 		expect((await run(dir, ['completion'])).code).toBe(1);
 		expect((await run(dir, ['completion', '--shell', 'unknown'])).code).not.toBe(0);
 	} finally {
