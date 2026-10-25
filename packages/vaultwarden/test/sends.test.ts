@@ -2,6 +2,7 @@ import { test, expect } from 'bun:test';
 import { VaultwardenClient, ApiError, type JsonObject } from '#client';
 import { encrypt, decrypt, encryptAttachment } from '#crypto';
 import { MultipleResultsError } from '#search';
+import { sendObjectResponse } from '#local-api-models';
 import {
 	deriveSendKey,
 	hashSendPassword,
@@ -182,7 +183,7 @@ test('Send creation rejects a deletion date that is not in the future before net
 	})).rejects.toMatchObject({ message: 'Must specify a valid deletion date after the current time' });
 	expect(requests).toBe(0);
 });
-test('Send creation rejects even an empty non-null email list before network access', async () => {
+test('Send creation rejects recipient lists and malformed email values before network access', async () => {
 	let requests = 0;
 	const client = new VaultwardenClient('https://vault.example', {
 		fetch: (async () => {
@@ -191,13 +192,36 @@ test('Send creation rejects even an empty non-null email list before network acc
 		}) as unknown as typeof fetch,
 	});
 	const service = new SendService(client, 'owner-token', { sends: [] }, accountKey);
-	await expect(service.create({
-		type: 0,
-		name: 'Email Send',
-		text: { text: 'payload' },
-		emails: [],
-	})).rejects.toThrow('Vaultwarden does not support email-verification Sends.');
+	for (const emails of [['recipient@example.com'], '', {}, 0]) {
+		await expect(service.create({
+			type: 0,
+			name: 'Email Send',
+			text: { text: 'payload' },
+			emails: emails as string[],
+		})).rejects.toThrow('Vaultwarden does not support email-verification Sends.');
+	}
 	expect(requests).toBe(0);
+});
+test('Send response email defaults round-trip through create and edit without enabling email verification', async () => {
+	let requests = 0;
+	const client = new VaultwardenClient('https://vault.example', {
+		fetch: (async (_url: unknown, init?: RequestInit) => {
+			requests++;
+			const body = JSON.parse(String(init!.body));
+			expect(Object.hasOwn(body, 'emails')).toBe(false);
+			expect(Object.hasOwn(body, 'authType')).toBe(false);
+			return Response.json({ ...encryptedSend(), ...body });
+		}) as unknown as typeof fetch,
+	});
+	const service = new SendService(client, 'owner-token', { sends: [encryptedSend()] }, accountKey);
+	const created = await service.create({ type: 0, name: 'Created', text: { text: 'payload' }, emails: [] });
+	expect(created.name).toBe('Created');
+	// The public Send response contains emails: [] even when Vaultwarden has no email-restricted Send.
+	const displayed = sendObjectResponse(service.get('send-id'));
+	expect(displayed.emails).toEqual([]);
+	expect((await service.edit('send-id', { ...displayed, name: 'Renamed' })).name).toBe('Renamed');
+	await expect(service.edit('send-id', { emails: ['recipient@example.com'] })).rejects.toThrow('email-verification');
+	expect(requests).toBe(2);
 });
 test('Send file size limits match Bitwarden and Vaultwarden wire payload limits', () => {
 	const fiveHundredMiB = 500 * 1024 * 1024;

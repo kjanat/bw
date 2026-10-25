@@ -87,7 +87,8 @@ function decodedSend(raw: JsonObject, seed: Uint8Array, server?: string): JsonOb
 function validate(input: SendInput, requireFutureDeletion = false): void {
 	if (input.type !== 0 && input.type !== 1) throw new Error('Vaultwarden supports text and file Sends only.');
 	if (typeof input.name !== 'string' || !input.name.trim()) throw new Error('A Send name is required.');
-	if (input.emails != null) {
+	// Send responses default to emails: []; accept that round-trip value, but never send it to Vaultwarden.
+	if (input.emails != null && (!Array.isArray(input.emails) || input.emails.length > 0)) {
 		throw new Error('Vaultwarden does not support email-verification Sends.');
 	}
 	if (input.password != null && typeof input.password !== 'string') throw new Error('Invalid Send password.');

@@ -334,16 +334,19 @@ Server contract: [1.36.0 sends.rs](https://github.com/dani-garcia/vaultwarden/bl
 ### VW-16: No email-verification Sends
 
 The reference CLI supports `--emails` and email-restricted Send access.
-Vaultwarden rejects any non-null `emails` value, including an empty array. Our
-library rejects it before mutation; the CLI also rejects the `--emails` option.
-Omitted or null emails remain valid.
+Vaultwarden rejects a non-null `emails` request field. Our library rejects
+nonempty recipient lists and malformed email values before mutation; the CLI
+also rejects the `--emails` option. Omitted, null, or empty-array values in
+application input remain valid and produce no `emails` field on the wire.
+Accepting `[]` preserves the round-trip from the public Send response back into
+create/edit; it does not request email verification from Vaultwarden.
 
 This is currently a product-wide restriction, not a server-detected one:
 connecting this client to Bitwarden does not enable email-verification Sends.
 
 Implementation: validation in [sends.ts](../packages/vaultwarden/src/sends.ts)
 and [send-commands.ts](../apps/cli/src/send-commands.ts).
-Coverage: empty/nonempty email-list rejection in
+Coverage: public-response round-trip, empty-list omission, and recipient-list rejection in
 [sends.test.ts](../packages/vaultwarden/test/sends.test.ts).
 Server contract: [sends.rs](https://github.com/dani-garcia/vaultwarden/blob/1.37.4/src/api/core/sends.rs).
 
