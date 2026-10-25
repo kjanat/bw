@@ -101,6 +101,16 @@ KDF work is bounded: PBKDF2 at most 10,000,000 iterations; Argon2id at most
 20 iterations, 256 MiB, and 16 lanes. Unsupported formats fail explicitly.
 See [implementation status](implementation-status.md) for the full command target.
 
+Account/export and KDBX Argon2 derivation use `micro509/kdf` from micro509
+0.17.0. Native WebCrypto handles supported requests without loading
+`@noble/hashes`; an explicit portable backend is loaded only after an
+`unsupported` result. This preserves Bun and KDBX Argon2 version `0x10`
+support. Invalid parameters, resource rejection, and native derivation failures
+do not trigger a fallback. Four Argon2d/id version `0x10`/`0x13` vectors are
+independently checked against libargon2, alongside the Bitwarden account vector.
+Removing the portable dependency is tracked in
+[micro509#203](https://github.com/kjanat/micro509/issues/203).
+
 The pinned Vaultwarden identity handler sends a new-device notification after
 successful authentication when email is configured; its token response does not
 include `requiresDeviceVerification`. The official CLI's follow-up OTP prompt is
@@ -414,8 +424,11 @@ organization collections, encrypted upload, malformed containers, multiple
 accounts/vaults, and skipped-record reporting. OpenSSH independently reads keys
 converted from PKCS#8 for Ed25519, RSA, and NIST P-256/P-384/P-521; its SHA256
 fingerprints match the importer. Private OpenSSH encodings have random check
-integers and are not compared byte for byte with bw. Unlike the pinned client,
-the parser processes every source account. Document binaries remain outside the
+integers and are not compared byte for byte with bw. SSH key conversion now uses
+micro509 0.17.0's PKCS#8 and OpenSSH APIs; the exported
+`parseOnePassword1Pux` function is asynchronous and callers must await it.
+The parser processes every vault in the first source account, matching the
+pinned client. Document binaries remain outside the
 reference mapping, and dedicated bank/passport/license types remain under the
 wider server capability audit. Archive decoding reads only `export.data`,
 bounded to 100 MiB, without filesystem extraction. Broader 1PUX conformance/limits

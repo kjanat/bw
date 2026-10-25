@@ -1,5 +1,5 @@
 import { CryptoEngine, Kdbx, KdbxGroup, KdbxEntry, ProtectedValue } from 'kdbxweb';
-import { argon2dAsync, argon2idAsync } from '@noble/hashes/argon2.js';
+import { deriveArgon2Key } from '#argon2';
 import { randomUUID } from 'node:crypto';
 import { isIP } from 'node:net';
 import type { JsonObject } from '#client';
@@ -16,13 +16,15 @@ export function configureKdbxCrypto(): void {
 		) {
 			throw new KdbxImportError('Unsupported KDBX KDF parameters.');
 		}
-		const hash = await (type === 0 ? argon2dAsync : argon2idAsync)(new Uint8Array(password), new Uint8Array(salt), {
-			m: memory,
-			t: iterations,
-			p: parallelism,
-			dkLen: length,
-			version,
-			maxmem: 272 * 1024 * 1024,
+		const hash = await deriveArgon2Key({
+			algorithm: type === 0 ? 'argon2d' : 'argon2id',
+			password: new Uint8Array(password),
+			salt: new Uint8Array(salt),
+			memoryKiB: memory,
+			passes: iterations,
+			parallelism,
+			outputBytes: length,
+			version: version as 0x10 | 0x13,
 		});
 		return hash.buffer as ArrayBuffer;
 	});

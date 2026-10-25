@@ -140,7 +140,7 @@ function fill(item: VaultItem, category: string, field: JsonObject, key: string,
 	const map = maps[category];
 	return !!map && typeof id === 'string' && Object.hasOwn(map, id) && set(map[id]!);
 }
-function parseItem(source: JsonObject): { item: VaultItem; tag: string | null } {
+async function parseItem(source: JsonObject): Promise<{ item: VaultItem; tag: string | null }> {
 	const category = String(source.categoryUuid),
 		details = record(source.details),
 		overview = record(source.overview ?? {});
@@ -204,7 +204,7 @@ function parseItem(source: JsonObject): { item: VaultItem; tag: string | null } 
 			if (item.type === 5 && key === 'sshKey') {
 				const metadata = record(record(raw).metadata);
 				if (typeof metadata.privateKey !== 'string') throw new SshImportError('sshKeyParseFailed');
-				item.sshKey = importSshPkcs8(metadata.privateKey);
+				item.sshKey = await importSshPkcs8(metadata.privateKey);
 				continue;
 			}
 			if (fill(item, category, field, key, raw)) continue;
@@ -238,8 +238,8 @@ function parseItem(source: JsonObject): { item: VaultItem; tag: string | null } 
 			?? null,
 	};
 }
-/** Accept export.data JSON or a binary .1pux archive; no archive paths are written to disk. */
-export function parseOnePassword1Pux(input: string | Uint8Array, organization = false): JsonObject {
+/** Accept export.data JSON or a binary .1pux archive; awaits SSH conversion without writing archive paths to disk. */
+export async function parseOnePassword1Pux(input: string | Uint8Array, organization = false): Promise<JsonObject> {
 	let source: string;
 	if (typeof input !== 'string' && input[0] === 0x50 && input[1] === 0x4b) {
 		try {
@@ -278,7 +278,7 @@ export function parseOnePassword1Pux(input: string | Uint8Array, organization = 
 	for (const vault of array(firstAccount.vaults).map(record)) {
 		for (const source of array(vault.items)) {
 			try {
-				const { item, tag } = parseItem(record(source));
+				const { item, tag } = await parseItem(record(source));
 				const id = tag != null ? folder(tag) : null;
 				if (tag) {
 					for (let end = tag.lastIndexOf('/'); end > 0; end = tag.lastIndexOf('/', end - 1)) {

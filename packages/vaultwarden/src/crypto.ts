@@ -8,7 +8,7 @@ import {
 	timingSafeEqual,
 } from 'node:crypto';
 import { promisify } from 'node:util';
-import { argon2idAsync } from '@noble/hashes/argon2.js';
+import { deriveArgon2Key } from '#argon2';
 import {
 	generateKeyPair,
 	importPkcs8DerOrThrow,
@@ -50,12 +50,15 @@ export async function deriveKdfKey(password: string, salt: string, kdf: Kdf): Pr
 	integer(kdf.memory, 8, 256);
 	integer(kdf.parallelism, 1, 16);
 	return Buffer.from(
-		await argon2idAsync(password, createHash('sha256').update(salt).digest(), {
-			t: kdf.iterations,
-			m: kdf.memory * 1024,
-			p: kdf.parallelism,
-			dkLen: 32,
-			maxmem: 272 * 1024 * 1024,
+		await deriveArgon2Key({
+			algorithm: 'argon2id',
+			version: 0x13,
+			password: Buffer.from(password),
+			salt: createHash('sha256').update(salt).digest(),
+			passes: kdf.iterations,
+			memoryKiB: kdf.memory * 1024,
+			parallelism: kdf.parallelism,
+			outputBytes: 32,
 		}),
 	);
 }

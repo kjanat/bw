@@ -27,8 +27,8 @@ function document(category: string, sections: unknown[] = [], extra: JsonObject 
 		}],
 	});
 }
-test('1PUX corpus maps credentials, tags, identities, notes, history, archive, and skipped records', () => {
-	const parsed = parseOnePassword1Pux(source), items = parsed.items as JsonObject[];
+test('1PUX corpus maps credentials, tags, identities, notes, history, archive, and skipped records', async () => {
+	const parsed = await parseOnePassword1Pux(source), items = parsed.items as JsonObject[];
 	expect(items).toHaveLength(11);
 	expect(parsed.errors).toEqual([{ id: 'bad-ssh', reason: 'sshKeyParseFailed' }]);
 	expect((parsed.folders as JsonObject[]).map(f => f.name)).toEqual(['Work/team', 'Work']);
@@ -81,13 +81,13 @@ test('1PUX corpus maps credentials, tags, identities, notes, history, archive, a
 	expect(items[6]!.notes).toBe('  Notes\nsecond\tline');
 	expect(items[7]!.archivedDate).toMatch(/^\d{4}-/);
 });
-test('1PUX archive reads only export.data and returns organization collection relations', () => {
+test('1PUX archive reads only export.data and returns organization collection relations', async () => {
 	const archive = zipSync({
 		'export.data': source,
 		'files/ignored.bin': new Uint8Array([1, 2, 3]),
 		'../ignored': new Uint8Array([4]),
 	});
-	const parsed = parseOnePassword1Pux(archive, true), groups = parsed.collections as JsonObject[];
+	const parsed = await parseOnePassword1Pux(archive, true), groups = parsed.collections as JsonObject[];
 	expect(parsed.folders).toBeUndefined();
 	expect(groups.map(v => v.name)).toEqual(['Work/team', 'Work']);
 	for (const item of parsed.items as JsonObject[]) {
@@ -95,7 +95,7 @@ test('1PUX archive reads only export.data and returns organization collection re
 		expect(item.collectionIds).toEqual([groups[0]!.id]);
 	}
 });
-test('1PUX remaining category mappings and login-to-note conversion follow field semantics', () => {
+test('1PUX remaining category mappings and login-to-note conversion follow field semantics', async () => {
 	const cases: [string, unknown[], string, JsonObject][] = [
 		[
 			'103',
@@ -139,15 +139,16 @@ test('1PUX remaining category mappings and login-to-note conversion follow field
 		}],
 	];
 	for (const [category, sectionFields, key, expected] of cases) {
-		expect((parseOnePassword1Pux(document(category, sectionFields)).items as JsonObject[])[0]![key]).toMatchObject(
-			expected,
-		);
+		expect(((await parseOnePassword1Pux(document(category, sectionFields))).items as JsonObject[])[0]![key])
+			.toMatchObject(
+				expected,
+			);
 	}
 	for (const category of ['001', '006', '100', '102', '109', '111', '113', 'unknown']) {
-		expect((parseOnePassword1Pux(document(category)).items as JsonObject[])[0]!.type).toBe(2);
+		expect(((await parseOnePassword1Pux(document(category))).items as JsonObject[])[0]!.type).toBe(2);
 	}
 });
-test('1PUX imports every vault from the first account, limits history, and rejects malformed containers', () => {
+test('1PUX imports every vault from the first account, limits history, and rejects malformed containers', async () => {
 	const base = JSON.parse(
 		document('005', [], {
 			password: 'synthetic',
@@ -158,15 +159,15 @@ test('1PUX imports every vault from the first account, limits history, and rejec
 	const secondAccount = structuredClone(base.accounts[0]);
 	secondAccount.vaults[0].items[0].overview.title = 'Ignored second account';
 	base.accounts.push(secondAccount);
-	const items = parseOnePassword1Pux(JSON.stringify(base)).items as JsonObject[];
+	const items = (await parseOnePassword1Pux(JSON.stringify(base))).items as JsonObject[];
 	expect(items).toHaveLength(2);
 	expect(items.every(item => item.name === 'Synthetic fixture')).toBe(true);
 	expect(items[0]!.passwordHistory).toHaveLength(5);
 	for (const input of ['{secret invalid', '{}', '{"accounts":[]}', '{"accounts":[{"vaults":123}]}']) {
-		expect(() => parseOnePassword1Pux(input)).toThrow();
+		await expect(parseOnePassword1Pux(input)).rejects.toThrow();
 	}
-	expect(() => parseOnePassword1Pux(zipSync({ 'wrong.data': source }))).toThrow('export.data');
-	expect(() => parseOnePassword1Pux(new Uint8Array([80, 75, 1, 2]))).toThrow('archive');
+	await expect(parseOnePassword1Pux(zipSync({ 'wrong.data': source }))).rejects.toThrow('export.data');
+	await expect(parseOnePassword1Pux(new Uint8Array([80, 75, 1, 2]))).rejects.toThrow('archive');
 });
 test('1PUX upload uses fresh item keys and reports skipped records without plaintext on the wire', async () => {
 	const owner = Buffer.alloc(64, 12);
@@ -200,15 +201,28 @@ test('1PUX upload uses fresh item keys and reports skipped records without plain
 		vault.dispose();
 	}
 });
-for (const algorithm of ['ed25519', 'rsa', 'P-256', 'P-384', 'P-521'] as const) {
+test('1PUX SSH conversion retains unsupported-algorithm and malformed-key errors', async () => {
+	for (
+		const pair of [
+			generateKeyPairSync('x25519'),
+		]
+	) {
+		await expect(importSshPkcs8(pair.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString()))
+			.rejects.toMatchObject({ reason: 'unsupportedType' });
+	}
+	await expect(importSshPkcs8('-----BEGIN PRIVATE KEY-----\ninvalid\n-----END PRIVATE KEY-----'))
+		.rejects.toMatchObject({ reason: 'sshKeyParseFailed' });
+});
+
+for (const algorithm of ['ed25519', 'rsa', 'rsa1024', 'P-256', 'P-384', 'P-521'] as const) {
 	test(`1PUX ${algorithm} PKCS#8 conversion is independently readable by OpenSSH`, async () => {
-		const pair = algorithm === 'rsa'
-			? generateKeyPairSync('rsa', { modulusLength: 2048 })
+		const pair = algorithm === 'rsa' || algorithm === 'rsa1024'
+			? generateKeyPairSync('rsa', { modulusLength: algorithm === 'rsa1024' ? 1024 : 2048 })
 			: algorithm === 'ed25519'
 			? generateKeyPairSync('ed25519')
 			: generateKeyPairSync('ec', { namedCurve: algorithm });
 		const pem = pair.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
-		const imported = importSshPkcs8(pem);
+		const imported = await importSshPkcs8(pem);
 		const location = await mkdtemp(join(tmpdir(), 'vw-synthetic-ssh-'));
 		try {
 			const path = join(location, 'key');

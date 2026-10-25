@@ -579,7 +579,7 @@ export async function importVault(
 	const owner = await scopeKey(keys, options.organizationId);
 	const document = await decryptExportDocument(
 		format === '1password1pux'
-			? parseOnePassword1Pux(input, !!options.organizationId)
+			? await parseOnePassword1Pux(input, !!options.organizationId)
 			: format === '1password1pif'
 			? parseOnePassword1Pif(source, !!options.organizationId)
 			: format === '1passwordmaccsv' || format === '1passwordwincsv'

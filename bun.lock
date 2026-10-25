@@ -78,7 +78,7 @@
     "fflate": "0.8.3",
     "kdbxweb": "2.1.1",
     "lunr": "2.3.9",
-    "micro509": "0.16.0",
+    "micro509": "0.17.0",
     "parse5": "8.0.1",
     "tldts": "7.4.19",
     "typescript": "7.0.2",
@@ -367,7 +367,7 @@
 
     "lunr": ["lunr@2.3.9", "", {}, "sha512-zTU3DaZaF3Rt9rhN3uBMGQD3dD2/vFQqnvZCDv4dl5iOzq2IZQqTxu90r4E5J+nP70J3ilqVCrbho2eWaeW8Ow=="],
 
-    "micro509": ["micro509@0.16.0", "", {}, "sha512-iKGvT1Qc4NvPkcEFfjrBOiOVLMNTEi3gD4NZwgowLDr084qSsmNk2iFq/dMDKSrYtOjwboETEoPE5t0MhW3opQ=="],
+    "micro509": ["micro509@0.17.0", "", {}, "sha512-6P8AyfYBLcfXSSZq4lYuFdiv3SizITNhE6RCMM8b5UoCU0QuSUK7Mly5bR1gjKfcM+6ycTh+sa+bUORKLNPwng=="],
 
     "minimatch": ["minimatch@10.2.6", "", { "dependencies": { "brace-expansion": "^5.0.8" } }, "sha512-vpLQEs+VLCr1nU0BXS07maYoFwlDAH0gngQuuttxIwutDFEMHq2blX+8vpgxDdK3J1PwjCJiep77OitTZ4Ll1A=="],
 

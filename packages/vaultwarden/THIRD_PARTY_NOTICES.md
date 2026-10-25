@@ -37,6 +37,8 @@ and external DTDs before parsing and does not resolve external resources.
 KDBX database decoding uses [`kdbxweb` 2.1.1](https://github.com/keeweb/kdbxweb),
 licensed under MIT, copyright (c) 2021 Antelle. Its package contains the complete
 license notice. Decoding runs in an isolated worker with the project's current
-XML parser and `@noble/hashes` Argon2 implementation. The Bun patch
+XML parser and `micro509/kdf` Argon2 adapter. The adapter uses native WebCrypto
+where available and loads `@noble/hashes` only for unsupported runtime/version
+combinations, including Bun and Argon2 version `0x10`. The Bun patch
 `patches/kdbxweb@2.1.1.patch` preserves XML-valid horizontal tabs that the
 dependency otherwise strips from unprotected values; `bun install` applies it.
