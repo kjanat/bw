@@ -7,7 +7,7 @@ and a command-line frontend built on `@kjanat/dreamcli`.
 - `apps/cli` — the `vw` executable, encrypted local cache, and unlock sessions.
 - `packages/typescript-config` — shared compiler settings.
 
-Requires Bun for dependency management and tests, and Node.js 24+ for the compiled CLI.
+Requires Bun for dependency management and tests, and Node.js 24.8.0+ for the compiled CLI.
 
 ```sh
 bun install

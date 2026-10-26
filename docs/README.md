@@ -24,7 +24,7 @@ with an installed Bitwarden CLI.
 
 ## Run
 
-Requires Bun for dependency management/tests and Node 24+ for the compiled CLI.
+Requires Bun for dependency management/tests and Node 24.8.0+ for the compiled CLI.
 
 ```sh
 bun install

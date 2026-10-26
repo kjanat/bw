@@ -44,6 +44,25 @@ test('Argon2 resource rejection does not dispatch native work', async () => {
 	}
 });
 
+for (
+	const error of [
+		new DOMException('Synthetic unavailable native algorithm', 'NotSupportedError'),
+		new TypeError('Synthetic unavailable raw-secret format'),
+	]
+) {
+	test(`Argon2 uses micro509 portable derivation when native import returns ${error.name}`, async () => {
+		const native = spyOn(crypto.subtle, 'importKey').mockRejectedValue(error);
+		try {
+			const result = await deriveArgon2Key({ ...input, version: 0x13, algorithm: 'argon2id' });
+			expect(Buffer.from(result).toString('hex'))
+				.toBe('cb88616cdd8e3cd798580402fc2a39cccbb66568ae01f140a358d7fc5e5a210a');
+			expect(native).toHaveBeenCalledTimes(1);
+		} finally {
+			native.mockRestore();
+		}
+	});
+}
+
 test('Argon2 native failures do not silently switch to the portable backend', async () => {
 	const native = spyOn(crypto.subtle, 'importKey')
 		.mockRejectedValue(new DOMException('Synthetic native failure', 'OperationError'));

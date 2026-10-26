@@ -27,7 +27,6 @@
 		"test": "bun test"
 	},
 	"dependencies": {
-		"@noble/hashes": "catalog:",
 		"@xmldom/xmldom": "catalog:",
 		"fflate": "catalog:",
 		"kdbxweb": "catalog:",
@@ -47,5 +46,8 @@
 		"@vw/typescript-config": "workspace:*",
 		"eslint": "catalog:",
 		"typescript": "catalog:"
+	},
+	"engines": {
+		"node": ">=24.8.0"
 	}
 }

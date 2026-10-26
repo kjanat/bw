@@ -38,7 +38,6 @@
       "name": "@kjanat/vaultwarden",
       "version": "0.1.0",
       "dependencies": {
-        "@noble/hashes": "catalog:",
         "@xmldom/xmldom": "catalog:",
         "fflate": "catalog:",
         "kdbxweb": "catalog:",
@@ -69,7 +68,6 @@
     "@babel/preset-typescript": "8.0.1",
     "@eslint/js": "10.0.1",
     "@kjanat/dreamcli": "4.2.0",
-    "@noble/hashes": "2.4.0",
     "@types/bun": "latest",
     "@types/lunr": "2.3.7",
     "@types/zxcvbn": "4.4.5",
@@ -78,7 +76,7 @@
     "fflate": "0.8.3",
     "kdbxweb": "2.1.1",
     "lunr": "2.3.9",
-    "micro509": "0.17.0",
+    "micro509": "0.17.1",
     "parse5": "8.0.1",
     "tldts": "7.4.19",
     "typescript": "7.0.2",
@@ -180,8 +178,6 @@
     "@kjanat/vaultwarden": ["@kjanat/vaultwarden@workspace:packages/vaultwarden"],
 
     "@kjanat/vaultwarden-cli": ["@kjanat/vaultwarden-cli@workspace:apps/cli"],
-
-    "@noble/hashes": ["@noble/hashes@2.4.0", "", {}, "sha512-X5XaVWZIBCT7HHZGm5I7ZQXDwLG+bGXuSrMQAW+7Zvl87h1kmc1ZB1VSRJcpUfoUrGQp4Fkoxm5kZ+Ms+aW+eA=="],
 
     "@turbo/darwin-64": ["@turbo/darwin-64@2.11.9", "", { "os": "darwin", "cpu": "x64" }, "sha512-OkW+EESJjo248CThWe9DfuUqzGcRwHe1DXKWRw9DSZ0lMkocKbbwNMjWVCiO+WNBcARDM0ibu0c9SbuIe4mw6w=="],
 
@@ -367,7 +363,7 @@
 
     "lunr": ["lunr@2.3.9", "", {}, "sha512-zTU3DaZaF3Rt9rhN3uBMGQD3dD2/vFQqnvZCDv4dl5iOzq2IZQqTxu90r4E5J+nP70J3ilqVCrbho2eWaeW8Ow=="],
 
-    "micro509": ["micro509@0.17.0", "", {}, "sha512-6P8AyfYBLcfXSSZq4lYuFdiv3SizITNhE6RCMM8b5UoCU0QuSUK7Mly5bR1gjKfcM+6ycTh+sa+bUORKLNPwng=="],
+    "micro509": ["micro509@0.17.1", "", {}, "sha512-KVrxrbNAkkYxvyfwP73x9c0TbHKm+tJrJB0CZP8vMjGPCM6BZ4Jkf+rv/cLHxAPYKy5Oww96vKfzrVhoGmQmkw=="],
 
     "minimatch": ["minimatch@10.2.6", "", { "dependencies": { "brace-expansion": "^5.0.8" } }, "sha512-vpLQEs+VLCr1nU0BXS07maYoFwlDAH0gngQuuttxIwutDFEMHq2blX+8vpgxDdK3J1PwjCJiep77OitTZ4Ll1A=="],
 
