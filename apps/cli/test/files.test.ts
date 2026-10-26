@@ -17,3 +17,20 @@ test('attachment output strips remote path components, stays private, and refuse
 		await rm(dir, { recursive: true, force: true });
 	}
 });
+
+test('explicit output files override unusable remote filenames without weakening directory checks', async () => {
+	const dir = await mkdtemp(join(tmpdir(), 'vw-output-override-'));
+	try {
+		for (const [index, remote] of ['..', '.', '', 'nested/..', '\0'].entries()) {
+			const path = join(dir, `saved-${index}.bin`);
+			expect(await writeAttachment(path, remote, Buffer.from('original'))).toBe(path);
+			expect((await stat(path)).mode & 0o777).toBe(0o600);
+			await expect(writeAttachment(path, remote, Buffer.from('replacement'))).rejects.toThrow();
+			expect((await readFile(path)).toString()).toBe('original');
+			await expect(writeAttachment(dir, remote, Buffer.from('invalid'))).rejects.toThrow('filename is invalid');
+			await expect(writeAttachment(undefined, remote, Buffer.from('invalid'))).rejects.toThrow('filename is invalid');
+		}
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});

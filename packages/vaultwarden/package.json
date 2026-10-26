@@ -4,6 +4,7 @@
 	"private": true,
 	"type": "module",
 	"imports": {
+		"#test/*": "./test/*.ts",
 		"#*": {
 			"bun": "./src/*.ts",
 			"types": "./src/*.ts",

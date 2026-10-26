@@ -20,7 +20,7 @@ import {
 	writeCsv,
 	createAccountKeyMaterial,
 } from '@kjanat/vaultwarden';
-import { writeTestCertificate } from './fixtures/tls.js';
+import { writeTestCertificate } from '#test/fixtures/tls';
 
 const server = process.env.VW_TEST_SERVER;
 const live = server ? test : test.skip;

@@ -1,4 +1,4 @@
-import { withImportSync } from './import-server.js';
+import { withImportSync } from '#test/import-server';
 import { test, expect } from 'bun:test';
 import { generateKeyPairSync } from 'node:crypto';
 import { readFile, mkdtemp, writeFile, rm } from 'node:fs/promises';

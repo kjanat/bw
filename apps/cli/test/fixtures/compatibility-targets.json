@@ -1,4 +1,5 @@
 {
+	"nodeVersions": ["24", "26"],
 	"referenceCliVersion": "2026.10.0",
 	"mailpitImage": "axllent/mailpit@sha256:23fe39e81bde596a918000b3135c0f85dc8bb4c9ea6be274b051143f3e300387",
 	"referenceUnsupportedServers": ["1.36.0"],

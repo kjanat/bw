@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { mkdir, mkdtemp, readFile, rm, stat, symlink } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openSession, sealSession, withStore, type State } from '#store';
@@ -51,6 +51,24 @@ test('state directories cannot be symlinks', async () => {
 		await expect(withStore(join(dir, 'link'), async () => {})).rejects.toThrow(
 			'owned directory',
 		);
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('malformed state is left intact without a destructive reset or racing backup', async () => {
+	const dir = await mkdtemp(join(tmpdir(), 'vw-invalid-state-'));
+	try {
+		const original = '{invalid synthetic state';
+		await writeFile(join(dir, 'state.json'), original, { mode: 0o600 });
+		let entered = false;
+		await expect(withStore(dir, async (_state, save) => {
+			entered = true;
+			await save();
+		})).rejects.toThrow('Could not read CLI state');
+		expect(entered).toBe(false);
+		expect(await readFile(join(dir, 'state.json'), 'utf8')).toBe(original);
+		expect(await readdir(dir)).toEqual(['state.json']);
 	} finally {
 		await rm(dir, { recursive: true, force: true });
 	}

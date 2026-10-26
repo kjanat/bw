@@ -9,17 +9,38 @@ permissions:
   contents: read
 
 jobs:
+  planner:
+    name: Plan Vaultwarden compatibility matrix
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with: { persist-credentials: false }
+      - uses: $/.github/actions/setup-bun
+      - name: Install registry tooling from mise.toml
+        uses: jdx/mise-action@v5.2.3
+        with:
+          install_args: crane
+          add_shims_to_path: false
+          auto_update: true
+        env:
+          MISE_ENABLE_TOOLS: crane
+      - name: Discover releases and deduplicate pinned and current targets
+        id: matrix
+        run: bun apps/cli/test/plan-compatibility.ts
+
   checks:
     name: Build, types, lint and unit tests
     runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with: { persist-credentials: false }
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - uses: actions/setup-node@v7.1.0
         with: { node-version: "26" }
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-        with: { bun-version: "1.4.3" }
+      - uses: $/.github/actions/setup-bun
       - name: Install completion test shells
         run: sudo apt-get update && sudo apt-get install --no-install-recommends --yes fish zsh;
           command -v pwsh python3
@@ -28,42 +49,42 @@ jobs:
 
   compatibility:
     name: Vaultwarden ${{ matrix.server }} / Node ${{ matrix.node }}
+    needs: planner
     runs-on: ubuntu-26.04
     timeout-minutes: 40
     strategy:
       fail-fast: false
-      matrix:
-        server: ["1.36.0", "1.37.4"]
-        node: ["24", "26"]
+      matrix: ${{ fromJSON(needs.planner.outputs.matrix) }}
+    env:
+      VW_TEST_VERSION: ${{ matrix.server }}
+      VW_TEST_IMAGE: ${{ matrix.image }}
     steps:
       - parallel:
-          - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+          - uses: actions/checkout@v7.0.1
             with: { persist-credentials: false }
-          - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+          - uses: actions/setup-node@v7.1.0
             with: { node-version: "${{ matrix.node }}" }
-          - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-            with: { bun-version: "1.4.3" }
           - uses: kjanat/runner@master
           - uses: kjanat/envctl@master
+      - uses: $/.github/actions/setup-bun
       - name: Install independent reference CLI
-        if: matrix.server == '1.37.4'
-        env: { RUNNER_DIR: "${{ runner.temp }}" }
+        if: matrix.reference
+        env:
+          RUNNER_DIR: ${{ runner.temp }}
+          REFERENCE_CLI_VERSION: ${{ matrix.referenceCliVersion }}
         run: run bunx npm@12 install --prefix "${RUNNER_TEMP}/reference-cli" --no-audit --no-fund --ignore-scripts --min-release-age-exclude '@bitwarden/cli'
-          '@bitwarden/cli@2026.10.0'
+          "@bitwarden/cli@${REFERENCE_CLI_VERSION}"
       - run: runner install --frozen
       - name: Exercise both KDFs, transfers, organizations, Sends, authentication and REST
         env:
-          VW_TEST_VERSION: ${{ matrix.server }}
           VW_TEST_BW: ${{ runner.temp }}/reference-cli/node_modules/.bin/bw
         run: run test:compat
       - name: Verify delivered email codes under both KDFs
         env:
-          VW_TEST_VERSION: ${{ matrix.server }}
           VW_TEST_SMTP: "1"
           VW_TEST_CASE: email two-factor
         run: run test:compat
       - name: Verify OIDC SSO under both KDFs
         env:
-          VW_TEST_VERSION: ${{ matrix.server }}
           VW_TEST_SSO: "1"
         run: run test:compat

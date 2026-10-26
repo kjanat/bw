@@ -65,6 +65,10 @@ export function toolCommands(runtime: VaultRuntime, directory: string) {
 	const exportCommand = command('export').description('Export a personal or organization vault')
 		.arg('password', arg.string().sensitive().optional())
 		.flag('format', flag.enum(['csv', 'json', 'encrypted_json', 'zip']).default('csv'))
+		.flag(
+			'allow-partial',
+			flag.boolean().describe('Allow a ZIP with missing attachments and report every skipped file'),
+		)
 		.flag('organizationid', flag.string()).flag('session', flag.string().env('VW_SESSION'))
 		.flag('output', flag.path())
 		.flag('password', flag.string()).flag('passwordenv', flag.string()).flag(
@@ -72,6 +76,7 @@ export function toolCommands(runtime: VaultRuntime, directory: string) {
 			flag.path({ mustExist: true }),
 		)
 		.action(async ({ args, flags, out }) => {
+			if (flags['allow-partial'] && flags.format !== 'zip') throw new Error('--allow-partial requires --format zip.');
 			if (args.password !== undefined && flags.password !== undefined) {
 				throw new Error('Choose one password source.');
 			}
@@ -89,6 +94,7 @@ export function toolCommands(runtime: VaultRuntime, directory: string) {
 					vault.exportVault(format, {
 						organizationId: flags.organizationid,
 						password: secret,
+						allowPartial: flags['allow-partial'],
 						onAttachmentSkipped: (itemId, attachmentId) =>
 							out.status(`Skipped attachment ${attachmentId} from item ${itemId} during ZIP export.`),
 					}),

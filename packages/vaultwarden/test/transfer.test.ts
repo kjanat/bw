@@ -5,13 +5,14 @@ import { VaultwardenClient, type JsonObject } from '#client';
 import { VaultService } from '#vault-service';
 import { encrypt, decrypt, encryptAttachment, decryptAttachment, deriveKdfKey, deriveMasterKey } from '#crypto';
 import { transformItem, encryptItem } from '#item-codec';
-import { withImportSync } from './import-server.js';
+import { withImportSync } from '#test/import-server';
 import {
 	parseCsv,
 	writeCsv,
 	decryptExportDocument,
 	exportVault,
 	ImportFailure,
+	IncompleteExportError,
 	importVault,
 	officialZipAttachments,
 } from '#transfer';
@@ -241,6 +242,44 @@ test('exports omit cipher types restricted by organization policy', async () => 
 	try {
 		const exported = JSON.parse((await vault.exportVault('json')).toString());
 		expect(exported.items.map((value: JsonObject) => value.id)).toEqual(['allowed-card']);
+	} finally {
+		vault.dispose();
+	}
+});
+
+test('ZIP uses one policy-filtered item set for JSON and attachment contents', async () => {
+	const vault = fixture();
+	vault.snapshot.profile = { id: 'account', organizations: [policyOrganization('organization')] };
+	vault.snapshot.policiesNew = [{ organizationId: 'organization', type: 15, enabled: true, data: [1] }];
+	vault.snapshot.ciphers = [
+		{
+			...encryptItem({ ...item, id: 'restricted' }, itemKey),
+			key: encrypt(itemKey, key),
+			attachments: [{ id: 'must-not-export' }],
+		},
+		{
+			...encryptItem({ type: 3, name: 'Allowed', id: 'allowed', card: { number: '4111111111111111' } }, itemKey),
+			key: encrypt(itemKey, key),
+			attachments: [{ id: 'allowed-file' }],
+		},
+	];
+	const downloaded: string[] = [];
+	vault.getAttachment = async () => {
+		throw new Error('Backup must use exact IDs.');
+	};
+	vault.getAttachmentById = async (itemId, id) => {
+		downloaded.push(itemId + '/' + id);
+		return { fileName: 'safe.txt', contents: Buffer.from('allowed-body') };
+	};
+	try {
+		const archive = unzipSync(await vault.exportVault('zip'));
+		expect(JSON.parse(Buffer.from(archive['data.json']!).toString()).items.map((item: JsonObject) => item.id)).toEqual([
+			'allowed',
+		]);
+		expect(downloaded).toEqual(['allowed/allowed-file']);
+		expect(Object.keys(archive).filter(path => path.startsWith('attachments/') && !path.endsWith('/'))).toEqual([
+			'attachments/Allowed/safe.txt',
+		]);
 	} finally {
 		vault.dispose();
 	}
@@ -1292,7 +1331,7 @@ test('ZIP attachment paths use decrypted item names and Bitwarden duplicate suff
 	};
 	const second = { ...first, id: 'second', attachments: [{ id: 'three' }] };
 	vault.snapshot.ciphers = [first, second];
-	vault.getAttachment = async (_itemId, attachmentId) => ({
+	vault.getAttachmentById = async (_itemId, attachmentId) => ({
 		fileName: 'photo.png',
 		contents: Buffer.from(attachmentId),
 	});
@@ -1316,7 +1355,7 @@ test('ZIP export rejects duplicate item names when only one item has attachments
 		{ ...encryptItem(item, itemKey), id: 'with-attachment', key: encrypt(itemKey, key), attachments: [{ id: 'file' }] },
 	];
 	let downloads = 0;
-	vault.getAttachment = async () => {
+	vault.getAttachmentById = async () => {
 		downloads++;
 		return { fileName: 'photo.png', contents: Buffer.from('file') };
 	};
@@ -1328,7 +1367,7 @@ test('ZIP export rejects duplicate item names when only one item has attachments
 	}
 });
 
-test('ZIP export skips unavailable attachments and reports the skipped item and attachment IDs', async () => {
+test('ZIP export rejects missing attachments by default and supports explicit partial backups with notices', async () => {
 	const vault = fixture();
 	vault.snapshot.ciphers = [{
 		...encryptItem(item, itemKey),
@@ -1336,14 +1375,29 @@ test('ZIP export skips unavailable attachments and reports the skipped item and 
 		key: encrypt(itemKey, key),
 		attachments: [{ id: 'unavailable' }, { id: 'available' }],
 	}];
-	vault.getAttachment = async (_itemId, attachmentId) => {
+	vault.getAttachmentById = async (_itemId, attachmentId) => {
 		if (attachmentId === 'unavailable') throw new Error('synthetic download failure');
 		return { fileName: 'kept.bin', contents: Buffer.from('kept') };
 	};
 	const skipped: Array<[string, string]> = [];
 	try {
+		await expect(vault.exportVault('zip', { allowPartial: true })).rejects.toThrow('attachment-skip callback');
+		await expect(vault.exportVault('json', { allowPartial: true })).rejects.toThrow('only available for ZIP');
+		try {
+			await vault.exportVault('zip', { onAttachmentSkipped: (itemId, id) => skipped.push([itemId, id]) });
+			throw new Error('Incomplete backup was accepted.');
+		} catch (error) {
+			expect(error).toBeInstanceOf(IncompleteExportError);
+			expect((error as IncompleteExportError).skippedAttachments).toEqual([{
+				itemId: 'item-with-attachments',
+				attachmentId: 'unavailable',
+			}]);
+		}
+		expect(skipped).toEqual([['item-with-attachments', 'unavailable']]);
+		skipped.length = 0;
 		const archive = unzipSync(
 			await vault.exportVault('zip', {
+				allowPartial: true,
 				onAttachmentSkipped: (itemId, attachmentId) => skipped.push([itemId, attachmentId]),
 			}),
 		);
@@ -1422,7 +1476,7 @@ for (const names of [['A/B', 'A\\B'], ['A', 'A', 'A_1'], ['A', 'A_1', 'A']]) {
 			attachments: [{ id: 'file' }],
 		}));
 		let downloads = 0;
-		vault.getAttachment = async () => {
+		vault.getAttachmentById = async () => {
 			downloads++;
 			return { fileName: 'file.txt', contents: Buffer.from('synthetic') };
 		};
@@ -1474,6 +1528,7 @@ test('ZIP export/import preserves every attachment when generated and original f
 				if (path === '/api/ciphers/import') {
 					const body = JSON.parse(String(init.body));
 					created = body.ciphers.map((cipher: JsonObject, index: number) => ({ ...cipher, id: `new-${index}` }));
+					for (const relation of body.folderRelationships) created[relation.key]!.folderId = `folder-${relation.value}`;
 					restoredFolders = body.folders.map((folder: JsonObject, index: number) => ({
 						...folder,
 						id: `folder-${index}`,

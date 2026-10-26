@@ -22,7 +22,7 @@ import {
 	decryptSharedKey,
 	type Kdf,
 } from '@kjanat/vaultwarden';
-import { writeTestCertificate } from './fixtures/tls.js';
+import { writeTestCertificate } from '#test/fixtures/tls';
 
 // Explicit opt-in. Only disposable loopback instances may be mutated by this test.
 const server = process.env.VW_TEST_SERVER;
@@ -47,7 +47,8 @@ for (
 			const serverVersionResponse = await fetch(`${server}/api/version`);
 			expect(serverVersionResponse.status).toBe(200);
 			const serverVersion = await serverVersionResponse.json() as string;
-			expect(['1.36.0', '1.37.4']).toContain(serverVersion);
+			expect(serverVersion).toMatch(/^\d+\.\d+\.\d+$/);
+			if (process.env.VW_TEST_VERSION) expect(serverVersion).toBe(process.env.VW_TEST_VERSION);
 			const email = `fixture-${randomUUID()}@example.com`;
 			const password = 'Synthetic-fixture-password-123!';
 			const userKey = randomBytes(64);

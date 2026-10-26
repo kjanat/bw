@@ -44,8 +44,10 @@ VW_TEST_VERSION=1.36.0 bun run test:compat
 
 The current-server comparison requires independent `bw` 2026.10.0. The older
 server runs our protocol checks; that reference CLI cannot parse its prelogin
-response. The runner uses pinned images, creates an ephemeral loopback server,
-and removes it afterward. CI defines Node 24/26 jobs for both server versions.
+response. The runner uses immutable images, creates an ephemeral loopback server,
+and removes it afterward. CI's planner combines the pinned baseline servers with
+the latest stable Vaultwarden release, deduplicates versions, resolves any new
+release to an image digest, and emits the JSON matrix for Node 24/26.
 
 See the [usage guide](docs/README.md) and [compatibility contract](docs/compatibility.md)
 for supported commands, real-server tests, and remaining work. The implementation is in progress against the full CLI scope;

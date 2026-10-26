@@ -515,6 +515,36 @@ Evidence: source and valid-organization 404 checks recorded in
 [compatibility.md](compatibility.md).
 Reference: [Bitwarden organization auth-request service](https://github.com/bitwarden/clients/blob/ce5386b939062d9535cdf1a998101d25194908d0/bitwarden_license/bit-common/src/admin-console/auth-requests/organization-auth-request-api.service.ts).
 
+## Backup and import safety beyond reference behavior
+
+These safeguards apply to both Vaultwarden and Bitwarden connections; they are
+not server-version accommodations:
+
+- Backup downloads use exact item and attachment IDs. Interactive filename
+  lookup cannot change which attachment enters a backup.
+- ZIP export reserves final archive paths and rejects ambiguous item mappings.
+  A failed attachment download/decryption fails the export by default. Explicit
+  partial export requires `--allow-partial`, or SDK `allowPartial: true` with an
+  `onAttachmentSkipped` callback. The JSON and attachment paths use the same
+  policy-filtered item set.
+- Bulk import validates type-specific input before mutation, then syncs and
+  compares submitted content and folder/collection assignments. Server-added
+  metadata and equivalent date/empty-array representations are allowed. A
+  missing or changed value fails verification and invalidates the CLI cache;
+  a successful HTTP response alone does not establish a complete import.
+- Legacy 1Password CSV import distinguishes a card number from its verification
+  number, including blank PAN fields and reordered columns.
+- Explicit attachment output filenames override unusable remote names while
+  preserving private file permissions and overwrite protection.
+- Malformed local state fails closed without resetting the original file.
+  Interrupted lock acquisition, recovery, and release have separate regression
+  coverage.
+
+Implementation and evidence: [transfer.ts](../packages/vaultwarden/src/transfer.ts),
+[transfer-integrity.test.ts](../packages/vaultwarden/test/transfer-integrity.test.ts),
+[backup-integrity-live.test.ts](../apps/cli/test/backup-integrity-live.test.ts), and
+[store.test.ts](../apps/cli/test/store.test.ts).
+
 ## Shared behavior, server absences, and remaining gaps
 
 These should not be counted as additional implemented deviations:
@@ -530,7 +560,8 @@ These should not be counted as additional implemented deviations:
   and should not be claimed as complete Bitwarden cloud authentication support.
 - **TOTP entitlement:** `canAccessTotp` still uses synced premium or organization
   TOTP grants. There is no general `isVaultwardenServer()` override for all
-  premium features. Archive listing also retains its premium-based filter.
+  premium features. Archive listing uses the server-specific entitlement rule
+  described in VW-13, matching archive writes.
 - **Collection creator membership:** granting the creator manage access by
   default is already reference behavior. The array serialization in VW-17 is
   the older-server accommodation.

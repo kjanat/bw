@@ -536,7 +536,7 @@ export class VaultService {
 				try {
 					for (const attachment of legacyAttachments) {
 						const attachmentId = text(attachment.id);
-						const downloaded = await this.downloadAttachment(cipherId, attachmentId, false);
+						const downloaded = await this.downloadAttachment(cipherId, attachmentId, false, true);
 						try {
 							await this.saveAttachment(cipherId, downloaded.fileName, downloaded.contents, false);
 						} finally {
@@ -974,12 +974,17 @@ export class VaultService {
 	async getAttachment(itemId: string, idOrName: string): Promise<{ fileName: string; contents: Buffer }> {
 		return this.downloadAttachment(itemId, idOrName, true);
 	}
+	/** Exact IDs only: internal backup and migration operations must never search filenames. */
+	async getAttachmentById(itemId: string, attachmentId: string): Promise<{ fileName: string; contents: Buffer }> {
+		return this.downloadAttachment(itemId, attachmentId, true, true);
+	}
 	private async downloadAttachment(
 		itemId: string,
 		idOrName: string,
 		enforceEntitlement: boolean,
+		idOnly = false,
 	): Promise<{ fileName: string; contents: Buffer }> {
-		const resolvedItemId = text((await this.findItem(itemId)).id);
+		const resolvedItemId = idOnly ? normalizedId(itemId) : text((await this.findItem(itemId)).id);
 		const item = this.wire(resolvedItemId);
 		const attachments = array(item.attachments ?? []);
 		if (attachments.length === 0) throw new Error('No attachments available for this item.');
@@ -988,6 +993,7 @@ export class VaultService {
 			const query = idOrName.toLowerCase();
 			if (!query) throw new Error('Attachment not found.');
 			const exactId = attachments.find(attachment => text(attachment.id).toLowerCase() === query);
+			if (idOnly && !exactId) throw new Error('Attachment ID was not found.');
 			let matches = (exactId ? [exactId] : attachments).map(attachment => ({
 				attachment,
 				name: decrypt(text(attachment.fileName), itemKey).toString('utf8').toLowerCase(),

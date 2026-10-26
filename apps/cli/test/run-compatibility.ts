@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
+import { resolveCompatibilityTarget, type CompatibilityTargets } from '#test/compatibility-plan';
 
 const {
 	servers: compatibilityTargets,
@@ -13,20 +14,11 @@ const {
 } = await Bun
 	.file(
 		new URL('./fixtures/compatibility-targets.json', import.meta.url),
-	).json() as {
-		servers: Record<string, string>;
-		referenceCliVersion: string;
-		referenceUnsupportedServers: string[];
-		mailpitImage: string;
-	};
+	).json() as CompatibilityTargets;
 
 const version = process.env.VW_TEST_VERSION ?? '1.37.4';
 if (process.platform === 'win32') throw new Error('The managed compatibility runner requires POSIX process groups.');
-if (!Object.hasOwn(compatibilityTargets, version)) throw new Error('Unknown VW_TEST_VERSION. Use 1.36.0 or 1.37.4.');
-const image = compatibilityTargets[version]!;
-if (!/^vaultwarden\/server@sha256:[a-f0-9]{64}$/.test(image)) {
-	throw new Error('Compatibility image must use a pinned digest.');
-}
+const { image } = resolveCompatibilityTarget({ servers: compatibilityTargets }, version, process.env.VW_TEST_IMAGE);
 const reference = process.env.VW_TEST_BW;
 const protocolOnly = process.env.VW_TEST_PROTOCOL_ONLY === '1';
 const smtpEnabled = process.env.VW_TEST_SMTP === '1';
@@ -257,10 +249,15 @@ try {
 	}
 	if (!ready) throw new Error('Disposable Vaultwarden did not become healthy.');
 	if (interrupted) throw new Error('Compatibility run interrupted.');
+	const actualVersion = await fetch(`${server}/api/version`, { signal: AbortSignal.timeout(5000) });
+	if (!actualVersion.ok || await actualVersion.json() !== version) {
+		throw new Error(`Disposable image does not report the planned Vaultwarden version ${version}.`);
+	}
 	const cwd = new URL('..', import.meta.url).pathname;
 	const env = {
 		PATH: process.env.PATH,
 		VW_TEST_SERVER: server,
+		VW_TEST_VERSION: version,
 		VW_TEST_BW: compareReference ? reference : undefined,
 		VW_TEST_IMPORT_FORMAT: process.env.VW_TEST_IMPORT_FORMAT,
 		VW_TEST_IMPORT_SHARD: undefined as string | undefined,

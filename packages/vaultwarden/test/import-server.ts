@@ -34,6 +34,18 @@ export function withImportSync(
 					organizationId: location.searchParams.get('organizationId'),
 				})),
 			);
+			const accepted = ciphers.slice(ciphers.length - data.ciphers.length);
+			if (data.folderRelationships) {
+				for (const relation of data.folderRelationships) {
+					accepted[relation.key]!.folderId = `folder-${batch}-${relation.value}`;
+				}
+			} else {
+				for (const cipher of accepted) cipher.collectionIds = [];
+				for (const relation of data.collectionRelationships ?? []) {
+					const id = data.collections[relation.value].id ?? `collection-${batch}-${relation.value}`;
+					(accepted[relation.key]!.collectionIds as string[]).push(id);
+				}
+			}
 		}
 		return response;
 	}) as typeof fetch;

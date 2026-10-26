@@ -8,17 +8,21 @@ export async function writeAttachment(
 	fileName: string,
 	contents: Uint8Array,
 ): Promise<string> {
-	const name = fileName.split(/[\\/]/).at(-1);
-	if (!name || name === '.' || name === '..' || name.includes('\0')) {
-		throw new Error('Attachment filename is invalid. Specify a file with --output.');
-	}
-	let path = output ?? name;
+	let useRemoteName = output === undefined;
 	if (output) {
 		try {
-			if ((await stat(output)).isDirectory()) path = join(output, name);
+			useRemoteName = (await stat(output)).isDirectory();
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
 		}
+	}
+	let path = output!;
+	if (useRemoteName) {
+		const name = fileName.split(/[\\/]/).at(-1);
+		if (!name || name === '.' || name === '..' || name.includes('\0')) {
+			throw new Error('Attachment filename is invalid. Specify a file with --output.');
+		}
+		path = output ? join(output, name) : name;
 	}
 	await writeFile(path, contents, { mode: 0o600, flag: 'wx' });
 	return path;

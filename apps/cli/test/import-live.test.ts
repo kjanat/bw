@@ -4,7 +4,7 @@ import { generateKeyPairSync, randomBytes, randomUUID } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { writeTestCertificate } from './fixtures/tls.js';
+import { writeTestCertificate } from '#test/fixtures/tls';
 
 const server = process.env.VW_TEST_SERVER;
 const live = server ? test : test.skip;

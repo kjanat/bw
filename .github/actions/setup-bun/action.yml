@@ -1,0 +1,15 @@
+name: Set up repository Bun version
+description: Install the Bun version declared in mise.toml
+runs:
+  using: composite
+  steps:
+    - name: Read tools.bun from mise.toml
+      id: version
+      shell: bash
+      run: |
+        version="$(yq -p=toml -oy -r -e '.tools.bun | select(tag == "!!str" and . != "")' mise.toml)"
+        [[ "$version" != *$'\n'* && "$version" != *$'\r'* ]]
+        printf 'bun=%s\n' "$version" >> "$GITHUB_OUTPUT"
+    - uses: oven-sh/setup-bun@v2
+      with:
+        bun-version: ${{ steps.version.outputs.bun }}

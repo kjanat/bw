@@ -1,4 +1,4 @@
-import { withImportSync } from './import-server.js';
+import { withImportSync } from '#test/import-server';
 import { test, expect } from 'bun:test';
 import { readFile } from 'node:fs/promises';
 import { parseOnePassword1Pif, parseOnePasswordCsv } from '#onepassword-legacy';
@@ -108,6 +108,28 @@ test('Mac CSV uses escaped quotes, multiple URLs, card/identity types and note c
 		email: 'alice@example.com',
 	});
 });
+for (const format of ['1passwordmaccsv', '1passwordwincsv'] as const) {
+	test(`${format} distinguishes card numbers from verification codes independently of column order`, () => {
+		const number = format === '1passwordwincsv' ? 'card 1: number' : 'Number';
+		const verification = format === '1passwordwincsv' ? 'card 1: verification number' : 'Verification number';
+		for (
+			const [headers, values] of [
+				[[number, verification], ['', '123']],
+				[[verification, number], ['123', '4111111111111111']],
+				[[number, verification], ['4111111111111111', '123']],
+			] as const
+		) {
+			const parsed = parseOnePasswordCsv(
+				format,
+				['Title,Type,' + headers.join(','), 'Card,Credit Card,' + values.join(',')].join('\n'),
+			);
+			const card = (parsed.items as JsonObject[])[0]!.card as JsonObject;
+			expect(card.code).toBe('123');
+			expect(card.number ?? null).toBe(values.some(value => value === '4111111111111111') ? '4111111111111111' : null);
+		}
+	});
+}
+
 test('Windows CSV infers card/identity types and retains multiline addresses', () => {
 	const items = parseOnePasswordCsv('1passwordwincsv', windows).items as JsonObject[];
 	expect(items).toHaveLength(3);

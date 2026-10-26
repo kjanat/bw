@@ -3,7 +3,7 @@ import { X509Certificate } from 'node:crypto';
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { writeTestCertificate } from './fixtures/tls.js';
+import { writeTestCertificate } from '#test/fixtures/tls';
 
 test('micro509 loopback certificate is trusted by Node through NODE_EXTRA_CA_CERTS', async () => {
 	const directory = await mkdtemp(join(tmpdir(), 'vw-tls-test-'));

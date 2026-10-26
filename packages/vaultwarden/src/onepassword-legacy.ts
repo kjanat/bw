@@ -189,7 +189,7 @@ export function parseOnePasswordCsv(format: OnePasswordCsvFormat, source: string
 		}\n`;
 		const type = value('type') || 'Login';
 		if (windows) {
-			if (match(/\d+: number/i) && match(/\d+: expiry date/i)) item.type = 3;
+			if (type === 'Credit Card' || match(/\d+: (?:number|verification number|expiry date)(?:$|\s)/i)) item.type = 3;
 			if (match(/name \d+: (first name|initial|last name)/i) || match(/internet \d+: email/i)) item.type = 4;
 		} else if (type === 'Credit Card') item.type = 3;
 		else if (type === 'Identity') item.type = 4;
@@ -212,7 +212,9 @@ export function parseOnePasswordCsv(format: OnePasswordCsvFormat, source: string
 					continue;
 				}
 			} else if (item.type === 3) {
-				if (lower.includes('number') && !present(target.number)) {
+				if (
+					(windows ? /:\s*(?:card )?number$/.test(lower) : /^(?:card )?number$/.test(lower)) && !present(target.number)
+				) {
 					target.number = v;
 					target.brand = brand(v);
 					continue;

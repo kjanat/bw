@@ -30,11 +30,20 @@ export interface TransferOptions {
 	/** Optional KeePass key-file bytes; used only by keepasskdbx imports. */
 	keyFile?: Uint8Array;
 	kdf?: Kdf;
+	/** Explicitly allow an incomplete ZIP after reporting failed attachments through the callback. */
+	allowPartial?: boolean;
 	/** Called when ZIP export cannot download/decrypt an attachment and skips it. */
 	onAttachmentSkipped?: (itemId: string, attachmentId: string) => void;
 }
 export class ImportFailure extends Error {
 	readonly serverMayHaveChanged = true;
+}
+export class IncompleteExportError extends Error {
+	constructor(readonly skippedAttachments: readonly { itemId: string; attachmentId: string }[]) {
+		super(
+			`ZIP export is incomplete: ${skippedAttachments.length} attachment(s) could not be exported. No backup was produced. Retry, or explicitly allow a partial export.`,
+		);
+	}
 }
 export interface ImportResult {
 	items: number;
@@ -445,6 +454,10 @@ export async function exportVault(
 	options: TransferOptions = {},
 ): Promise<Buffer> {
 	if (!['json', 'csv', 'encrypted_json', 'zip'].includes(format)) throw new Error('Unsupported export format.');
+	if (options.allowPartial && format !== 'zip') throw new Error('Partial export is only available for ZIP.');
+	if (options.allowPartial && !options.onAttachmentSkipped) {
+		throw new Error('Partial ZIP export requires an attachment-skip callback.');
+	}
 	if (!options.organizationId && personalExportPolicyApplies(vault)) {
 		throw new Error('One or more organization policies prevents you from exporting your personal vault.');
 	}
@@ -528,14 +541,16 @@ export async function exportVault(
 			}
 		}
 		const usedPaths = new Set(Object.keys(archive));
+		const skipped: { itemId: string; attachmentId: string }[] = [];
 		const nextSuffixes = new Map<string, number>();
 		for (const { item, attachments, folder } of plan) {
 			for (const attachment of attachments) {
 				let contents: Buffer | undefined;
 				let downloaded: { fileName: string; contents: Buffer };
 				try {
-					downloaded = await vault.getAttachment(text(item.id), text(attachment.id));
+					downloaded = await vault.getAttachmentById(text(item.id), text(attachment.id));
 				} catch {
+					skipped.push({ itemId: text(item.id), attachmentId: text(attachment.id) });
 					options.onAttachmentSkipped?.(text(item.id), text(attachment.id));
 					continue;
 				}
@@ -563,7 +578,8 @@ export async function exportVault(
 				}
 			}
 		}
-		// Downloads may have been skipped. Validate the actual archive too before reporting success.
+		if (skipped.length && !options.allowPartial) throw new IncompleteExportError(skipped);
+		// An explicitly partial archive must still have unambiguous restoration paths.
 		officialZipAttachments(records(document.items), archive);
 		return Buffer.from(zipSync(archive, { level: 6 }));
 	} finally {
@@ -571,16 +587,48 @@ export async function exportVault(
 		for (const [path, value] of Object.entries(archive)) if (path.startsWith('attachments/')) value.fill(0);
 	}
 }
+/** Compare submitted content while allowing server-added metadata and equivalent date formatting. */
+function importedValueMatches(expected: unknown, actual: unknown, field = ''): boolean {
+	const emptyArray = ['fields', 'passwordHistory', 'uris', 'fido2Credentials'].includes(field);
+	if (emptyArray && expected == null) return actual == null || Array.isArray(actual) && actual.length === 0;
+	if (field === 'lastUsedDate' && expected == null) {
+		return actual == null || typeof actual === 'string' && Date.parse(actual) === 0;
+	}
+	if (expected == null) return actual == null;
+	if (typeof expected === 'string' && typeof actual === 'string' && /Date$/.test(field)) {
+		const timestamp = Date.parse(expected);
+		if (Number.isFinite(timestamp)) return timestamp === Date.parse(actual);
+	}
+	if (Array.isArray(expected)) {
+		if (emptyArray && expected.length === 0 && actual == null) return true;
+		return Array.isArray(actual) && expected.length === actual.length
+			&& expected.every((value, index) => importedValueMatches(value, actual[index]));
+	}
+	if (typeof expected === 'object') {
+		if (!actual || typeof actual !== 'object' || Array.isArray(actual)) return false;
+		return Object.entries(expected).every(([key, value]) =>
+			key === 'response'
+			|| importedValueMatches(value, (actual as JsonObject)[key], key)
+		);
+	}
+	return expected === actual;
+}
 function verifyImportedRecords(
 	snapshot: JsonObject,
 	ciphers: JsonObject[],
 	encryptedGroups: JsonObject[],
+	relationships: { key: number; value: number }[],
+	previousSnapshot: JsonObject,
 	organizationId?: string,
 ): JsonObject[] {
 	try {
 		const created = records(snapshot.ciphers);
 		const byName = new Map<unknown, JsonObject[]>();
-		for (const candidate of created) byName.set(candidate.name, [...(byName.get(candidate.name) ?? []), candidate]);
+		for (const candidate of created) {
+			const matches = byName.get(candidate.name);
+			if (matches) matches.push(candidate);
+			else byName.set(candidate.name, [candidate]);
+		}
 		const createdIds = new Set<string>();
 		const importedItems = ciphers.map(cipher => {
 			const matches = (byName.get(cipher.name) ?? []).filter(candidate =>
@@ -598,18 +646,85 @@ function verifyImportedRecords(
 				throw new ImportFailure('Import verification failed: duplicate server item IDs. Sync before retrying.');
 			}
 			createdIds.add(id);
+			for (
+				const field of [
+					'name',
+					'notes',
+					'fields',
+					'passwordHistory',
+					'login',
+					'secureNote',
+					'card',
+					'identity',
+					'sshKey',
+					'bankAccount',
+					'driversLicense',
+					'passport',
+					'favorite',
+					'reprompt',
+					'archivedDate',
+				]
+			) {
+				if (cipher[field] !== undefined && !importedValueMatches(cipher[field], result[field], field)) {
+					throw new ImportFailure(
+						`Import verification failed: saved item content differs (${field}). Some data may have been imported; sync and inspect the vault before retrying.`,
+					);
+				}
+			}
 			return result;
 		});
-		const savedGroups = records(snapshot[organizationId ? 'collections' : 'folders'] ?? []);
-		for (const group of encryptedGroups) {
+		const kind = organizationId ? 'collections' : 'folders';
+		const savedGroups = records(snapshot[kind] ?? []).filter(group =>
+			!organizationId || sameId(group.organizationId, organizationId)
+		);
+		const priorGroups = records(previousSnapshot[kind] ?? []).filter(group =>
+			!organizationId || sameId(group.organizationId, organizationId)
+		);
+		const resolvedGroupIds = new Set<string>();
+		const resolvedGroups = encryptedGroups.map(group => {
+			const prior = group.id == null ? undefined : priorGroups.find(candidate => sameId(candidate.id, group.id));
+			const byId = group.id == null ? [] : savedGroups.filter(candidate => sameId(candidate.id, group.id));
+			const matches = byId.length ? byId : savedGroups.filter(candidate => candidate.name === group.name);
+			const expected = prior ? { ...group, ...prior, name: prior.name ?? group.name } : group;
 			if (
-				!savedGroups.some(candidate =>
-					(!organizationId || sameId(candidate.organizationId, organizationId))
-					&& (group.id != null && sameId(candidate.id, group.id) || candidate.name === group.name)
-				)
+				matches.length !== 1 || typeof matches[0]!.id !== 'string' || !matches[0]!.id
+				|| matches[0]!.name !== expected.name
+				|| expected.externalId !== undefined && !importedValueMatches(expected.externalId, matches[0]!.externalId)
 			) {
 				throw new ImportFailure(
-					'Import verification failed: a folder or collection is missing. Some data may have been imported; sync and inspect the vault before retrying.',
+					'Import verification failed: a folder or collection is missing, ambiguous, or changed. Some data may have been imported; sync and inspect the vault before retrying.',
+				);
+			}
+			const id = text(matches[0]!.id).toLowerCase();
+			if (resolvedGroupIds.has(id)) {
+				throw new ImportFailure('Import verification failed: duplicate server grouping IDs. Sync before retrying.');
+			}
+			resolvedGroupIds.add(id);
+			return id;
+		});
+		const expectedGroups = new Map<number, string[]>();
+		for (const relation of relationships) {
+			const id = resolvedGroups[relation.value];
+			if (!id) {
+				throw new ImportFailure('Import verification failed: unresolved grouping relationship. Sync before retrying.');
+			}
+			const ids = expectedGroups.get(relation.key) ?? [];
+			ids.push(id);
+			expectedGroups.set(relation.key, ids);
+		}
+		for (const [index, item] of importedItems.entries()) {
+			const expected = expectedGroups.get(index) ?? [];
+			let matches: boolean;
+			if (organizationId) {
+				const ids = item.collectionIds ?? [];
+				const actual = Array.isArray(ids) && ids.every(id => typeof id === 'string')
+					? new Set((ids as string[]).map(id => id.toLowerCase()))
+					: undefined;
+				matches = !!actual && actual.size === new Set(expected).size && expected.every(id => actual.has(id));
+			} else matches = sameOptionalId(item.folderId, expected.at(-1));
+			if (!matches) {
+				throw new ImportFailure(
+					'Import verification failed: saved folder or collection assignments differ. Some data may have been imported; sync and inspect the vault before retrying.',
 				);
 			}
 		}
@@ -759,6 +874,10 @@ export async function importVault(
 	const relationships: { key: number; value: number }[] = [];
 	const ciphers: JsonObject[] = rawItems.map((raw, index) => {
 		const item = structuredClone(raw);
+		if (item.type === 1 && item.login != null && Array.isArray(object(item.login).uris)) {
+			// Vaultwarden derives this legacy response alias from the encrypted URI list.
+			delete object(item.login).uri;
+		}
 		if (item.deletedDate) throw new Error('Import contains a deleted item.');
 		item.name = typeof item.name === 'string' && item.name.trim() ? item.name : '--';
 		if (
@@ -845,7 +964,14 @@ export async function importVault(
 			'Import request completed, but verification sync failed. Sync and inspect the vault before retrying.',
 		);
 	}
-	const importedItems = verifyImportedRecords(snapshot, ciphers, encryptedGroups, options.organizationId);
+	const importedItems = verifyImportedRecords(
+		snapshot,
+		ciphers,
+		encryptedGroups,
+		relationships,
+		vault.snapshot,
+		options.organizationId,
+	);
 	let importedAttachments = 0;
 	if (attachments.length) {
 		const child = vault.withSnapshot(snapshot);

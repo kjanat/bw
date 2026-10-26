@@ -22,6 +22,7 @@
 			"cache": false,
 			"env": [
 				"VW_TEST_VERSION",
+				"VW_TEST_IMAGE",
 				"VW_TEST_BW",
 				"VW_TEST_CASE",
 				"VW_TEST_PROTOCOL_ONLY",

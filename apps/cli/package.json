@@ -4,6 +4,8 @@
 	"private": true,
 	"type": "module",
 	"imports": {
+		"#test/*": "./test/*.ts",
+		"#fixtures/*.json": "./test/fixtures/*.json",
 		"#*": {
 			"bun": "./src/*.ts",
 			"types": "./src/*.ts",

@@ -2360,6 +2360,38 @@ test('attachment reads distinguish items without attachments from unknown attach
 	}
 });
 
+test('ID-only attachment downloads never resolve item names or filename searches', async () => {
+	const key = Buffer.alloc(64, 9);
+	const attachments = [
+		{ id: 'first', fileName: encrypt(Buffer.from('file.bin'), itemKey), key: encrypt(key, itemKey) },
+		{ id: 'second', fileName: encrypt(Buffer.from('first'), itemKey), key: encrypt(key, itemKey) },
+	];
+	const requests: string[] = [];
+	const vault = service(path => {
+		requests.push(path);
+		if (path.endsWith('/attachment/first')) return Response.json({ url: 'https://example.com/files/first' });
+		if (path.endsWith('/files/first')) {
+			return new Response(new Uint8Array(encryptAttachment(Buffer.from('first-body'), key)));
+		}
+		throw new Error('Unexpected attachment request.');
+	}, { profile: { id: 'user', premium: true }, ciphers: [wire({ attachments })] });
+	try {
+		await expect(vault.getAttachmentById('Example', 'first')).rejects.toThrow('Item not found');
+		await expect(vault.getAttachmentById('item', 'file.bin')).rejects.toThrow('Attachment ID was not found');
+		expect(requests).toHaveLength(0);
+		const result = await vault.getAttachmentById('ITEM', 'FIRST');
+		try {
+			expect(result.contents.toString()).toBe('first-body');
+		} finally {
+			result.contents.fill(0);
+		}
+		expect(requests).toHaveLength(2);
+	} finally {
+		vault.dispose();
+		key.fill(0);
+	}
+});
+
 test('attachment metadata falls back only on 404, retaining cached keys and credential-free downloads', async () => {
 	const key = Buffer.alloc(64, 8), contents = Buffer.from('synthetic attachment');
 	for (const status of [404, 401, 403, 429, 500]) {

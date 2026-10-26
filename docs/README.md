@@ -258,8 +258,10 @@ variables for those operations. Plain exports contain vault secrets. File
 output uses mode 0600 and refuses overwrite; `--raw` writes directly to stdout.
 
 Imports validate every item's type-specific data before uploading, then sync
-and verify the submitted encrypted items and grouping records before reporting
-success. An incomplete or unverifiable import raises an error and invalidates
+and verify all submitted content, folder/collection records, and each item's
+folder/collection assignments before reporting success. Verification allows
+server-added metadata and equivalent date/empty-array representations. An
+incomplete or unverifiable import raises an error and invalidates
 the CLI cache; inspect the server vault before retrying to avoid duplicates.
 ZIP imports reject duplicate source item IDs before changing the server.
 
@@ -406,10 +408,20 @@ and existing filenames. Export and import share the item-folder ambiguity checks
 an export rejects conflicting sanitized names or duplicate names with incomplete
 attachment folders, rather than producing a backup that cannot be restored.
 Rename conflicting items before retrying. Import also accepts older vw manifests.
+Backup downloads use exact item and attachment IDs, without filename searches.
+If any attachment cannot be downloaded or decrypted, export fails and writes no
+backup. To explicitly accept an incomplete backup, pass `--allow-partial`; the
+CLI reports each skipped attachment on stderr. SDK callers must provide both
+`allowPartial: true` and `onAttachmentSkipped`. JSON and attachment export apply
+the same item-policy filter.
 Archives are read in memory without extracting their paths to the filesystem.
 The total inflated ZIP limit is 1 GiB, with a 525 MiB limit per entry. A bulk
 import or attachment restoration can partially succeed on the server; failures
 invalidate the local cache and instruct the caller to sync before retrying.
+
+For attachment downloads, an explicit `--output /path/to/file` overrides even an
+unusable remote filename. Directory/default output still validates that remote
+name, and all file output refuses overwrite.
 
 ## Item lookup and URI matching
 

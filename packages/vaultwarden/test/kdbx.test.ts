@@ -1,4 +1,4 @@
-import { withImportSync } from './import-server.js';
+import { withImportSync } from '#test/import-server';
 import { expect, test } from 'bun:test';
 import { Kdbx, KdbxUuid, Credentials, ProtectedValue, Consts, VarDictionary, Int64, CryptoEngine } from 'kdbxweb';
 import { parseKdbx } from '#kdbx';

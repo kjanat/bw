@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { prepareArchivedItemEdit } from '../src/vault-commands.js';
+import { prepareArchivedItemEdit } from '#vault-commands';
 
 test('archived edits move back automatically without interaction', async () => {
 	const data = { archivedDate: '2026-01-01T00:00:00Z' };

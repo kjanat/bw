@@ -1,4 +1,4 @@
-import { withImportSync } from './import-server.js';
+import { withImportSync } from '#test/import-server';
 import { expect, test } from 'bun:test';
 import { parseExternalCsv } from '#csv-import';
 import { writeCsv } from '#csv';

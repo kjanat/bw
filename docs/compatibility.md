@@ -146,8 +146,12 @@ VW_TEST_BW=/absolute/path/to/bw VW_TEST_CASE='authentication, external' \
 
 It requires a POSIX host, Docker, Bun, Node, OpenSSH and `envctl`. Docker output is
 passed through `envctl redact` before display or capture; redactor failure
-withholds that output. The selected image must be an immutable digest from
-`apps/cli/test/fixtures/compatibility-targets.json`. `test:compat` is an uncached
+withholds that output. Baseline image digests and Node majors come from
+`apps/cli/test/fixtures/compatibility-targets.json`. A discovered release is
+passed as `VW_TEST_VERSION` plus `VW_TEST_IMAGE`, which must be an immutable
+`vaultwarden/server@sha256:...` reference. The runner checks the actual server's
+`/api/version` against the planned version before running any live suite.
+`test:compat` is an uncached
 Turbo package task and forwards only its named test configuration variables.
 For the 1.37.4 reference run, the managed runner executes KDF/vault checks once,
 then divides the external-import matrix into eight independently reported
@@ -166,10 +170,26 @@ without the reference-dependent sections. Version-matched reference comparisons
 and external-format comparisons on that older server remain required work.
 
 [The CI workflow](../.github/workflows/ci.yml) defines unit/build/type/lint checks
-and a compatibility matrix for Node 24/26 against both pinned servers. It installs
-the reference npm CLI independently, verifies the redactor's published checksum,
-and uses the same managed runner. The workflow has been validated locally with
-Actionlint; a hosted Actions run has not been triggered or observed.
+and a planner job that combines the pinned servers with the latest stable
+Vaultwarden image tag from `crane ls vaultwarden/server -O`. Only plain `X.Y.Z`
+tags qualify; Alpine/architecture variants, prereleases and aliases are excluded.
+The planner installs `crane` from `mise.toml`. Older latest-release
+results cannot downgrade the selected baselines. A newer release's Docker Hub
+manifest is resolved once with `crane digest` to an immutable digest before the matrix fans out.
+Versions and Node majors are deduplicated, so a release already pinned does not
+create duplicate jobs. The planner emits `{ "include": [...] }` as a job output;
+the compatibility job consumes it with `fromJSON(needs.planner.outputs.matrix)`.
+Each row includes the server, Node major, image digest, reference CLI version,
+and whether the reference comparison is supported. New releases get the same
+KDF, transfer, organization, Send, REST, email-factor and SSO checks; the known
+1.36.0 reference exclusion remains in the fixture. Registry lookup
+failures stop planning rather than silently omitting the newest release.
+
+Discovery happens on each existing CI trigger (PR, push to master, or manual
+dispatch); it does not add a separate scheduled run. The workflow installs the
+reference npm CLI independently and uses the same managed runner. The workflow
+has been validated locally with Actionlint; a hosted Actions run has not been
+triggered or observed.
 
 Local runner evidence on 2026-10-20: all three protocol fixtures passed on
 1.36.0 under Node **26.11.1** in 104 seconds and **24.22.0** in 106 seconds,
@@ -473,7 +493,21 @@ are tested in both directions with official bw under PBKDF2 and Argon2id. The
 live tests also verify bulk organization import/export collection relationships,
 and 2 MiB attachment restoration from both vw and official bw ZIP exports.
 Official ZIPs with ambiguous sanitized item names are rejected before mutation;
-vw ZIPs include a manifest preserving exact attachment names and item mappings.
+New vw ZIPs use the same layout, reserve final paths against collisions, and
+reject ambiguous item mappings; older vw manifests remain readable. ZIP export
+fails on any attachment download/decryption failure unless the caller explicitly
+allows a partial backup with per-attachment reporting.
+
+The focused backup-integrity live test was run locally on 2026-10-26 against
+Vaultwarden 1.36.0 and 1.37.4 with both Node 24.21.0 and 26.7.0 (Bun 1.4.4 test
+runner): all four runs passed, with 42 assertions each. It exercises the compiled
+CLI's collision-safe attachment round trip, HTTP-200 partial-import detection,
+missing-password and missing-collection-assignment detection with cache
+invalidation, failed-download export rejection without an output file, explicit
+partial-export notices, blank-PAN 1Password card import, and explicit output-name
+override. Request faults are injected after client validation and forwarded to
+the real server. This focused result does not replace the full compatibility
+matrix or an independent reference comparison.
 Local tests cover generation, cached policy constraints, CSV quoting, raw KDF
 salts, wrong export passwords/keys, and failed-import cache invalidation signals.
 
