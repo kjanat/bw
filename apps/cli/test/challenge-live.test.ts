@@ -433,7 +433,7 @@ live('real Vaultwarden: authentication, external imports, and REST compatibility
 								'http://sn',
 								'',
 								'',
-								'NoteType:Address\nFirst Name:Alice\nLast Name:Example\nUnknown:retained',
+								'NoteType:Address\nFirst Name:Alice\nLast Name:Example\nUnknown:preserved',
 								`${prefix} Identity`,
 								'(none)',
 								'0',

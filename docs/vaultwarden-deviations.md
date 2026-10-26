@@ -110,7 +110,7 @@ alongside `userDecryptionOptions.masterPasswordUnlock` and its
 `masterKeyWrappedUserKey` or `masterKeyEncryptedUserKey` fields. API-key and SSO
 login resolve the authenticated profile before constructing the account.
 
-This is retained envelope compatibility, not different cryptography or a claim
+This provides older envelope compatibility, not different cryptography or a claim
 that Bitwarden has removed all legacy key support. Missing SSO key material can
 also represent an uninitialized account, covered by VW-06.
 

@@ -1642,7 +1642,7 @@ test('LastPass site, secure note, structured card and identity preserve groups a
 				'http://sn',
 				'',
 				'',
-				'NoteType:Address\nFirst Name:Alice\nLast Name:Example\nAddress 1:Street\nUnknown:retained',
+				'NoteType:Address\nFirst Name:Alice\nLast Name:Example\nAddress 1:Street\nUnknown:preserved',
 				'Identity',
 				'(none)',
 				'0',
@@ -1675,7 +1675,7 @@ test('LastPass site, secure note, structured card and identity preserve groups a
 	expect(parsed[2]).toMatchObject({
 		type: 4,
 		identity: { firstName: 'Alice', lastName: 'Example' },
-		fields: [{ name: 'Unknown', value: 'retained' }],
+		fields: [{ name: 'Unknown', value: 'preserved' }],
 		folderId: null,
 	});
 	expect(parsed[3]).toMatchObject({ type: 2, notes: 'NoteType:Bank Account\nAccount Number:123\nNotes:entire record' });

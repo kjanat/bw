@@ -7,7 +7,7 @@ architecture or import Bitwarden packages. A change to the latest Bitwarden CLI
 alone is not a reason to drop a working Vaultwarden protocol path.
 
 The [accommodations inventory](vaultwarden-deviations.md) catalogs intentional
-differences from the Bitwarden reference, retained older protocol paths, and
+differences from the Bitwarden reference, supported older protocol paths, and
 server-specific restrictions, with their production selection rules.
 
 ## Reference revisions

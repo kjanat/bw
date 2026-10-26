@@ -143,9 +143,7 @@ try {
                 status.returncode != 0
                 or json.loads(status.stdout)["status"] != "unauthenticated"
             ):
-                raise RuntimeError(
-                    "Cancelled CLI login retained an authenticated account"
-                )
+                raise RuntimeError("Cancelled CLI login left an authenticated account")
         return True
     finally:
         if child.poll() is None:

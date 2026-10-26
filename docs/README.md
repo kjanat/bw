@@ -337,12 +337,12 @@ Android URL handling. Arc derives its entry name from the URL hostname and
 retains notes. Avira maps its `website` column, falls back to a secondary
 username when the primary is blank, and retains the secondary username in notes
 when both exist. Passbolt uses the LastPass mapping, including structured notes.
-Safari OTP fields and notes are retained. KeePassX groups remove the exported
+Safari OTP fields and notes are preserved. KeePassX groups remove the exported
 `Root/` prefix and become folders, or collections for organization imports.
 LastPass supports sites, generic secure notes, structured credit-card/address
 notes, and form-fill profiles, including a card accompanying an identity.
 Folder paths, favorites, unknown structured-note fields, and note continuations
-are retained. Malformed headers or record widths fail before server mutation.
+are preserved. Malformed headers or record widths fail before server mutation.
 
 NordPass CSV maps password, credit-card, identity, and note records, skipping
 unknown types. It retains additional URLs, secret whitespace, custom fields,
@@ -476,7 +476,7 @@ excludes those settings from its sync response because its platform does not
 support autofill, so equivalent-domain matching differs deliberately: vw honors
 the server's groups. Private suffixes keep unrelated tenants separate (for
 example, `alice.github.io` and `bob.github.io`), Unicode/punycode domains compare
-equally, and the reference `script.google.com` domain exclusion is retained.
+equally, and the reference `script.google.com` domain exclusion also applies.
 Regexes run in an isolated worker with a 200 ms execution limit; a timeout fails
 the query rather than returning an incomplete result.
 
