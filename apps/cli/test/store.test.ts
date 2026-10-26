@@ -114,6 +114,92 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGKILL'] as const) {
 	}, 10000);
 }
 
+for (const boundary of ['detach', 'delete'] as const) {
+	test(`compiled store recovers when killed immediately after lock release ${boundary}`, async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'vw-store-release-'));
+		try {
+			const module = new URL('../dist/store.js', import.meta.url).href;
+			const code = `import fs from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
+import { join } from 'node:path';
+const directory = process.argv[1];
+const lock = join(directory, '.lock');
+const stop = (boundary) => {
+ console.log(boundary);
+ process.kill(process.pid, 'SIGKILL');
+};
+const unlink = fs.unlink;
+fs.unlink = async (path) => {
+ await unlink(path);
+ if (String(path).startsWith(lock + '/owner-')) stop('owner-deleted');
+};
+const rename = fs.rename;
+fs.rename = async (from, to) => {
+ await rename(from, to);
+ if (from === lock && ${JSON.stringify(boundary)} === 'detach') stop('lock-detached');
+};
+const rm = fs.rm;
+fs.rm = async (path, options) => {
+ await rm(path, options);
+ if (String(path).startsWith(lock + '-') && ${JSON.stringify(boundary)} === 'delete') stop('lock-deleted');
+};
+syncBuiltinESMExports();
+const { withStore } = await import(${JSON.stringify(module)});
+await withStore(directory, async (state, save) => {
+ state.server = 'https://saved-before-release.example';
+ await save();
+});
+throw new Error('Release interruption was not injected.');`;
+			const child = Bun.spawn([nodeExecutable, '--input-type=module', '--eval', code, dir], {
+				env: { PATH: process.env.PATH },
+				stdout: 'pipe',
+				stderr: 'pipe',
+				timeout: 5000,
+				killSignal: 'SIGKILL',
+			});
+			const [, stdout, stderr] = await Promise.all([
+				child.exited,
+				new Response(child.stdout).text(),
+				new Response(child.stderr).text(),
+			]);
+			expect(stderr).toBe('');
+			expect(child.signalCode).toBe('SIGKILL');
+			expect(stdout).toMatch(/owner-deleted|lock-detached|lock-deleted/);
+			const next = Bun.spawn([
+				nodeExecutable,
+				'--input-type=module',
+				'--eval',
+				`
+import { withStore } from ${JSON.stringify(module)};
+await withStore(process.argv[1], async (state, save) => {
+ if (state.server !== 'https://saved-before-release.example') throw new Error('Saved state was lost.');
+ state.lastSync = 'recovered';
+ await save();
+});`,
+				dir,
+			], {
+				env: { PATH: process.env.PATH },
+				stdout: 'pipe',
+				stderr: 'pipe',
+				timeout: 5000,
+				killSignal: 'SIGKILL',
+			});
+			const [exitCode, output, error] = await Promise.all([
+				next.exited,
+				new Response(next.stdout).text(),
+				new Response(next.stderr).text(),
+			]);
+			expect(error).toBe('');
+			expect(output).toBe('');
+			expect(exitCode).toBe(0);
+			expect(stdout.trim()).toBe(boundary === 'detach' ? 'lock-detached' : 'lock-deleted');
+			await withStore(dir, async state => expect(state.lastSync).toBe('recovered'));
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+}
+
 test('concurrent stale-lock recovery never admits two active store writers', async () => {
 	const dir = await mkdtemp(join(tmpdir(), 'vw-store-recovery-race-'));
 	try {

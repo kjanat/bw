@@ -717,6 +717,9 @@ wrapper; unlocking again replaces it, invalidating the previous token. A command
 lock prevents concurrent refresh/logout writes. Its local process owner is
 published atomically with the lock; subsequent commands recover the lock when
 that owner is no longer running, including after SIGINT, SIGTERM or SIGKILL.
+Release atomically detaches the lock before deleting its owner metadata. An
+interrupted cleanup can leave an unused `.lock-*` directory, which does not
+block subsequent commands.
 Live or inaccessible owners are not displaced. Legacy locks without owner
 metadata and locks from another host require confirming that no command still
 uses that profile before manually removing `.lock`.

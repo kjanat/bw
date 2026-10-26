@@ -106,13 +106,10 @@ async function acquireStoreLock(directory: string): Promise<() => Promise<void>>
 				await rename(claim, lock);
 				acquired = true;
 				return async () => {
-					try {
-						await unlink(join(lock, ownerFile));
-					} catch (error) {
-						if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
-						throw error;
-					}
-					await removeEmptyLockDirectory(lock);
+					// Keep ownership intact until the published lock is atomically detached.
+					// Interruption during deletion then leaves only an unused claim directory.
+					await rename(lock, claim);
+					await rm(claim, { recursive: true, force: true });
 				};
 			} catch (error) {
 				if (!['EEXIST', 'ENOTEMPTY', 'EPERM'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
