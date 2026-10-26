@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { unzipSync } from 'fflate';
 import { VaultwardenClient, type JsonObject } from '#client';
 import { VaultService } from '#vault-service';
-import { encrypt, decrypt, deriveKdfKey, deriveMasterKey } from '#crypto';
+import { encrypt, decrypt, decryptAttachment, deriveKdfKey, deriveMasterKey } from '#crypto';
 import { transformItem, encryptItem } from '#item-codec';
 import {
 	parseCsv,
@@ -43,7 +43,7 @@ const policyOrganization = (id: string, overrides: JsonObject = {}): JsonObject 
 	isProviderUser: false,
 	...overrides,
 });
-function fixture(handler?: (path: string, init: RequestInit) => Response) {
+function fixture(handler?: (path: string, init: RequestInit) => Response | Promise<Response>) {
 	const snapshot = {
 		profile: { id: 'account' },
 		folders: [{ id: 'old-folder', name: encrypt(Buffer.from('Folder, name'), key) }],
@@ -1310,17 +1310,20 @@ test('ZIP attachment paths use decrypted item names and Bitwarden duplicate suff
 	}
 });
 
-test('ZIP export counts only items that have attachments when suffixing duplicate names', async () => {
+test('ZIP export rejects duplicate item names when only one item has attachments', async () => {
 	const vault = fixture();
 	vault.snapshot.ciphers = [
 		{ ...encryptItem(item, itemKey), id: 'without-attachment', key: encrypt(itemKey, key), attachments: [] },
 		{ ...encryptItem(item, itemKey), id: 'with-attachment', key: encrypt(itemKey, key), attachments: [{ id: 'file' }] },
 	];
-	vault.getAttachment = async () => ({ fileName: 'photo.png', contents: Buffer.from('file') });
+	let downloads = 0;
+	vault.getAttachment = async () => {
+		downloads++;
+		return { fileName: 'photo.png', contents: Buffer.from('file') };
+	};
 	try {
-		const archive = unzipSync(await vault.exportVault('zip'));
-		expect(archive['attachments/Example, _quoted_/photo.png']).toBeDefined();
-		expect(archive['attachments/Example, _quoted__1/photo.png']).toBeUndefined();
+		await expect(vault.exportVault('zip')).rejects.toThrow('ambiguous');
+		expect(downloads).toBe(0);
 	} finally {
 		vault.dispose();
 	}
@@ -1408,4 +1411,93 @@ test('official ZIP import refuses duplicate-name attachment paths when an attach
 			'attachments/Example, _quoted_/only-file.bin': Buffer.from('synthetic file'),
 		})
 	).toThrow('ZIP attachment item names are ambiguous or missing.');
+});
+
+for (const names of [['A/B', 'A\\B'], ['A', 'A', 'A_1'], ['A', 'A_1', 'A']]) {
+	test(`ZIP export rejects ambiguous item folders before downloading: ${names.join(', ')}`, async () => {
+		const vault = fixture();
+		vault.snapshot.ciphers = names.map((name, index) => ({
+			...encryptItem({ ...item, name }, itemKey),
+			id: `item-${index}`,
+			key: encrypt(itemKey, key),
+			attachments: [{ id: 'file' }],
+		}));
+		let downloads = 0;
+		vault.getAttachment = async () => {
+			downloads++;
+			return { fileName: 'file.txt', contents: Buffer.from('synthetic') };
+		};
+		try {
+			await expect(vault.exportVault('zip')).rejects.toThrow('ambiguous');
+			expect(downloads).toBe(0);
+		} finally {
+			vault.dispose();
+		}
+	});
+}
+
+test('ZIP export/import preserves every attachment when generated and original filenames collide', async () => {
+	const source = fixture();
+	source.snapshot.ciphers = [{
+		...encryptItem(item, itemKey),
+		id: 'source-item',
+		key: encrypt(itemKey, key),
+		attachments: [{ id: 'first' }, { id: 'second' }, { id: 'third' }],
+	}];
+	source.getAttachment = async (_id, attachmentId) => ({
+		fileName: attachmentId === 'third' ? 'file_1.txt' : 'file.txt',
+		contents: Buffer.from(attachmentId),
+	});
+	let created: JsonObject[] = [];
+	const restored: { name: string; contents: string }[] = [];
+	const pending = new Map<string, { name: string; key: Buffer }>();
+	const target = fixture(async (url, init) => {
+		const path = new URL(url).pathname;
+		if (path === '/api/ciphers/import') {
+			const body = JSON.parse(String(init.body));
+			created = body.ciphers.map((cipher: JsonObject, index: number) => ({ ...cipher, id: `new-${index}` }));
+			return new Response(null, { status: 204 });
+		}
+		if (path === '/api/sync') return Response.json({ profile: { id: 'account', premium: true }, ciphers: created });
+		if (path.endsWith('/attachment/v2')) {
+			const body = JSON.parse(String(init.body));
+			const id = `attachment-${pending.size}`;
+			const importedKey = decrypt(String(created[0]!.key), key);
+			try {
+				pending.set(id, {
+					name: decrypt(body.fileName, importedKey).toString(),
+					key: decrypt(body.key, importedKey),
+				});
+			} finally {
+				importedKey.fill(0);
+			}
+			return Response.json({ attachmentId: id, fileUploadType: 0, cipherResponse: created[0] });
+		}
+		const upload = /\/attachment\/(attachment-\d+)$/.exec(path);
+		if (upload && init.method === 'POST') {
+			const metadata = pending.get(upload[1]!)!;
+			const file = (init.body as FormData).get('data') as Blob;
+			restored.push({
+				name: metadata.name,
+				contents: decryptAttachment(new Uint8Array(await file.arrayBuffer()), metadata.key).toString(),
+			});
+			metadata.key.fill(0);
+			return new Response(null, { status: 204 });
+		}
+		throw new Error(`Unexpected ZIP round-trip request: ${init.method} ${path}`);
+	});
+	try {
+		const zip = await source.exportVault('zip');
+		const archive = unzipSync(zip);
+		const files = Object.keys(archive).filter(path => path.startsWith('attachments/') && !path.endsWith('/'));
+		expect(files).toHaveLength(3);
+		expect(files.map(path => Buffer.from(archive[path]!).toString()).sort()).toEqual(['first', 'second', 'third']);
+		expect(await target.importVault('bitwardenzip', zip)).toMatchObject({ items: 1, attachments: 3 });
+		expect(restored.map(value => value.contents).sort()).toEqual(['first', 'second', 'third']);
+		expect(new Set(restored.map(value => value.name)).size).toBe(3);
+	} finally {
+		source.dispose();
+		target.dispose();
+		for (const metadata of pending.values()) metadata.key.fill(0);
+	}
 });

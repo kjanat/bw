@@ -1,6 +1,19 @@
-import { chmod, lstat, mkdir, open, readFile, rename, rm } from 'node:fs/promises';
+import {
+	chmod,
+	lstat,
+	mkdir,
+	mkdtemp,
+	open,
+	readFile,
+	readdir,
+	rename,
+	rm,
+	rmdir,
+	unlink,
+	writeFile,
+} from 'node:fs/promises';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
+import { homedir, hostname } from 'node:os';
 import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from 'node:crypto';
 import type { Account, JsonObject, ServiceUrls } from '@kjanat/vaultwarden';
 
@@ -23,6 +36,94 @@ export function dataDirectory(): string {
 			)
 	);
 }
+
+function lockOwnerUnknown(): Error {
+	return new Error('State lock has no verifiable owner. Confirm no vw command is running before removing .lock.');
+}
+
+async function removeEmptyLockDirectory(lock: string): Promise<void> {
+	try {
+		await rmdir(lock);
+	} catch (error) {
+		// A new owner may already have published its nonempty directory at this path.
+		if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+	}
+}
+
+/** Remove only the observed dead owner's file; never recursively delete a possibly replaced lock. */
+async function recoverStoreLock(lock: string): Promise<void> {
+	try {
+		const info = await lstat(lock);
+		if (!info.isDirectory() || info.isSymbolicLink() || (process.getuid && info.uid !== process.getuid())) {
+			throw lockOwnerUnknown();
+		}
+		const entries = await readdir(lock);
+		if (entries.length !== 1 || !/^owner-\d+-[0-9a-f-]{36}\.json$/.test(entries[0]!)) throw lockOwnerUnknown();
+		const path = join(lock, entries[0]!);
+		const ownerInfo = await lstat(path);
+		if (!ownerInfo.isFile() || ownerInfo.isSymbolicLink() || (process.getuid && ownerInfo.uid !== process.getuid())) {
+			throw lockOwnerUnknown();
+		}
+		let owner: { pid?: unknown; host?: unknown };
+		try {
+			owner = JSON.parse(await readFile(path, 'utf8'));
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+			throw lockOwnerUnknown();
+		}
+		if (
+			!owner || typeof owner.pid !== 'number' || !Number.isSafeInteger(owner.pid) || owner.pid <= 0
+			|| owner.host !== hostname() || !entries[0]!.startsWith(`owner-${owner.pid}-`)
+		) throw lockOwnerUnknown();
+		try {
+			process.kill(owner.pid, 0);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw new Error('Another vw command is running.');
+			await unlink(path);
+			await removeEmptyLockDirectory(lock);
+			return;
+		}
+		throw new Error('Another vw command is running.');
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+	}
+}
+
+async function acquireStoreLock(directory: string): Promise<() => Promise<void>> {
+	const lock = join(directory, '.lock');
+	const claim = await mkdtemp(join(directory, '.lock-'));
+	const ownerFile = `owner-${process.pid}-${randomUUID()}.json`;
+	let acquired = false;
+	try {
+		await writeFile(join(claim, ownerFile), JSON.stringify({ pid: process.pid, host: hostname() }), {
+			flag: 'wx',
+			mode: 0o600,
+		});
+		for (let attempt = 0; attempt < 8; attempt++) {
+			await recoverStoreLock(lock);
+			try {
+				// Publishing a nonempty directory makes the owner visible atomically with the lock.
+				await rename(claim, lock);
+				acquired = true;
+				return async () => {
+					try {
+						await unlink(join(lock, ownerFile));
+					} catch (error) {
+						if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+						throw error;
+					}
+					await removeEmptyLockDirectory(lock);
+				};
+			} catch (error) {
+				if (!['EEXIST', 'ENOTEMPTY', 'EPERM'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+			}
+		}
+		throw new Error('Another vw command is running.');
+	} finally {
+		if (!acquired) await rm(claim, { recursive: true, force: true });
+	}
+}
+
 /** An exclusive command lock prevents refresh rotation and logout/save races. */
 export async function withStore<T>(
 	directory: string,
@@ -38,17 +139,7 @@ export async function withStore<T>(
 		throw new Error('State directory must be an owned directory.');
 	}
 	await chmod(directory, 0o700);
-	const lock = join(directory, '.lock');
-	try {
-		await mkdir(lock, { mode: 0o700 });
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
-			throw new Error(
-				'Another vw command is running, or a stale lock exists in the state directory.',
-			);
-		}
-		throw error;
-	}
+	const release = await acquireStoreLock(directory);
 	try {
 		let state: State = { version: 1, deviceId: randomUUID() };
 		const path = join(directory, 'state.json');
@@ -91,7 +182,7 @@ export async function withStore<T>(
 		};
 		return await action(state, save);
 	} finally {
-		await rm(lock, { recursive: true });
+		await release();
 	}
 }
 export function sealSession(state: State, userKey: Uint8Array): string {

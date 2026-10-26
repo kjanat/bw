@@ -396,8 +396,7 @@ function personalExportPolicyApplies(vault: VaultService): boolean {
 function zipItemName(name: string): string {
 	return name.replace(/[/\\><:"|?*]/g, '_').replace(/__+/g, '_');
 }
-export function officialZipAttachments(items: JsonObject[], zip: Record<string, Uint8Array>): JsonObject[] {
-	const result: JsonObject[] = [];
+function zipAttachmentItems(items: JsonObject[], fileFolders: Set<string>): Map<string, JsonObject> {
 	const names = new Map<string, number>();
 	const folderItems = new Map<string, JsonObject[]>();
 	const nameGroups = new Map<string, string[]>();
@@ -409,28 +408,35 @@ export function officialZipAttachments(items: JsonObject[], zip: Record<string, 
 		folderItems.set(folder, [...(folderItems.get(folder) ?? []), item]);
 		nameGroups.set(name, [...(nameGroups.get(name) ?? []), folder]);
 	}
-	const fileFolders = new Set(
-		Object.keys(zip).filter(path => path.startsWith('attachments/') && !path.endsWith('/')).map(path =>
-			path.split('/')[1]
-		),
-	);
 	for (const folders of nameGroups.values()) {
 		const present = folders.filter(folder => fileFolders.has(folder)).length;
 		if (folders.length > 1 && present > 0 && present !== folders.length) {
 			throw new Error('ZIP attachment item names are ambiguous or missing.');
 		}
 	}
-	for (const path of Object.keys(zip)) {
-		if (!path.startsWith('attachments/') || path.endsWith('/')) continue;
-		const parts = path.split('/');
-		if (parts.length !== 3 || !parts[1] || !parts[2]) throw new Error('Unsupported ZIP attachment layout.');
-		const matches = folderItems.get(parts[1]) ?? [];
+	const result = new Map<string, JsonObject>();
+	for (const folder of fileFolders) {
+		const matches = folderItems.get(folder) ?? [];
 		// The official format loses original IDs and names when sanitized names collide.
 		// Refuse an ambiguous restoration instead of associating a file with the wrong secret.
 		if (matches.length !== 1) throw new Error('ZIP attachment item names are ambiguous or missing.');
-		result.push({ itemId: text(matches[0]!.id), fileName: parts[2], path });
+		result.set(folder, matches[0]!);
 	}
 	return result;
+}
+export function officialZipAttachments(items: JsonObject[], zip: Record<string, Uint8Array>): JsonObject[] {
+	const paths = Object.keys(zip).filter(path => path.startsWith('attachments/') && !path.endsWith('/'));
+	const parsed = paths.map(path => {
+		const parts = path.split('/');
+		if (parts.length !== 3 || !parts[1] || !parts[2]) throw new Error('Unsupported ZIP attachment layout.');
+		return { path, folder: parts[1], fileName: parts[2] };
+	});
+	const mapping = zipAttachmentItems(items, new Set(parsed.map(value => value.folder)));
+	return parsed.map(value => ({
+		itemId: text(mapping.get(value.folder)!.id),
+		fileName: value.fileName,
+		path: value.path,
+	}));
 }
 export async function exportVault(
 	vault: VaultService,
@@ -498,6 +504,7 @@ export async function exportVault(
 	archive['attachments/'] = new Uint8Array();
 	try {
 		const itemNames = new Map<string, number>();
+		const plan: { item: JsonObject; attachments: JsonObject[]; folder: string }[] = [];
 		for (const encryptedItem of items) {
 			const item = decryptOwnedItem(encryptedItem, owner);
 			const itemAttachments = records(item.attachments ?? []);
@@ -507,30 +514,57 @@ export async function exportVault(
 			itemNames.set(itemName, itemNameCount + 1);
 			let folderName = zipItemName(itemName);
 			if (itemNameCount) folderName += `_${itemNameCount}`;
-			const attachmentNames = new Map<string, number>();
-			for (const attachment of itemAttachments) {
+			if (!folderName || folderName === '.' || folderName === '..' || /\p{Cc}/u.test(folderName)) {
+				throw new Error('Unsupported ZIP attachment folder name. Rename the item before exporting.');
+			}
+			plan.push({ item, attachments: itemAttachments, folder: folderName });
+		}
+		const folderNames = new Set(plan.map(value => value.folder));
+		if (folderNames.size !== plan.length) throw new Error('ZIP attachment item names are ambiguous or missing.');
+		const mapping = zipAttachmentItems(records(document.items), folderNames);
+		for (const entry of plan) {
+			if (mapping.get(entry.folder)?.id !== entry.item.id) {
+				throw new Error('ZIP attachment item names are ambiguous or missing.');
+			}
+		}
+		const usedPaths = new Set(Object.keys(archive));
+		const nextSuffixes = new Map<string, number>();
+		for (const { item, attachments, folder } of plan) {
+			for (const attachment of attachments) {
 				let contents: Buffer | undefined;
+				let downloaded: { fileName: string; contents: Buffer };
 				try {
-					const downloaded = await vault.getAttachment(text(item.id), text(attachment.id));
+					downloaded = await vault.getAttachment(text(item.id), text(attachment.id));
+				} catch {
+					options.onAttachmentSkipped?.(text(item.id), text(attachment.id));
+					continue;
+				}
+				try {
 					contents = downloaded.contents;
 					const parts = downloaded.fileName.split('.');
 					let baseName = parts.length > 1 ? parts.slice(0, -1).join('') : downloaded.fileName;
-					const suffix = parts.length > 1 ? `.${parts.at(-1)}` : '';
-					baseName = baseName.replace(/[\\/<>:"|?*.]/g, '_').replace(/__+/g, '_');
-					let name = `${baseName}${suffix}`;
-					const nameCount = attachmentNames.get(name) ?? 0;
-					attachmentNames.set(name, nameCount + 1);
-					if (nameCount) name = `${baseName}_${nameCount}${suffix}`;
-					const path = `attachments/${folderName}/${name}`;
+					const suffix = parts.length > 1 ? `.${parts.at(-1)!.replace(/[\p{Cc}\\/<>:"|?*]/gu, '_')}` : '';
+					baseName = baseName.replace(/[\p{Cc}\\/<>:"|?*.]/gu, '_').replace(/__+/g, '_');
+					const originalName = `${baseName}${suffix}`;
+					if (!originalName || originalName === '.' || originalName === '..') {
+						throw new Error('Unsupported ZIP attachment file name.');
+					}
+					const originalPath = `attachments/${folder}/${originalName}`;
+					let nameCount = nextSuffixes.get(originalPath) ?? 0;
+					let name = nameCount ? `${baseName}_${nameCount}${suffix}` : originalName;
+					while (usedPaths.has(`attachments/${folder}/${name}`)) name = `${baseName}_${++nameCount}${suffix}`;
+					nextSuffixes.set(originalPath, nameCount + 1);
+					const path = `attachments/${folder}/${name}`;
+					usedPaths.add(path);
 					archive[path] = contents;
 					contents = undefined;
-				} catch {
-					options.onAttachmentSkipped?.(text(item.id), text(attachment.id));
 				} finally {
 					contents?.fill(0);
 				}
 			}
 		}
+		// Downloads may have been skipped. Validate the actual archive too before reporting success.
+		officialZipAttachments(records(document.items), archive);
 		return Buffer.from(zipSync(archive, { level: 6 }));
 	} finally {
 		data.fill(0);

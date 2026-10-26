@@ -392,9 +392,12 @@ Decoding runs in an isolated worker; input size, group depth, KDF work and runti
 are bounded as documented in the compatibility notes. `bun install` applies the
 decoder patch that preserves tabs in unprotected text.
 
-ZIP backups produced here include an attachment manifest retaining original
-filenames and item IDs. Official bw ZIPs use sanitized item names instead;
-restoration rejects ambiguous item-name mappings before importing anything.
+ZIP backups use the Bitwarden `data.json` and sanitized attachment-path layout.
+Final attachment paths are unique, including collisions between generated suffixes
+and existing filenames. Export and import share the item-folder ambiguity checks:
+an export rejects conflicting sanitized names or duplicate names with incomplete
+attachment folders, rather than producing a backup that cannot be restored.
+Rename conflicting items before retrying. Import also accepts older vw manifests.
 Archives are read in memory without extracting their paths to the filesystem.
 The total inflated ZIP limit is 1 GiB, with a 525 MiB limit per entry. A bulk
 import or attachment restoration can partially succeed on the server; failures
@@ -711,8 +714,12 @@ State defaults to `$XDG_CONFIG_HOME/vaultwarden-cli/state.json`, falling back to
 `~/.config/vaultwarden-cli/state.json`. `VW_APPDATA_DIR` selects an isolated profile.
 Directories use mode 0700 and files 0600. Locking removes the encrypted session
 wrapper; unlocking again replaces it, invalidating the previous token. A command
-lock prevents concurrent refresh/logout writes. If a command is killed, verify
-that no command still uses that profile before removing its `.lock` directory.
+lock prevents concurrent refresh/logout writes. Its local process owner is
+published atomically with the lock; subsequent commands recover the lock when
+that owner is no longer running, including after SIGINT, SIGTERM or SIGKILL.
+Live or inaccessible owners are not displaced. Legacy locks without owner
+metadata and locks from another host require confirming that no command still
+uses that profile before manually removing `.lock`.
 Logout removes local tokens and cache; it does not revoke server-side sessions.
 
 The state file contains bearer/refresh tokens, API credentials for API-key
