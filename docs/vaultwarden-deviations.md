@@ -274,11 +274,11 @@ our archive mutation is allowed without that entitlement, and an archived edit
 does not require unarchiving solely because premium profile fields are false.
 Non-Vaultwarden connections keep the hosted checks.
 
-This accommodation is narrower than complete entitlement-independent archive
-support: `listItems({ archived: true })` currently still uses synced premium
-fields. Do not infer a Vaultwarden bypass for every archive read path.
+Archived listing uses the same Vaultwarden entitlement decision, so
+`listItems({ archived: true })` includes archived items even when all synced
+premium fields are false. Non-Vaultwarden listing retains the hosted behavior.
 
-Implementation: `archiveItem` and `shouldUnarchiveBeforeEdit` in
+Implementation: `archiveItem`, `listItems` and `shouldUnarchiveBeforeEdit` in
 [vault-service.ts](../packages/vaultwarden/src/vault-service.ts), plus
 [vault-commands.ts](../apps/cli/src/vault-commands.ts).
 Coverage: archive entitlement tests in

@@ -222,6 +222,78 @@ test('concurrent stale-lock recovery never admits two active store writers', asy
 	}
 }, 10000);
 
+for (const boundary of ['takeover', 'detach', 'delete'] as const) {
+	test(`compiled stale-lock recovery survives SIGKILL after ${boundary}`, async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'vw-store-reclaim-'));
+		const module = new URL('../dist/store.js', import.meta.url).href;
+		try {
+			await withStore(dir, async (state, save) => {
+				state.server = 'https://saved.example';
+				await save();
+			});
+			await interruptStoreOwner(dir, 'SIGKILL');
+			// Repeated interruption also verifies recovery of a dead reclaimer's token.
+			for (let attempt = 0; attempt < (boundary === 'takeover' ? 2 : 1); attempt++) {
+				const code = `import fs from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
+const lock = process.argv[1] + '/.lock';
+const stop = () => { console.log('interrupted-${boundary}'); process.kill(process.pid, 'SIGKILL'); };
+const rename = fs.rename;
+fs.rename = async (from, to) => {
+ await rename(from, to);
+ if (${JSON.stringify(boundary)} === 'takeover' && String(to).startsWith(lock + '/recovery-')) stop();
+ if (${JSON.stringify(boundary)} === 'detach' && from === lock) stop();
+};
+const rm = fs.rm;
+fs.rm = async (path, options) => {
+ await rm(path, options);
+ if (${JSON.stringify(boundary)} === 'delete' && String(path).endsWith('.retired')) stop();
+};
+syncBuiltinESMExports();
+const { withStore } = await import(${JSON.stringify(module)});
+await withStore(process.argv[1], async () => { throw new Error('Recovery was not interrupted.'); });`;
+				const child = Bun.spawn([nodeExecutable, '--input-type=module', '--eval', code, dir], {
+					env: { PATH: process.env.PATH },
+					stdout: 'pipe',
+					stderr: 'pipe',
+					timeout: 5000,
+					killSignal: 'SIGKILL',
+				});
+				const [, stdout, stderr] = await Promise.all([
+					child.exited,
+					new Response(child.stdout).text(),
+					new Response(child.stderr).text(),
+				]);
+				expect(stderr).toBe('');
+				expect(stdout.trim()).toBe(`interrupted-${boundary}`);
+				expect(child.signalCode).toBe('SIGKILL');
+			}
+			const next = Bun.spawn([
+				nodeExecutable,
+				'--input-type=module',
+				'--eval',
+				`
+import { withStore } from ${JSON.stringify(module)};
+await withStore(process.argv[1], async (state, save) => {
+ if (state.server !== 'https://saved.example') throw new Error('Saved state was lost.');
+ state.lastSync = 'recovered'; await save();
+});`,
+				dir,
+			], { env: { PATH: process.env.PATH }, stdout: 'pipe', stderr: 'pipe', timeout: 5000, killSignal: 'SIGKILL' });
+			const [exitCode, stderr] = await Promise.all([
+				next.exited,
+				new Response(next.stderr).text(),
+				new Response(next.stdout).text(),
+			]);
+			expect(stderr).toBe('');
+			expect(exitCode).toBe(0);
+			await withStore(dir, async state => expect(state.lastSync).toBe('recovered'));
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	}, 10000);
+}
+
 test('legacy locks without verifiable owners are preserved rather than stolen', async () => {
 	const dir = await mkdtemp(join(tmpdir(), 'vw-store-legacy-lock-'));
 	try {

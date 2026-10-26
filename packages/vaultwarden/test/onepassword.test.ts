@@ -1,3 +1,4 @@
+import { withImportSync } from './import-server.js';
 import { test, expect } from 'bun:test';
 import { generateKeyPairSync } from 'node:crypto';
 import { readFile, mkdtemp, writeFile, rm } from 'node:fs/promises';
@@ -172,7 +173,7 @@ test('1PUX imports every vault from the first account, limits history, and rejec
 test('1PUX upload uses fresh item keys and reports skipped records without plaintext on the wire', async () => {
 	const owner = Buffer.alloc(64, 12);
 	let calls = 0;
-	const fetcher = (async (_url: unknown, init: RequestInit) => {
+	const fetcher = withImportSync(async (_url: unknown, init: RequestInit) => {
 		calls++;
 		const body = JSON.parse(String(init.body));
 		expect(String(init.body)).not.toContain('synthetic-password');
@@ -186,7 +187,7 @@ test('1PUX upload uses fresh item keys and reports skipped records without plain
 			child.fill(0);
 		}
 		return new Response(null, { status: 204 });
-	}) as unknown as typeof fetch;
+	});
 	const vault = new VaultService(new VaultwardenClient('https://example.com', { fetch: fetcher }), 'access', {
 		profile: { id: 'synthetic' },
 	}, owner);

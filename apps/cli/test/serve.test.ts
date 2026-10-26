@@ -40,7 +40,7 @@ try {
   const stdio=['ignore','pipe','pipe'];
   if(mode==='connected'||mode==='listening') stdio.push((mode==='connected'?accepted:parent)._handle.fd);
   const args=[executable,'serve','--hostname',address];
-  if(mode==='unauth') args.push('--port',String(port));
+  if(mode==='unauth'||mode==='policy') args.push('--port',String(port));
   child=spawn(process.execPath,args,{
     env:{PATH:process.env.PATH,VW_APPDATA_DIR:directory},stdio,
   });
@@ -50,12 +50,12 @@ try {
   parent?.close();
   await new Promise((resolve,reject)=>{
     let output='';
-    const ready=mode==='unauth'?'Listening on http://'+address+':'+port:'Listening on '+address;
+    const ready=(mode==='unauth'||mode==='policy')?'Listening on http://'+address+':'+port:'Listening on '+address;
     child.stderr.on('data',data=>{ output+=data; if(output.includes(ready)) resolve(); });
     child.once('error',reject); child.once('exit',()=>reject(Error('Listener exited before startup')));
   });
   let result;
-  if(mode==='unauth') {
+  if(mode==='unauth'||mode==='policy') {
     const request=path=>new Promise((resolve,reject)=>{
       const incoming=http.get({host:'127.0.0.1',port,path,headers:{Host:'localhost:'+port,Connection:'close'}},response=>{
         let output=''; response.setEncoding('utf8'); response.on('data',data=>output+=data);
@@ -63,11 +63,11 @@ try {
       }); incoming.on('error',reject);
     });
     result=await request('/status');
-    if(result.status!==200||result.body.data.template.status!=='unauthenticated') throw Error('Unexpected unauthenticated status');
+    if(result.status!==200||result.body.data.template.status!==(mode==='policy'?'locked':'unauthenticated')) throw Error('Unexpected unauthenticated status');
     result=await request('/generate?length=8');
-    if(result.status!==200||result.body.data.data.length!==8) throw Error('Public generation failed while logged out');
+    if(result.status!==200||result.body.data.data.length!==(mode==='policy'?32:8)) throw Error('Public generation failed while logged out');
     result=await request('/list/object/items');
-    if(result.status!==400||result.body.message!=='You are not logged in.') throw Error('Vault route did not report the logged-out state');
+    if(result.status!==400||result.body.message!==(mode==='policy'?'Vault is locked. Run vw unlock --raw and supply VW_SESSION.':'You are not logged in.')) throw Error('Vault route did not report the logged-out state');
     child.kill('SIGTERM');
   } else if(mode==='connected') {
     let output=''; peer.setEncoding('utf8'); peer.on('data',data=>output+=data);
@@ -95,7 +95,7 @@ try {
 } catch(error) { console.error(error.message); process.exitCode=1; }
 finally { clearTimeout(timeout); child?.kill('SIGKILL'); peer?.destroy(); accepted?.destroy(); parent?.close(); }
 `;
-for (const mode of ['unix', 'listening', 'connected', 'unauth']) {
+for (const mode of ['unix', 'listening', 'connected', 'unauth', 'policy']) {
 	test(
 		`built Node serve supports ${mode === 'unauth' ? 'logged-out startup' : `${mode} sockets`} and closes cleanly`,
 		async () => {
@@ -114,6 +114,15 @@ for (const mode of ['unix', 'listening', 'connected', 'unauth']) {
 							expiresAt: Date.now() + 3600000,
 							encryptedUserKey: 'locked-fixture-key',
 						};
+						if (mode === 'policy') {
+							state.vault = {
+								profile: {
+									id: 'user',
+									organizations: [{ id: 'org', status: 2, type: 2, enabled: true, usePolicies: true }],
+								},
+								policiesNew: [{ organizationId: 'org', type: 2, enabled: true, data: { minLength: 32 } }],
+							};
+						}
 						await save();
 					});
 				}

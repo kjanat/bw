@@ -1,6 +1,7 @@
 import { randomInt } from 'node:crypto';
 import { passphraseWords } from '#wordlist';
 import { object, type JsonObject } from '#client';
+import { applicableOrganizationPolicies } from '#policy';
 
 export interface GeneratorOptions {
 	passphrase?: boolean;
@@ -122,4 +123,12 @@ export function generateSecret(input: GeneratorOptions = {}, policies: JsonObjec
 	}
 	const options = enforceGeneratorPolicies(defaults, policies);
 	return options.passphrase ? generatePassphrase(options) : generatePassword(options);
+}
+
+/** Use the same synced policy sources and membership exemptions for every frontend. */
+export function generateVaultSecret(input: GeneratorOptions, snapshot?: JsonObject): string {
+	const policies = snapshot
+		? applicableOrganizationPolicies(snapshot, 2).map(({ policy }) => policy)
+		: [];
+	return generateSecret(input, policies);
 }

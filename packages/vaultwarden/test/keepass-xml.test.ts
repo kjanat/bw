@@ -1,3 +1,4 @@
+import { withImportSync } from './import-server.js';
 import { expect, test } from 'bun:test';
 import { parseKeePassXml } from '#keepass-xml';
 import { VaultwardenClient, object, type JsonObject } from '#client';
@@ -76,7 +77,7 @@ test('KeePass XML imports encrypt hidden fields and preserve empty folder names 
 	const key = Buffer.alloc(64, 7);
 	let calls = 0;
 	const client = new VaultwardenClient('https://example.com', {
-		fetch: (async (_url: unknown, init?: RequestInit) => {
+		fetch: withImportSync(async (_url: unknown, init?: RequestInit) => {
 			calls++;
 			const body = JSON.parse(String(init!.body));
 			expect(body.folderRelationships).toEqual([{ key: 0, value: 0 }]);
@@ -88,7 +89,7 @@ test('KeePass XML imports encrypt hidden fields and preserve empty folder names 
 			});
 			expect(String(init!.body)).not.toContain('synthetic-private');
 			return new Response(null, { status: 204 });
-		}) as typeof fetch,
+		}),
 	});
 	const vault = new VaultService(client, 'access', { profile: { id: 'fixture' }, ciphers: [] }, key);
 	expect(

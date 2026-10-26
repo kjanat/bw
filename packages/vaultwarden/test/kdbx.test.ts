@@ -1,3 +1,4 @@
+import { withImportSync } from './import-server.js';
 import { expect, test } from 'bun:test';
 import { Kdbx, KdbxUuid, Credentials, ProtectedValue, Consts, VarDictionary, Int64, CryptoEngine } from 'kdbxweb';
 import { parseKdbx } from '#kdbx';
@@ -154,7 +155,7 @@ test('KDBX bulk import encrypts decoded data with new item keys', async () => {
 	const bytes = new Uint8Array(await db.save()), owner = Buffer.alloc(64, 7);
 	let calls = 0;
 	const client = new VaultwardenClient('https://example.com', {
-		fetch: (async (_url: unknown, init?: RequestInit) => {
+		fetch: withImportSync(async (_url: unknown, init?: RequestInit) => {
 			calls++;
 			const body = JSON.parse(String(init!.body));
 			expect(body.folderRelationships).toEqual([{ key: 0, value: 0 }]);
@@ -164,7 +165,7 @@ test('KDBX bulk import encrypts decoded data with new item keys', async () => {
 			});
 			expect(String(init!.body)).not.toContain('synthetic-secret');
 			return new Response(null, { status: 204 });
-		}) as typeof fetch,
+		}),
 	});
 	const vault = new VaultService(client, 'access', { profile: { id: 'fixture' }, ciphers: [] }, owner);
 	expect(await vault.importVault('keepasskdbx', bytes, { password: 'synthetic-database-password' })).toEqual({

@@ -4,7 +4,7 @@ import { Socket } from 'node:net';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { flag } from '@kjanat/dreamcli';
-import { createLocalApiHandler, generateSecret } from '@kjanat/vaultwarden';
+import { createLocalApiHandler, generateVaultSecret } from '@kjanat/vaultwarden';
 import { accountUserId, unlockAccount, type JsonObject } from '@kjanat/vaultwarden';
 import { openSession, sealSession, withStore, type State } from '#store';
 import type { VaultRuntime } from '#vault-commands';
@@ -83,7 +83,7 @@ export function serveCommand(
 				generate: options =>
 					withStore(
 						directory,
-						async state => generateSecret(options, state.vault?.policies as JsonObject[] | undefined),
+						async state => generateVaultSecret(options, state.account ? state.vault : undefined),
 					),
 				run: (mutate, operation, online) => runtime.run(session, mutate, operation, online),
 			}, {

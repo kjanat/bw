@@ -571,6 +571,56 @@ export async function exportVault(
 		for (const [path, value] of Object.entries(archive)) if (path.startsWith('attachments/')) value.fill(0);
 	}
 }
+function verifyImportedRecords(
+	snapshot: JsonObject,
+	ciphers: JsonObject[],
+	encryptedGroups: JsonObject[],
+	organizationId?: string,
+): JsonObject[] {
+	try {
+		const created = records(snapshot.ciphers);
+		const byName = new Map<unknown, JsonObject[]>();
+		for (const candidate of created) byName.set(candidate.name, [...(byName.get(candidate.name) ?? []), candidate]);
+		const createdIds = new Set<string>();
+		const importedItems = ciphers.map(cipher => {
+			const matches = (byName.get(cipher.name) ?? []).filter(candidate =>
+				candidate.key === cipher.key
+				&& candidate.type === cipher.type && sameOptionalId(candidate.organizationId, organizationId)
+			);
+			if (matches.length !== 1 || typeof matches[0]!.id !== 'string' || !matches[0]!.id) {
+				throw new ImportFailure(
+					'Import verification failed: an item is missing or ambiguous. Some data may have been imported; sync and inspect the vault before retrying.',
+				);
+			}
+			const result = matches[0]!;
+			const id = text(result.id).toLowerCase();
+			if (createdIds.has(id)) {
+				throw new ImportFailure('Import verification failed: duplicate server item IDs. Sync before retrying.');
+			}
+			createdIds.add(id);
+			return result;
+		});
+		const savedGroups = records(snapshot[organizationId ? 'collections' : 'folders'] ?? []);
+		for (const group of encryptedGroups) {
+			if (
+				!savedGroups.some(candidate =>
+					(!organizationId || sameId(candidate.organizationId, organizationId))
+					&& (group.id != null && sameId(candidate.id, group.id) || candidate.name === group.name)
+				)
+			) {
+				throw new ImportFailure(
+					'Import verification failed: a folder or collection is missing. Some data may have been imported; sync and inspect the vault before retrying.',
+				);
+			}
+		}
+		return importedItems;
+	} catch (error) {
+		if (error instanceof ImportFailure) throw error;
+		throw new ImportFailure(
+			'Import verification returned invalid records. Some data may have been imported; sync and inspect the vault before retrying.',
+		);
+	}
+}
 export async function importVault(
 	vault: VaultService,
 	keys: TransferKeys,
@@ -658,9 +708,22 @@ export async function importVault(
 			?? document[options.organizationId ? 'folders' : 'collections'] ?? [],
 	);
 	if (rawItems.length === 0 && groups.length === 0) throw new Error('Nothing to import.');
-	for (const item of rawItems) {
+	for (const [index, item] of rawItems.entries()) {
 		if (typeof item.type !== 'number' || ![1, 2, 3, 4, 5, 6, 7, 8].includes(item.type)) {
 			throw new Error('Unsupported imported item type.');
+		}
+		const section = [
+			'login',
+			'secureNote',
+			'card',
+			'identity',
+			'sshKey',
+			'bankAccount',
+			'driversLicense',
+			'passport',
+		][item.type - 1]!;
+		if (!item[section] || typeof item[section] !== 'object' || Array.isArray(item[section])) {
+			throw new Error(`Imported item ${index + 1} is missing its ${section} data.`);
 		}
 		await vault.client.assertCipherTypeSupported(item.type);
 	}
@@ -734,6 +797,14 @@ export async function importVault(
 	});
 	// Validate attachment mappings before changing the server. No ZIP paths are extracted to the filesystem.
 	const attachments = manifest ? records(manifest.attachments) : zip ? officialZipAttachments(rawItems, zip) : [];
+	const sourceIds = new Map<string, number>();
+	if (attachments.length) {
+		for (const [index, item] of rawItems.entries()) {
+			const id = text(item.id).toLowerCase();
+			if (sourceIds.has(id)) throw new Error('Duplicate ZIP item ID; attachment ownership is ambiguous.');
+			sourceIds.set(id, index);
+		}
+	}
 	for (const attachment of attachments) {
 		if (
 			typeof attachment.path !== 'string' || !attachment.path.startsWith('attachments/') || !zip?.[attachment.path]
@@ -764,27 +835,24 @@ export async function importVault(
 	} catch {
 		throw new ImportFailure('Import request failed. The server may have imported some data; sync before retrying.');
 	}
-	// Server bulk import returns no IDs. Refresh and match imported ciphertexts to avoid confusing pre-existing names.
+	// Bulk endpoints return no IDs and Vaultwarden can skip records with HTTP 200.
+	// Verify the actual encrypted records before reporting counts or restoring files.
+	let snapshot: JsonObject;
+	try {
+		snapshot = await vault.client.sync(vault.accessToken);
+	} catch {
+		throw new ImportFailure(
+			'Import request completed, but verification sync failed. Sync and inspect the vault before retrying.',
+		);
+	}
+	const importedItems = verifyImportedRecords(snapshot, ciphers, encryptedGroups, options.organizationId);
 	let importedAttachments = 0;
 	if (attachments.length) {
-		let snapshot: JsonObject;
-		try {
-			snapshot = await vault.client.sync(vault.accessToken);
-		} catch {
-			throw new ImportFailure(
-				'Items were imported, but syncing for attachment restoration failed. Sync before retrying.',
-			);
-		}
-		const created = records(snapshot.ciphers);
-		const byOldId = new Map<unknown, JsonObject>();
-		rawItems.forEach((item, index) => {
-			const result = created.find(candidate => candidate.name === ciphers[index]!.name);
-			if (result) byOldId.set(item.id, result);
-		});
 		const child = vault.withSnapshot(snapshot);
 		try {
 			for (const attachment of attachments) {
-				const item = byOldId.get(attachment.itemId);
+				const index = sourceIds.get(text(attachment.itemId).toLowerCase());
+				const item = index === undefined ? undefined : importedItems[index];
 				if (!item) throw new Error('Imported item could not be located for attachment restoration.');
 				await child.createAttachment(text(item.id), text(attachment.fileName), zip![text(attachment.path)]!);
 				importedAttachments++;

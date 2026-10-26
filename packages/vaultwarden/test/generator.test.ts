@@ -3,10 +3,34 @@ import {
 	generatePassword,
 	generatePassphrase,
 	generateSecret,
+	generateVaultSecret,
 	enforceGeneratorPolicies,
 	parseGeneratorNumber,
 } from '#generator';
 import { passphraseWords } from '#wordlist';
+
+test('vault generation combines both synced policy fields and applies membership exemptions', () => {
+	const organization = { id: 'org', type: 2, status: 2, enabled: true, usePolicies: true };
+	const snapshot = {
+		profile: { id: 'user', organizations: [organization] },
+		policies: [{ organizationId: 'org', type: 2, enabled: true, data: { minLength: 24 } }],
+		policiesNew: [{ organizationId: 'org', type: 2, enabled: true, data: { minLength: 32 } }],
+	};
+	expect(generateVaultSecret({ length: 5 }, snapshot)).toHaveLength(32);
+	for (
+		const overrides of [{ type: 0 }, { type: 1 }, { status: 0 }, { enabled: false }, { usePolicies: false }, {
+			isProviderUser: true,
+		}]
+	) {
+		expect(
+			generateVaultSecret({ length: 5 }, {
+				...snapshot,
+				profile: { organizations: [{ ...organization, ...overrides }] },
+			}),
+		).toHaveLength(5);
+	}
+	expect(generateVaultSecret({ length: 5 })).toHaveLength(5);
+});
 
 test('generation honors character sets, minima, and ambiguous-character exclusion', () => {
 	for (let i = 0; i < 30; i++) {

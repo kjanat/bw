@@ -559,8 +559,8 @@ broader fidelity and verification work below.
       and finish the remaining authentication/account-state audit. Request fixtures
       and terminal prompt tests do not establish provider or server behavior.
 - [ ] Resolve capability/entitlement inconsistencies in production code,
-      including archived-item listing when Vaultwarden's synced premium fields are
-      false. Review the attachment size ceiling, email-restricted Send rejection,
+      following the archive-listing fix for false synced premium fields.
+      Review the attachment size ceiling, email-restricted Send rejection,
       and organization device-approval rejection currently applied to Bitwarden
       connections too; gate or explicitly document each restriction as appropriate.
 - [ ] Complete applicable encryption/response-variant coverage and independent

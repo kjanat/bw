@@ -1,3 +1,4 @@
+import { withImportSync } from './import-server.js';
 import { test, expect } from 'bun:test';
 import { readFile } from 'node:fs/promises';
 import { parseOnePassword1Pif, parseOnePasswordCsv } from '#onepassword-legacy';
@@ -149,7 +150,7 @@ for (
 	test(`${format} uses encrypted bulk import and validates malformed input before server writes`, async () => {
 		const owner = Buffer.alloc(64, 13);
 		let calls = 0;
-		const fetcher = (async (_url: unknown, init: RequestInit) => {
+		const fetcher = withImportSync(async (_url: unknown, init: RequestInit) => {
 			calls++;
 			const body = JSON.parse(String(init.body));
 			expect(body.ciphers).toHaveLength(count);
@@ -162,7 +163,7 @@ for (
 				key.fill(0);
 			}
 			return new Response(null, { status: 204 });
-		}) as unknown as typeof fetch;
+		});
 		const vault = new VaultService(new VaultwardenClient('https://example.com', { fetch: fetcher }), 'access', {
 			profile: { id: 'account' },
 		}, owner);

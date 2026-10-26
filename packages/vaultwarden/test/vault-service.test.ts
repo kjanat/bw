@@ -1340,6 +1340,26 @@ test('archived listing follows the synced premium capability', async () => {
 	});
 	expect((await organizationPremiumVault.listItems({ archived: true })).map(item => item.id)).toEqual(['archive']);
 });
+test('Vaultwarden archive and list agree when all synced premium fields are false', async () => {
+	const snapshot = {
+		profile: { id: 'user', premium: false, premiumPersonally: false, premiumFromOrganization: false },
+		folders: [],
+		ciphers: [wire(), wire({ id: 'archive', archivedDate: '2026-01-01T00:00:00Z' })],
+	};
+	const vault = service((path, init) => {
+		if (path.endsWith('/api/config')) return Response.json({ server: { name: 'Vaultwarden' } });
+		expect(init.method).toBe('PUT');
+		return new Response(null, { status: 204 });
+	}, snapshot);
+	try {
+		await vault.archiveItem('item');
+		(snapshot.ciphers[0]! as JsonObject).archivedDate = '2026-01-02T00:00:00Z';
+		expect((await vault.listItems({ archived: true })).map(item => item.id)).toEqual(['item', 'archive']);
+		expect(await vault.listItems()).toEqual([]);
+	} finally {
+		vault.dispose();
+	}
+});
 test('restricted-item policies hide disallowed items from list and report the policy denial on get', async () => {
 	const organizationA = '11111111-1111-1111-1111-111111111111';
 	const organizationB = '22222222-2222-2222-2222-222222222222';

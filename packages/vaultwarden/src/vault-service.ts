@@ -605,7 +605,8 @@ export class VaultService {
 	async listItems(filter: ItemFilter = {}): Promise<VaultItem[]> {
 		const profile = object(this.snapshot.profile);
 		const canArchive = profile.premium === true || profile.premiumPersonally === true
-			|| profile.premiumFromOrganization === true;
+			|| profile.premiumFromOrganization === true
+			|| filter.archived === true && await this.client.isVaultwardenServer();
 		const archived = filter.archived === true && canArchive;
 		const items = array(field(this.snapshot, 'ciphers')).filter(item => {
 			if (this.isRestrictedItem(item as VaultItem)) return false;
@@ -986,10 +987,11 @@ export class VaultService {
 		try {
 			const query = idOrName.toLowerCase();
 			if (!query) throw new Error('Attachment not found.');
-			let matches = attachments.map(attachment => ({
+			const exactId = attachments.find(attachment => text(attachment.id).toLowerCase() === query);
+			let matches = (exactId ? [exactId] : attachments).map(attachment => ({
 				attachment,
 				name: decrypt(text(attachment.fileName), itemKey).toString('utf8').toLowerCase(),
-			})).filter(value => text(value.attachment.id).toLowerCase() === query || value.name.includes(query));
+			})).filter(value => exactId !== undefined || value.name.includes(query));
 			const exactNames = matches.filter(value => value.name === query);
 			if (exactNames.length === 1) matches = exactNames;
 			if (matches.length !== 1) {

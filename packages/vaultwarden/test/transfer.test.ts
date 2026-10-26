@@ -3,8 +3,9 @@ import { randomBytes } from 'node:crypto';
 import { unzipSync } from 'fflate';
 import { VaultwardenClient, type JsonObject } from '#client';
 import { VaultService } from '#vault-service';
-import { encrypt, decrypt, decryptAttachment, deriveKdfKey, deriveMasterKey } from '#crypto';
+import { encrypt, decrypt, encryptAttachment, decryptAttachment, deriveKdfKey, deriveMasterKey } from '#crypto';
 import { transformItem, encryptItem } from '#item-codec';
+import { withImportSync } from './import-server.js';
 import {
 	parseCsv,
 	writeCsv,
@@ -50,9 +51,7 @@ function fixture(handler?: (path: string, init: RequestInit) => Response | Promi
 		collections: [],
 		ciphers: [{ ...encryptItem(item, itemKey), key: encrypt(itemKey, key) }],
 	};
-	const transport =
-		((url: unknown, init: RequestInit) =>
-			handler ? handler(String(url), init) : Response.json({})) as unknown as typeof fetch;
+	const transport = withImportSync((url, init) => handler ? handler(String(url), init) : Response.json({}));
 	return new VaultService(new VaultwardenClient('https://example.com', { fetch: transport }), 'access', snapshot, key);
 }
 test('CSV parser and writer round-trip commas, quoted newlines, escaped quotes, and CRLF', () => {
@@ -498,7 +497,7 @@ test('placeholder-only malformed imports are rejected without false positives fo
 			},
 			{ type: 2, name: 'Secure note', secureNote: { type: 0 }, notes: 'notes without a login password' },
 			{ type: 1, name: '', login: { username: null, password: null, uris: [] } },
-			{ type: 1, name: '--', login: null },
+			{ type: 1, name: '--', login: {} },
 		];
 		await vault.importVault('bitwardenjson', JSON.stringify({ items: validItems }));
 		expect(requests).toBe(1);
@@ -687,12 +686,12 @@ test('Vaultwarden organization import rejects collectionless items when membersh
 	const requests: string[] = [];
 	const vault = new VaultService(
 		new VaultwardenClient('https://example.com', {
-			fetch: (async (url: unknown) => {
+			fetch: withImportSync(async (url: unknown) => {
 				requests.push(String(url));
 				if (String(url).endsWith('/api/config')) return Response.json({ server: { name: 'Vaultwarden' } });
 				if (String(url).endsWith('/api/version')) return Response.json('1.37.4');
 				throw new Error(`Unexpected request: ${url}`);
-			}) as unknown as typeof fetch,
+			}),
 		}),
 		'access',
 		{
@@ -723,13 +722,13 @@ test('Vaultwarden 1.36 allows collectionless organization imports for regular me
 	const requests: string[] = [];
 	const vault = new VaultService(
 		new VaultwardenClient('https://example.com', {
-			fetch: (async (url: unknown) => {
+			fetch: withImportSync(async (url: unknown) => {
 				requests.push(String(url));
 				if (String(url).endsWith('/api/config')) return Response.json({ server: { name: 'Vaultwarden' } });
 				if (String(url).endsWith('/api/version')) return Response.json('1.36.0');
 				if (String(url).includes('/api/ciphers/import-organization')) return new Response(null, { status: 204 });
 				throw new Error(`Unexpected request: ${url}`);
-			}) as unknown as typeof fetch,
+			}),
 		}),
 		'access',
 		{
@@ -766,13 +765,13 @@ test('Vaultwarden full-access managers can import collectionless organization it
 	const requests: string[] = [];
 	const vault = new VaultService(
 		new VaultwardenClient('https://example.com', {
-			fetch: (async (url: unknown) => {
+			fetch: withImportSync(async (url: unknown) => {
 				requests.push(String(url));
 				if (String(url).endsWith('/api/config')) return Response.json({ server: { name: 'Vaultwarden' } });
 				if (String(url).endsWith('/api/version')) return Response.json('1.37.4');
 				if (String(url).includes('/api/ciphers/import-organization')) return new Response(null, { status: 204 });
 				throw new Error(`Unexpected request: ${url}`);
-			}) as unknown as typeof fetch,
+			}),
 		}),
 		'access',
 		{
@@ -818,14 +817,14 @@ test('Vaultwarden 1.37.4 organization imports preflight existing and new collect
 		const requests: string[] = [];
 		const vault = new VaultService(
 			new VaultwardenClient('https://example.com', {
-				fetch: (async (url: unknown) => {
+				fetch: withImportSync(async (url: unknown) => {
 					const path = String(url);
 					requests.push(path);
 					if (path.endsWith('/api/config')) return Response.json({ server: { name: 'Vaultwarden' } });
 					if (path.endsWith('/api/version')) return Response.json('1.37.4');
 					if (path.includes('/api/ciphers/import-organization')) return new Response(null, { status: 204 });
 					throw new Error(`Unexpected request: ${path}`);
-				}) as unknown as typeof fetch,
+				}),
 			}),
 			'access',
 			{
@@ -860,13 +859,13 @@ test('Vaultwarden 1.37.4 organization imports preflight existing and new collect
 		const requests: string[] = [];
 		const vault = new VaultService(
 			new VaultwardenClient('https://example.com', {
-				fetch: (async (url: unknown) => {
+				fetch: withImportSync(async (url: unknown) => {
 					const path = String(url);
 					requests.push(path);
 					if (path.endsWith('/api/config')) return Response.json({ server: { name: 'Vaultwarden' } });
 					if (path.endsWith('/api/version')) return Response.json('1.37.4');
 					throw new Error(`Unexpected request: ${path}`);
-				}) as unknown as typeof fetch,
+				}),
 			}),
 			'access',
 			{
@@ -893,13 +892,13 @@ test('Vaultwarden 1.37.4 organization imports preflight existing and new collect
 	const unknownRoleRequests: string[] = [];
 	const unknownRoleVault = new VaultService(
 		new VaultwardenClient('https://example.com', {
-			fetch: (async (url: unknown) => {
+			fetch: withImportSync(async (url: unknown) => {
 				const path = String(url);
 				unknownRoleRequests.push(path);
 				if (path.endsWith('/api/config')) return Response.json({ server: { name: 'Vaultwarden' } });
 				if (path.endsWith('/api/version')) return Response.json('1.37.4');
 				throw new Error(`Unexpected request: ${path}`);
-			}) as unknown as typeof fetch,
+			}),
 		}),
 		'access',
 		{
@@ -1437,64 +1436,105 @@ for (const names of [['A/B', 'A\\B'], ['A', 'A', 'A_1'], ['A', 'A_1', 'A']]) {
 }
 
 test('ZIP export/import preserves every attachment when generated and original filenames collide', async () => {
-	const source = fixture();
+	const attachmentKey = Buffer.alloc(64, 19);
+	const bodies = new Map([
+		['first', { name: 'file.txt', contents: 'first' }],
+		['second', { name: 'file.txt', contents: 'second' }],
+		['third', { name: 'file_1.txt', contents: 'third' }],
+		['fourth', { name: 'first', contents: 'fourth' }],
+		['fifth', { name: 'backup-first.bin', contents: 'fifth' }],
+	]);
+	const downloads: string[] = [];
+	const source = fixture((url) => {
+		const path = new URL(url).pathname;
+		const id = path.split('/').at(-1)!;
+		const file = bodies.get(id)!;
+		downloads.push(id);
+		if (path.startsWith('/api/ciphers/')) return Response.json({ url: `https://example.com/files/${id}` });
+		return new Response(new Uint8Array(encryptAttachment(Buffer.from(file.contents), attachmentKey)));
+	});
+	source.snapshot.profile = { id: 'account', premium: true };
 	source.snapshot.ciphers = [{
 		...encryptItem(item, itemKey),
 		id: 'source-item',
 		key: encrypt(itemKey, key),
-		attachments: [{ id: 'first' }, { id: 'second' }, { id: 'third' }],
+		attachments: [...bodies].map(([id, file]) => ({
+			id,
+			fileName: encrypt(Buffer.from(file.name), itemKey),
+			key: encrypt(attachmentKey, itemKey),
+		})),
 	}];
-	source.getAttachment = async (_id, attachmentId) => ({
-		fileName: attachmentId === 'third' ? 'file_1.txt' : 'file.txt',
-		contents: Buffer.from(attachmentId),
-	});
-	let created: JsonObject[] = [];
+	let created: JsonObject[] = [], restoredFolders: JsonObject[] = [];
 	const restored: { name: string; contents: string }[] = [];
 	const pending = new Map<string, { name: string; key: Buffer }>();
-	const target = fixture(async (url, init) => {
-		const path = new URL(url).pathname;
-		if (path === '/api/ciphers/import') {
-			const body = JSON.parse(String(init.body));
-			created = body.ciphers.map((cipher: JsonObject, index: number) => ({ ...cipher, id: `new-${index}` }));
-			return new Response(null, { status: 204 });
-		}
-		if (path === '/api/sync') return Response.json({ profile: { id: 'account', premium: true }, ciphers: created });
-		if (path.endsWith('/attachment/v2')) {
-			const body = JSON.parse(String(init.body));
-			const id = `attachment-${pending.size}`;
-			const importedKey = decrypt(String(created[0]!.key), key);
-			try {
-				pending.set(id, {
-					name: decrypt(body.fileName, importedKey).toString(),
-					key: decrypt(body.key, importedKey),
-				});
-			} finally {
-				importedKey.fill(0);
-			}
-			return Response.json({ attachmentId: id, fileUploadType: 0, cipherResponse: created[0] });
-		}
-		const upload = /\/attachment\/(attachment-\d+)$/.exec(path);
-		if (upload && init.method === 'POST') {
-			const metadata = pending.get(upload[1]!)!;
-			const file = (init.body as FormData).get('data') as Blob;
-			restored.push({
-				name: metadata.name,
-				contents: decryptAttachment(new Uint8Array(await file.arrayBuffer()), metadata.key).toString(),
-			});
-			metadata.key.fill(0);
-			return new Response(null, { status: 204 });
-		}
-		throw new Error(`Unexpected ZIP round-trip request: ${init.method} ${path}`);
-	});
+	const target = new VaultService(
+		new VaultwardenClient('https://example.com', {
+			fetch: (async (url: unknown, init: RequestInit) => {
+				const path = new URL(String(url)).pathname;
+				if (path === '/api/ciphers/import') {
+					const body = JSON.parse(String(init.body));
+					created = body.ciphers.map((cipher: JsonObject, index: number) => ({ ...cipher, id: `new-${index}` }));
+					restoredFolders = body.folders.map((folder: JsonObject, index: number) => ({
+						...folder,
+						id: `folder-${index}`,
+					}));
+					return new Response(null, { status: 204 });
+				}
+				if (path === '/api/sync') {
+					return Response.json({
+						profile: { id: 'account', premium: true },
+						ciphers: created,
+						folders: restoredFolders,
+					});
+				}
+				if (path.endsWith('/attachment/v2')) {
+					const body = JSON.parse(String(init.body));
+					const id = `attachment-${pending.size}`;
+					const importedKey = decrypt(String(created[0]!.key), key);
+					try {
+						pending.set(id, {
+							name: decrypt(body.fileName, importedKey).toString(),
+							key: decrypt(body.key, importedKey),
+						});
+					} finally {
+						importedKey.fill(0);
+					}
+					return Response.json({ attachmentId: id, fileUploadType: 0, cipherResponse: created[0] });
+				}
+				const upload = /\/attachment\/(attachment-\d+)$/.exec(path);
+				if (upload && init.method === 'POST') {
+					const metadata = pending.get(upload[1]!)!;
+					const file = (init.body as FormData).get('data') as Blob;
+					restored.push({
+						name: metadata.name,
+						contents: decryptAttachment(new Uint8Array(await file.arrayBuffer()), metadata.key).toString(),
+					});
+					metadata.key.fill(0);
+					return new Response(null, { status: 204 });
+				}
+				throw new Error(`Unexpected ZIP round-trip request: ${init.method} ${path}`);
+			}) as typeof fetch,
+		}),
+		'access',
+		{ profile: { id: 'account' }, ciphers: [], folders: [] },
+		key,
+	);
 	try {
 		const zip = await source.exportVault('zip');
 		const archive = unzipSync(zip);
 		const files = Object.keys(archive).filter(path => path.startsWith('attachments/') && !path.endsWith('/'));
-		expect(files).toHaveLength(3);
-		expect(files.map(path => Buffer.from(archive[path]!).toString()).sort()).toEqual(['first', 'second', 'third']);
-		expect(await target.importVault('bitwardenzip', zip)).toMatchObject({ items: 1, attachments: 3 });
-		expect(restored.map(value => value.contents).sort()).toEqual(['first', 'second', 'third']);
-		expect(new Set(restored.map(value => value.name)).size).toBe(3);
+		expect(files).toHaveLength(5);
+		expect(files.map(path => Buffer.from(archive[path]!).toString()).sort()).toEqual([
+			'fifth',
+			'first',
+			'fourth',
+			'second',
+			'third',
+		]);
+		expect(downloads).toEqual([...bodies.keys()].flatMap(id => [id, id]));
+		expect(await target.importVault('bitwardenzip', zip)).toMatchObject({ items: 1, attachments: 5 });
+		expect(restored.map(value => value.contents).sort()).toEqual(['fifth', 'first', 'fourth', 'second', 'third']);
+		expect(new Set(restored.map(value => value.name)).size).toBe(5);
 	} finally {
 		source.dispose();
 		target.dispose();

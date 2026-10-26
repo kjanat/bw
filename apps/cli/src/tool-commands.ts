@@ -3,9 +3,8 @@ import { readFile } from 'node:fs/promises';
 import { arg, flag } from '@kjanat/dreamcli';
 import { secretPrompt } from '#prompts';
 import {
-	generateSecret,
+	generateVaultSecret,
 	importFormats,
-	object,
 	parseGeneratorNumber,
 	resolveImportFormat,
 	type ImportFormat,
@@ -47,20 +46,20 @@ export function toolCommands(runtime: VaultRuntime, directory: string) {
 		.flag('separator', flag.string().default('-')).flag('capitalize', flag.boolean().alias('c'))
 		.flag('includeNumber', flag.boolean()).flag('ambiguous', flag.boolean().describe('Avoid ambiguous characters'))
 		.action(async ({ flags, out }) => {
-			const policies = await withStore(
+			const snapshot = await withStore(
 				directory,
-				async state => state.account && Array.isArray(state.vault?.policies) ? state.vault!.policies.map(object) : [],
+				async state => state.account ? state.vault : undefined,
 			);
 			const { length, words, minNumber, minSpecial, ...options } = flags;
 			out.log(
-				generateSecret({
+				generateVaultSecret({
 					...options,
 					length: parseGeneratorNumber(length, 14),
 					words: parseGeneratorNumber(words, 6),
 					minNumber: parseGeneratorNumber(minNumber, 1),
 					minSpecial: parseGeneratorNumber(minSpecial, 0),
 					avoidAmbiguous: flags.ambiguous,
-				}, policies),
+				}, snapshot),
 			);
 		});
 	const exportCommand = command('export').description('Export a personal or organization vault')

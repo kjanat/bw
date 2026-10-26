@@ -286,7 +286,7 @@ try {
 		? [{ files: ['test/challenge-live.test.ts'], skipImports: true }]
 		: shardImportMatrix
 		? [
-			{ files: ['test/live.test.ts'] },
+			{ files: ['test/live.test.ts', 'test/backup-integrity-live.test.ts'] },
 			...Array.from({ length: 8 }, (_, index) => ({ files: ['test/challenge-live.test.ts'], shard: `${index}/8` })),
 			{ files: ['test/challenge-live.test.ts'], skipImports: true },
 		]
@@ -297,7 +297,7 @@ try {
 				? ['test/sso-live.test.ts']
 				: smtpEnabled
 				? ['test/email-live.test.ts']
-				: ['test/live.test.ts', 'test/challenge-live.test.ts'],
+				: ['test/live.test.ts', 'test/challenge-live.test.ts', 'test/backup-integrity-live.test.ts'],
 		}];
 	for (const run of runs) {
 		if (runs.length > 1) {

@@ -1,17 +1,4 @@
-import {
-	chmod,
-	lstat,
-	mkdir,
-	mkdtemp,
-	open,
-	readFile,
-	readdir,
-	rename,
-	rm,
-	rmdir,
-	unlink,
-	writeFile,
-} from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir, hostname } from 'node:os';
 import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from 'node:crypto';
@@ -41,16 +28,7 @@ function lockOwnerUnknown(): Error {
 	return new Error('State lock has no verifiable owner. Confirm no vw command is running before removing .lock.');
 }
 
-async function removeEmptyLockDirectory(lock: string): Promise<void> {
-	try {
-		await rmdir(lock);
-	} catch (error) {
-		// A new owner may already have published its nonempty directory at this path.
-		if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
-	}
-}
-
-/** Remove only the observed dead owner's file; never recursively delete a possibly replaced lock. */
+/** Claim the exact dead owner's token before atomically detaching its lock. */
 async function recoverStoreLock(lock: string): Promise<void> {
 	try {
 		const info = await lstat(lock);
@@ -58,7 +36,9 @@ async function recoverStoreLock(lock: string): Promise<void> {
 			throw lockOwnerUnknown();
 		}
 		const entries = await readdir(lock);
-		if (entries.length !== 1 || !/^owner-\d+-[0-9a-f-]{36}\.json$/.test(entries[0]!)) throw lockOwnerUnknown();
+		const token = entries.length === 1 && /^(owner|recovery)-(\d+)-[0-9a-f-]{36}\.json$/.exec(entries[0]!);
+		if (!token) throw lockOwnerUnknown();
+		const ownerPid = Number(token[2]);
 		const path = join(lock, entries[0]!);
 		const ownerInfo = await lstat(path);
 		if (!ownerInfo.isFile() || ownerInfo.isSymbolicLink() || (process.getuid && ownerInfo.uid !== process.getuid())) {
@@ -73,14 +53,19 @@ async function recoverStoreLock(lock: string): Promise<void> {
 		}
 		if (
 			!owner || typeof owner.pid !== 'number' || !Number.isSafeInteger(owner.pid) || owner.pid <= 0
-			|| owner.host !== hostname() || !entries[0]!.startsWith(`owner-${owner.pid}-`)
+			|| owner.host !== hostname() || !Number.isSafeInteger(ownerPid) || ownerPid <= 0
+			|| token[1] === 'owner' && owner.pid !== ownerPid
 		) throw lockOwnerUnknown();
 		try {
-			process.kill(owner.pid, 0);
+			process.kill(ownerPid, 0);
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw new Error('Another vw command is running.');
-			await unlink(path);
-			await removeEmptyLockDirectory(lock);
+			// Only one reclaimer can rename this unique token. Other reclaimers see
+			// our live PID, or can reclaim our recovery token if we are interrupted.
+			await rename(path, join(lock, `recovery-${process.pid}-${randomUUID()}.json`));
+			const retired = `${lock}-${randomUUID()}.retired`;
+			await rename(lock, retired);
+			await rm(retired, { recursive: true, force: true });
 			return;
 		}
 		throw new Error('Another vw command is running.');

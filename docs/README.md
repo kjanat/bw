@@ -246,6 +246,8 @@ Generation uses cryptographic randomness and the 7,776-word EFF list for
 passphrases. Enabled generator policies from the encrypted cache enforce their
 minimums. Without a logged-in cache, generation uses local defaults. Cached
 policies may be stale until the next sync.
+CLI and local API generation read both `policies` and `policiesNew`, with the
+same organization membership exemptions.
 
 Exports support CSV, JSON, account-encrypted JSON, password-encrypted JSON,
 and ZIP with decrypted attachments. Without an export password, encrypted JSON
@@ -254,6 +256,12 @@ and the account KDF parameters. `--passwordenv` and `--passwordfile` select a
 password source; `VW_EXPORT_PASSWORD` and `VW_IMPORT_PASSWORD` are the default
 variables for those operations. Plain exports contain vault secrets. File
 output uses mode 0600 and refuses overwrite; `--raw` writes directly to stdout.
+
+Imports validate every item's type-specific data before uploading, then sync
+and verify the submitted encrypted items and grouping records before reporting
+success. An incomplete or unverifiable import raises an error and invalidates
+the CLI cache; inspect the server vault before retrying to avoid duplicates.
+ZIP imports reject duplicate source item IDs before changing the server.
 
 Imports currently accept Bitwarden JSON/CSV/ZIP, Avast JSON (`avastjson`),
 Enpass JSON (`enpassjson`), GNOME Passwords JSON (`gnomejson`), Passky JSON (`passkyjson`),
@@ -720,6 +728,10 @@ that owner is no longer running, including after SIGINT, SIGTERM or SIGKILL.
 Release atomically detaches the lock before deleting its owner metadata. An
 interrupted cleanup can leave an unused `.lock-*` directory, which does not
 block subsequent commands.
+Stale-lock recovery first replaces the exact dead-owner token with a token
+identifying the recovering process, then detaches the directory atomically.
+An interrupted recovery can itself be recovered without displacing a live
+command or leaving a published lock without ownership metadata.
 Live or inaccessible owners are not displaced. Legacy locks without owner
 metadata and locks from another host require confirming that no command still
 uses that profile before manually removing `.lock`.
