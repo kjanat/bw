@@ -43,7 +43,7 @@ export async function prepareArchivedItemEdit(
 	} else if (await options.ask() !== 'confirmed') throw new Error('Edit cancelled.');
 	data.archivedDate = null;
 }
-const session = () => flag.string().env('VW_SESSION').describe('Unlock session (or VW_SESSION)');
+const session = () => flag.string().sensitive().env('SESSION').describe('Unlock session (or VW_SESSION)');
 const input = () => arg.string().stdin({ trim: true }).describe('Base64-encoded JSON, or pipe from vw encode');
 const org = () => flag.string().describe('Organization ID');
 function organization(value?: string): string {
@@ -91,44 +91,40 @@ export function vaultCommands(runtime: VaultRuntime) {
 		).flag('organizationid', org()).flag('file', flag.path()).flag('itemid', flag.string())
 		.action(async ({ args, flags, out }) => {
 			if (args.object === 'attachment') {
-				if (!flags.itemid) throw new Error('`itemid` option is required.');
-				if (!flags.file) throw new Error('`file` option is required.');
-				const filePath = resolve(flags.file);
-				let contents: Buffer;
-				try {
-					contents = await readFile(filePath);
-				} catch (error) {
-					if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
-						throw new Error(`Cannot find file at ${filePath}`);
+				const result = await runtime.run(flags.session, true, async vault => {
+					if (!flags.itemid) throw new Error('`itemid` option is required.');
+					if (!flags.file) throw new Error('`file` option is required.');
+					const filePath = resolve(flags.file);
+					let contents: Buffer;
+					try {
+						contents = await readFile(filePath);
+					} catch (error) {
+						if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+							throw new Error(`File not found: ${filePath}`);
+						}
+						throw error;
 					}
-					throw error;
-				}
-				try {
-					out.json(
-						vaultItemResponse(
-							await runtime.run(
-								flags.session,
-								true,
-								vault => vault.createAttachment(flags.itemid!.toLowerCase(), basename(filePath), contents),
-							),
-						),
-					);
-				} finally {
-					contents.fill(0);
-				}
+					try {
+						return await vault.createAttachment(flags.itemid.toLowerCase(), basename(filePath), contents);
+					} finally {
+						contents.fill(0);
+					}
+				});
+				out.json(vaultItemResponse(result));
 				return;
 			}
-			if (!args.encodedJson) throw new Error('`requestJson` was not provided.');
-			const data = decodeRequestJson(args.encodedJson);
-			const organizationId = args.object === 'org-collection'
-				? collectionOrganizationId(flags.organizationid, data)
-				: undefined;
-			const result = await runtime.run(flags.session, true, vault =>
-				args.object === 'item'
+			const result = await runtime.run(flags.session, true, vault => {
+				if (!args.encodedJson) throw new Error('`requestJson` was not provided.');
+				const data = decodeRequestJson(args.encodedJson);
+				const organizationId = args.object === 'org-collection'
+					? collectionOrganizationId(flags.organizationid, data)
+					: undefined;
+				return args.object === 'item'
 					? vault.createItem(data as VaultItem)
 					: args.object === 'folder'
 					? vault.createFolder(data as VaultFolder)
-					: vault.createCollection(organizationId!, data));
+					: vault.createCollection(organizationId!, data);
+			});
 			out.json(args.object === 'item' ? vaultItemResponse(result) : getObjectResponse(args.object, result));
 		});
 	const edit = command('edit').description('Edit an item, folder, collection, or item collection assignments')
@@ -138,23 +134,30 @@ export function vaultCommands(runtime: VaultRuntime) {
 		).flag('session', session()).flag('organizationid', org())
 		.action(async ({ args, flags, out }) => {
 			const encodedJson = args.encodedJson;
-			if (!encodedJson) throw new Error('`requestJson` was not provided.');
+			if (!['item', 'item-collections', 'folder', 'org-collection'].includes(args.object)) {
+				throw new Error('Unknown object.');
+			}
 			if (args.object === 'item-collections') {
 				const result = await runtime.run(
 					flags.session,
 					true,
-					vault => vault.editItemCollections(args.id, decodeStringArray(encodedJson)),
+					vault => {
+						if (!encodedJson) throw new Error('`requestJson` was not provided.');
+						return vault.editItemCollections(args.id, decodeStringArray(encodedJson));
+					},
 				);
 				out.json(vaultItemResponse(result));
 				return;
 			}
-			const data = decodeRequestJson(encodedJson);
-			if (!['item', 'folder', 'org-collection'].includes(args.object)) throw new Error('Unknown object.');
-			if (args.object === 'org-collection' && !isGuid(args.id)) throw new Error(`\`${args.id}\` is not a GUID.`);
-			const organizationId = args.object === 'org-collection'
-				? collectionOrganizationId(flags.organizationid, data)
-				: undefined;
 			const result = await runtime.run(flags.session, true, async vault => {
+				if (!encodedJson) throw new Error('`requestJson` was not provided.');
+				const data = decodeRequestJson(encodedJson);
+				if (args.object === 'org-collection' && !isGuid(args.id)) {
+					throw new Error(`\`${args.id}\` is not a GUID.`);
+				}
+				const organizationId = args.object === 'org-collection'
+					? collectionOrganizationId(flags.organizationid, data)
+					: undefined;
 				if (args.object === 'item') {
 					await prepareArchivedItemEdit(vault, args.id, data, {
 						noInteraction: flags.nointeraction,
@@ -188,25 +191,30 @@ export function vaultCommands(runtime: VaultRuntime) {
 		.flag('permanent', flag.boolean().alias('p').describe('Permanently delete the item'))
 		.action(async ({ args, flags }) => {
 			if (args.object === 'attachment') {
-				if (!flags.itemid) throw new Error('`itemid` option is required.');
-				await runtime.run(flags.session, true, vault => vault.deleteAttachment(flags.itemid!.toLowerCase(), args.id));
+				await runtime.run(flags.session, true, vault => {
+					if (!flags.itemid) throw new Error('`itemid` option is required.');
+					return vault.deleteAttachment(flags.itemid.toLowerCase(), args.id);
+				});
 				outputSuccess();
 				return;
-			}
-			if (args.object === 'org-collection') {
-				if (!flags.organizationid) throw new Error('`organizationid` options is required.');
-				if (!isGuid(args.id)) throw new Error(`\`${args.id}\` is not a GUID.`);
-				if (!isGuid(flags.organizationid)) throw new Error(`\`${flags.organizationid}\` is not a GUID.`);
 			}
 			await runtime.run(
 				flags.session,
 				true,
-				vault =>
-					args.object === 'item'
+				vault => {
+					if (args.object === 'org-collection') {
+						if (!flags.organizationid) throw new Error('`organizationid` options is required.');
+						if (!isGuid(args.id)) throw new Error(`\`${args.id}\` is not a GUID.`);
+						if (!isGuid(flags.organizationid)) {
+							throw new Error(`\`${flags.organizationid}\` is not a GUID.`);
+						}
+					}
+					return args.object === 'item'
 						? vault.deleteItem(args.id, flags.permanent)
 						: args.object === 'folder'
 						? vault.deleteFolder(args.id)
-						: vault.deleteCollection(organization(flags.organizationid), args.id),
+						: vault.deleteCollection(organization(flags.organizationid), args.id);
+				},
 			);
 			outputSuccess();
 		});
@@ -229,9 +237,10 @@ export function vaultCommands(runtime: VaultRuntime) {
 		)
 			.arg('id', arg.string()).arg('organizationId', arg.string()).arg('encodedJson', input().optional())
 			.flag('session', session()).action(async ({ args, flags, out }) => {
-				const collectionIds = args.encodedJson?.trim() ? decodeStringArray(args.encodedJson) : [];
-				const moved = await runtime.run(flags.session, true, vault =>
-					vault.moveItem(args.id, args.organizationId, collectionIds));
+				const moved = await runtime.run(flags.session, true, vault => {
+					const collectionIds = args.encodedJson?.trim() ? decodeStringArray(args.encodedJson) : [];
+					return vault.moveItem(args.id, args.organizationId, collectionIds);
+				});
 				out.json(vaultItemResponse(moved));
 			});
 	const move = moveCommand('move');
@@ -246,8 +255,8 @@ export function vaultCommands(runtime: VaultRuntime) {
 			outputSuccess();
 		});
 	const encode = command('encode').description('Base64 encode UTF-8 stdin')
-		.arg('input', arg.string().stdin()).action(({ args, out }) => {
-			out.log(Buffer.from(args.input, 'utf8').toString('base64'));
+		.arg('input', arg.string().stdin().optional()).action(({ args, out }) => {
+			out.log(Buffer.from(args.input ?? '', 'utf8').toString('base64'));
 		});
 	return { create, edit, remove, restore, archive, move, share, confirm, encode };
 }

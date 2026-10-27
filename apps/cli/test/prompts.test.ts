@@ -3,7 +3,7 @@ import { createTestAdapter } from '@kjanat/dreamcli/testkit';
 import { prompt, PromptCancelledError } from '@kjanat/dreamcli/prompt';
 import { createCliPromptSession } from '#prompts';
 
-test('CLI secret prompts use the hidden reader, retry empty entry, and preserve literal whitespace', async () => {
+test('CLI secret prompts hide input, retry empty entry, and pass whitespace unchanged', async () => {
 	const answers = ['', '  synthetic-secret  '], rendered: string[] = [];
 	let visibleReads = 0;
 	const session = createCliPromptSession(createTestAdapter({

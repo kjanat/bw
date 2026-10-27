@@ -1,6 +1,6 @@
 import { test, expect } from 'bun:test';
 import { fingerprintWords } from '#fingerprint';
-import { findNamedObject, searchItems, searchItemsAdvanced } from '#search';
+import { findNamedObject, searchItems, searchItemsAdvanced, searchItemsBasic } from '#search';
 import { matchesUri, matchUriRegex } from '#uri-match';
 import { VaultwardenClient } from '#client';
 import { VaultService } from '#vault-service';
@@ -31,13 +31,13 @@ test('named objects use case-insensitive substrings and UUID-only ID reads, with
 test('folder and organization searches operate on decrypted views and omit organization key material', () => {
 	const key = Buffer.alloc(64, 9), id = 'abcdef01-0000-0000-0000-000000000001';
 	const vault = new VaultService(new VaultwardenClient('https://example.com'), 'synthetic', {
-		profile: { organizations: [{ id, name: 'Engineering Company', key: 'synthetic-org-key' }] },
+		profile: { organizations: [{ id, name: 'Engineering Company', status: 2, key: 'synthetic-org-key' }] },
 		folders: [{ id, name: encrypt(Buffer.from('Engineering Work'), key) }],
 	}, key);
 	try {
 		expect(vault.findFolder('WORK').name).toBe('Engineering Work');
 		expect(vault.findFolder(id.toUpperCase()).id).toBe(id);
-		expect(vault.findOrganization('company')).toEqual({ id, name: 'Engineering Company' });
+		expect(vault.findOrganization('company')).toEqual({ id, name: 'Engineering Company', status: 2 });
 		expect(vault.findOrganization(id.toUpperCase()).id).toBe(id);
 	} finally {
 		vault.dispose();
@@ -191,7 +191,7 @@ const items: VaultItem[] = [
 		passport: { givenName: '', surname: '', issuingCountry: 'Canada' },
 	},
 ];
-test('basic item search ANDs normalized terms across display fields, URI hostnames and ID prefixes', () => {
+test('library item search ANDs normalized terms across display fields, URI hostnames and ID prefixes', () => {
 	for (const query of ['CAFE alice', 'project work', 'company example', '12345678', 'cafe accounts']) {
 		expect(searchItems(items, query).map(item => item.id)).toEqual([items[0]!.id]);
 	}
@@ -211,13 +211,17 @@ test('basic item search ANDs normalized terms across display fields, URI hostnam
 	expect(searchItems(items, 'work missing')).toEqual([]);
 	expect(searchItems(items, '>name:cafe')).toEqual([]);
 });
-test('basic CLI item search filters single-character and CJK queries without advanced syntax dispatch', () => {
+test('library item search filters single-character and CJK queries without advanced syntax dispatch', () => {
 	expect(searchItems([items[6]!], 'x')).toEqual([]);
+	expect(searchItems(items, '\u0301')).toEqual([]);
+	// BW's `terms.every(...)` accepts an empty term list; do not turn a
+	// query erased by accent normalization into an unfiltered vault listing.
+	expect(searchItemsBasic(items, '\u0301')).toEqual([]);
 	const han = { ...items[0]!, id: 'han-id', name: '密碼' };
 	expect(searchItems([han, items[1]!], '密').map(item => item.id)).toEqual(['han-id']);
 	expect(searchItems(items, '>')).toEqual([]);
 });
-test('basic item search ignores malformed and empty URI rows like the reference CLI', () => {
+test('library item search ignores malformed and empty URI rows', () => {
 	const malformed = {
 		...items[0]!,
 		login: {
@@ -335,7 +339,11 @@ test('vault lookups filter before resolving ambiguity and distinguish ID reads f
 	try {
 		await expect(vault.findItem('cafe work')).rejects.toThrow('More than one result was found.');
 		expect((await vault.findItem('cafe work', item => item.type === 1)).id).toBe(items[0]!.id);
+		expect((await vault.findItem('project')).id).toBe(items[0]!.id);
+		await expect(vault.findItem('private/path')).rejects.toThrow('not found');
 		expect(await vault.listItems({ search: '>name:cafe' })).toEqual([]);
+		expect((await vault.listItems({ search: 'project' })).map(item => item.id)).toEqual([items[0]!.id]);
+		expect((await vault.listItems({ search: 'work project' })).map(item => item.id)).toEqual([items[0]!.id]);
 		await expect(vault.findItem('>name:cafe')).rejects.toThrow('not found');
 		await expect(vault.findItem('Archived only')).rejects.toThrow('not found');
 		expect((await vault.findItem(clear[2]!.id!)).name).toBe('Archived only');

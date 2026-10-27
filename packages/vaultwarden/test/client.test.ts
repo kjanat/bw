@@ -7,7 +7,131 @@ function transport(
 	return ((url: string | URL | Request, init: RequestInit) => handler(String(url), init)) as typeof fetch;
 }
 const json = (data: unknown, status = 200) => Response.json(data, { status });
-test('account revisions accept integer timestamps and deletion signals, preserving service routing and auth', async () => {
+test('Azure file uploads send only encrypted bytes to the signed URL without account credentials', async () => {
+	let uploaded = false;
+	const api = new VaultwardenClient('https://vault.example', {
+		fetch: transport((url, init) => {
+			uploaded = true;
+			expect(url).toBe('https://storage.example/blob?sv=2023-11-03&sig=synthetic');
+			expect(init.method).toBe('PUT');
+			expect(init.redirect).toBe('error');
+			expect(new Headers(init.headers).get('Authorization')).toBeNull();
+			expect(new Headers(init.headers).get('x-ms-blob-type')).toBe('BlockBlob');
+			expect(Buffer.from(init.body as ArrayBuffer).toString()).toBe('synthetic-ciphertext');
+			return new Response(null, { status: 201 });
+		}),
+	});
+	await api.uploadAzureFile(
+		'https://storage.example/blob?sv=2023-11-03&sig=synthetic',
+		Buffer.from('synthetic-ciphertext'),
+	);
+	expect(uploaded).toBe(true);
+});
+test('Azure single-blob uploads send only the supplied typed-array view', async () => {
+	const backing = Buffer.alloc(4096, 0x53);
+	const ciphertext = Buffer.from('synthetic-ciphertext');
+	ciphertext.copy(backing, 1024);
+	const view = backing.subarray(1024, 1024 + ciphertext.byteLength);
+	expect(view.byteOffset).toBeGreaterThan(0);
+	expect(view.buffer.byteLength).toBeGreaterThan(view.byteLength);
+	const api = new VaultwardenClient('https://vault.example', {
+		fetch: transport((_url, init) => {
+			const body = Buffer.from(init.body as ArrayBuffer);
+			expect(body).toEqual(ciphertext);
+			expect(body).toHaveLength(ciphertext.byteLength);
+			return new Response(null, { status: 201 });
+		}),
+	});
+	await api.uploadAzureFile(
+		'https://storage.example/blob?sv=2023-11-03&sig=synthetic',
+		view,
+	);
+});
+test('parallel Azure uploads do not mix signed URLs or ciphertext bodies', async () => {
+	const payloads = new Map([
+		['https://storage.example/blob-a?sv=2023-11-03&sig=synthetic-a', Buffer.from('ciphertext-a')],
+		['https://storage.example/blob-b?sv=2023-11-03&sig=synthetic-b', Buffer.from('ciphertext-b')],
+	]);
+	const observed = new Set<string>();
+	const api = new VaultwardenClient('https://vault.example', {
+		fetch: transport(async (url, init) => {
+			await new Promise(resolve => setTimeout(resolve, 5));
+			const expected = payloads.get(url);
+			if (!expected) throw new Error(`Unexpected Azure upload target: ${url}`);
+			expect(Buffer.from(init.body as ArrayBuffer)).toEqual(expected);
+			expect(new Headers(init.headers).get('Authorization')).toBeNull();
+			expect(init.redirect).toBe('error');
+			observed.add(url);
+			return new Response(null, { status: 201 });
+		}),
+	});
+	await Promise.all([...payloads].map(([url, contents]) => api.uploadAzureFile(url, contents)));
+	expect(observed).toEqual(new Set(payloads.keys()));
+});
+test('Azure file uploads stage ordered blocks and commit them with a renewed credential-free URL', async () => {
+	const requests: Array<{ url: URL; init: RequestInit }> = [];
+	const api = new VaultwardenClient('https://vault.example', {
+		fetch: transport((url, init) => {
+			requests.push({ url: new URL(url), init });
+			return new Response(null, { status: 201 });
+		}),
+	});
+	let renewals = 0;
+	const contents = Buffer.allocUnsafe(256 * 1024 * 1024 + 1);
+	await api.uploadAzureFile(
+		'https://storage.example/blob?sv=2016-05-31&se=2000-01-01T00%3A00%3A00Z&sig=expired',
+		contents,
+		async () => {
+			renewals++;
+			return 'https://storage.example/blob?sv=2016-05-31&se=2099-01-01T00%3A00%3A00Z&sig=renewed';
+		},
+	);
+	expect(renewals).toBe(1);
+	expect(requests).toHaveLength(4);
+	const blockRequests = requests.slice(0, 3);
+	const blockIds = blockRequests.map(({ url, init }, index) => {
+		expect(url.searchParams.get('comp')).toBe('block');
+		expect(url.searchParams.get('sv')).toBe('2016-05-31');
+		expect(url.searchParams.get('sig')).toBe('renewed');
+		expect(url.searchParams.get('blockid')).toBeTruthy();
+		expect(init.method).toBe('PUT');
+		expect(init.redirect).toBe('error');
+		expect(new Headers(init.headers).get('Authorization')).toBeNull();
+		expect(new Headers(init.headers).get('x-ms-version')).toBe('2016-05-31');
+		expect((init.body as Buffer).byteLength).toBe(index < 2 ? 100 * 1024 * 1024 : 56 * 1024 * 1024 + 1);
+		return url.searchParams.get('blockid')!;
+	});
+	expect(new Set(blockIds).size).toBe(3);
+	const commit = requests[3]!;
+	expect(commit.url.searchParams.get('comp')).toBe('blocklist');
+	expect(commit.url.searchParams.get('sig')).toBe('renewed');
+	expect(new Headers(commit.init.headers).get('Authorization')).toBeNull();
+	const xml = Buffer.from(commit.init.body as Buffer).toString();
+	expect(xml).toBe(
+		`<?xml version="1.0" encoding="utf-8"?><BlockList>${
+			blockIds.map(id => `<Latest>${id}</Latest>`).join('')
+		}</BlockList>`,
+	);
+	contents.fill(0);
+});
+test('Azure file uploads reject unsafe signed URLs before making a request', async () => {
+	let requests = 0;
+	const api = new VaultwardenClient('https://vault.example', {
+		fetch: transport(() => {
+			requests++;
+			return new Response(null, { status: 201 });
+		}),
+	});
+	for (
+		const url of [
+			'http://storage.example/blob?sv=2023-11-03',
+			'https://user:pass@storage.example/blob?sv=2023-11-03',
+			'https://storage.example/blob?sv=2023-11-03#fragment',
+		]
+	) await expect(api.uploadAzureFile(url, Buffer.from('data'))).rejects.toThrow('Invalid Azure upload URL.');
+	expect(requests).toBe(0);
+});
+test('account revisions accept integer timestamps and deletion signals with service routing and auth intact', async () => {
 	for (const revision of [0, 1780000000000, -1, '1780000000000', null, {}, 1.5, 8640000000000001]) {
 		const api = new VaultwardenClient('https://vault.example', {
 			services: { api: 'https://api.example/prefix' },
@@ -86,7 +210,7 @@ test('cipher-type compatibility checks do not apply Vaultwarden release limits t
 	await api.assertCipherTypeSupported(8);
 	expect(requests).toEqual(['https://vault.example/api/config']);
 });
-test('requires TLS except loopback and preserves path prefixes', () => {
+test('requires TLS except loopback and honors path prefixes', () => {
 	expect(serverUrl('https://example.com/vault/')).toBe(
 		'https://example.com/vault',
 	);
@@ -135,7 +259,7 @@ test('prelogin never retries rate limiting or auth failures', async () => {
 	await expect(api.prelogin('test@example.com')).rejects.toThrow('HTTP 429');
 	expect(calls).toBe(1);
 });
-test('split identity and API endpoints preserve service prefixes through prelogin fallback and API calls', async () => {
+test('split identity and API endpoints carry service prefixes through prelogin fallback and API calls', async () => {
 	const paths: string[] = [];
 	const api = new VaultwardenClient('https://vault.example.com/base', {
 		services: { api: 'https://api.example.com/custom/api/', identity: 'https://auth.example.com/custom/identity/' },

@@ -43,7 +43,7 @@ test('create and edit folder response match the bw folder response model', () =>
 	expect(listObjectResponse('folders', folder)).toEqual(expected);
 });
 
-test('config getter and saved-file responses preserve bw message semantics', () => {
+test('config getter and saved-file responses match bw message semantics', () => {
 	expect(responseMessage('config', { url: '' }, {}, 'https://vault.example.test')).toEqual({
 		object: 'string',
 		data: 'https://vault.example.test',

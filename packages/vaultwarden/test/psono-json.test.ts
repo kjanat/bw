@@ -30,7 +30,7 @@ const input = {
 			folders: [{
 				name: 'Nested',
 				items: [
-					{ type: 'note', note_title: 'Recovery', note_notes: 'recovery codes', custom: 'preserved' },
+					{ type: 'note', note_title: 'Recovery', note_notes: 'recovery codes', custom: 'marker' },
 					{
 						type: 'environment_variables',
 						environment_variables_title: 'Deploy environment',
@@ -54,7 +54,7 @@ test('Psono JSON maps item types, custom values, nested folders, and organizatio
 		folderId: folderId('Work/Nested'),
 		secureNote: { type: 0 },
 		notes: 'recovery codes',
-		fields: [{ name: 'custom', value: 'preserved', type: 0 }],
+		fields: [{ name: 'custom', value: 'marker', type: 0 }],
 	});
 	expect(items(result)[2]).toMatchObject({
 		name: 'SSH account',

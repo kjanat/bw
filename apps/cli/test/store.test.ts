@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test';
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { openSession, sealSession, withStore, type State } from '#store';
+import { dataDirectory, openSession, sealSession, withStore, type State } from '#store';
 
 // Resolve launchers such as Volta so signals reach Node itself, not a forwarding shim.
 const runtime = Bun.spawnSync(['node', '-p', 'process.execPath'], {
@@ -12,6 +12,29 @@ const runtime = Bun.spawnSync(['node', '-p', 'process.execPath'], {
 });
 if (runtime.exitCode !== 0) throw new Error('Could not resolve the Node executable for interruption tests.');
 const nodeExecutable = runtime.stdout.toString().trim();
+
+test('profile directory supports the Bitwarden app-data variable with explicit VW override', () => {
+	const names = ['VW_APPDATA_DIR', 'BITWARDENCLI_APPDATA_DIR', 'XDG_CONFIG_HOME'] as const;
+	const previous = Object.fromEntries(names.map(name => [name, process.env[name]]));
+	try {
+		process.env.XDG_CONFIG_HOME = '/synthetic/xdg';
+		delete process.env.VW_APPDATA_DIR;
+		process.env.BITWARDENCLI_APPDATA_DIR = '/synthetic/bw-profile';
+		expect(dataDirectory()).toBe('/synthetic/bw-profile');
+
+		process.env.VW_APPDATA_DIR = '/synthetic/vw-profile';
+		expect(dataDirectory()).toBe('/synthetic/vw-profile');
+
+		delete process.env.BITWARDENCLI_APPDATA_DIR;
+		delete process.env.VW_APPDATA_DIR;
+		expect(dataDirectory()).toBe(join('/synthetic/xdg', 'vaultwarden-cli'));
+	} finally {
+		for (const name of names) {
+			if (previous[name] === undefined) delete process.env[name];
+			else process.env[name] = previous[name];
+		}
+	}
+});
 
 test('session wrapping requires the token, and lock invalidates old tokens', () => {
 	const state = { version: 1, deviceId: 'device', account: {} } as State;
@@ -312,7 +335,7 @@ await withStore(process.argv[1], async (state, save) => {
 	}, 10000);
 }
 
-test('legacy locks without verifiable owners are preserved rather than stolen', async () => {
+test('legacy locks without verifiable owners are not stolen', async () => {
 	const dir = await mkdtemp(join(tmpdir(), 'vw-store-legacy-lock-'));
 	try {
 		await mkdir(join(dir, '.lock'));
@@ -327,7 +350,7 @@ test('legacy locks without verifiable owners are preserved rather than stolen', 
 	}
 });
 
-test('contending store commands preserve every completed write across lock handovers', async () => {
+test('contending store commands do not lose completed writes across lock handovers', async () => {
 	const dir = await mkdtemp(join(tmpdir(), 'vw-store-handovers-'));
 	try {
 		await Promise.all(Array.from({ length: 6 }, async () => {

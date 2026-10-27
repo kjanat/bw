@@ -207,7 +207,7 @@ export function parseOnePasswordCsv(format: OnePasswordCsvFormat, source: string
 					target.uris = uris(v.split(/\r\n|\r|\n/));
 					continue;
 				} else if (lower === 'url') {
-					// Preserve the URL; the reference's unassigned concat loses this value.
+					// Include the URL; the reference's unassigned concat loses this value.
 					target.uris = [...target.uris as JsonObject[], ...uris([v])];
 					continue;
 				}

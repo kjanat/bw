@@ -1,6 +1,8 @@
 import { outputCommand as command } from '#output';
-import { createServer } from 'node:http';
-import { Socket } from 'node:net';
+import { timingSafeEqual } from 'node:crypto';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { isIP, Socket } from 'node:net';
+import { chmod } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { flag } from '@kjanat/dreamcli';
@@ -13,16 +15,60 @@ export function effectiveServePort(port: number): number {
 	return port || 8087;
 }
 
+function loopbackHost(hostname: string): boolean {
+	const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+	if (host === 'localhost' || host === '::1') return true;
+	const ipv4 = host.startsWith('::ffff:') ? host.slice('::ffff:'.length) : host;
+	return isIP(ipv4) === 4 && Number(ipv4.split('.')[0]) === 127;
+}
+
+export function serveRequiresToken(hostname: string, descriptor = false): boolean {
+	if (descriptor || hostname === 'all') return true;
+	if (hostname.startsWith('unix://')) return false;
+	return !loopbackHost(hostname);
+}
+
+export function rejectUnreadyUnixSocket(
+	ready: boolean,
+	incoming: Pick<IncomingMessage, 'resume'>,
+	outgoing: Pick<ServerResponse, 'writeHead' | 'end'>,
+): boolean {
+	if (ready) return false;
+	incoming.resume();
+	outgoing.writeHead(503, {
+		'Cache-Control': 'no-store',
+		Connection: 'close',
+		'Retry-After': '1',
+	});
+	outgoing.end(JSON.stringify({ success: false, message: 'Listener is starting.' }));
+	return true;
+}
+
+function authorizedServeRequest(header: string | string[] | undefined, token: string): boolean {
+	if (typeof header !== 'string') return false;
+	const match = /^Bearer ([\x21-\x7e]+)$/i.exec(header);
+	if (!match) return false;
+	const supplied = Buffer.from(match[1]!, 'ascii');
+	const expected = Buffer.from(token, 'ascii');
+	return supplied.length === expected.length && timingSafeEqual(supplied, expected);
+}
+
 export function serveCommand(
 	runtime: VaultRuntime,
 	directory: string,
 	sync: (state: State, save: () => Promise<void>, force?: boolean) => Promise<void>,
 ) {
 	return command('serve').description('Serve the local vault through the bw-compatible REST API')
-		.flag('hostname', flag.string().default('localhost'))
+		.flag(
+			'hostname',
+			flag.string().default('localhost').describe(
+				'Non-loopback listeners require VW_SERVE_TOKEN with at least 32 ASCII characters',
+			),
+		)
 		.flag('port', flag.number({ int: true, min: 0, max: 65535 }).default(8087))
 		.flag('disable-origin-protection', flag.boolean())
-		.flag('session', flag.string().sensitive().env('VW_SESSION'))
+		.flag('token', flag.string().sensitive().env('SERVE_TOKEN'))
+		.flag('session', flag.string().sensitive().env('SESSION'))
 		.action(async ({ flags, out }) => {
 			let session = flags.session;
 			await withStore(directory, async state => {
@@ -37,6 +83,13 @@ export function serveCommand(
 			const socketPath = hostname.startsWith('unix://') ? hostname.slice('unix://'.length) : undefined;
 			if (socketPath !== undefined && (!socketPath || socketPath.includes('\0'))) {
 				throw new Error('A Unix socket path is required.');
+			}
+			const token = flags.token;
+			if (token !== undefined && !/^[\x21-\x7e]{32,}$/.test(token)) {
+				throw new Error('VW_SERVE_TOKEN must contain at least 32 ASCII characters without whitespace.');
+			}
+			if (serveRequiresToken(hostname, descriptor !== null) && token === undefined) {
+				throw new Error('VW_SERVE_TOKEN is required for non-loopback listeners.');
 			}
 			const handler = createLocalApiHandler({
 				status: () =>
@@ -87,14 +140,25 @@ export function serveCommand(
 					),
 				run: (mutate, operation, online) => runtime.run(session, mutate, operation, online),
 			}, {
-				hostname,
+				hostname: descriptor ? 'all' : hostname,
 				get port() {
 					return port;
 				},
 				disableOriginProtection: flags['disable-origin-protection'],
 			});
+			let unixSocketReady = socketPath === undefined;
 			const server = createServer(async (incoming, outgoing) => {
+				if (rejectUnreadyUnixSocket(unixSocketReady, incoming, outgoing)) return;
 				try {
+					if (token !== undefined && !authorizedServeRequest(incoming.headers.authorization, token)) {
+						outgoing.writeHead(401, {
+							'Cache-Control': 'no-store',
+							'Content-Type': 'application/json',
+							'WWW-Authenticate': 'Bearer',
+						});
+						outgoing.end(JSON.stringify({ success: false, message: 'Unauthorized.' }));
+						return;
+					}
 					const headers = new Headers();
 					for (const [name, value] of Object.entries(incoming.headers)) {
 						if (value !== undefined) headers.set(name, Array.isArray(value) ? value.join(', ') : value);
@@ -138,6 +202,15 @@ export function serveCommand(
 				else if (socketPath !== undefined) server.listen(socketPath, listening);
 				else server.listen(port, hostname === 'all' ? undefined : hostname, listening);
 			});
+			if (socketPath !== undefined) {
+				try {
+					await chmod(socketPath, 0o600);
+					unixSocketReady = true;
+				} catch (error) {
+					await new Promise<void>(resolve => server.close(() => resolve()));
+					throw error;
+				}
+			}
 			out.status(
 				descriptor || socketPath !== undefined ? `Listening on ${hostname}` : `Listening on http://${hostname}:${port}`,
 			);

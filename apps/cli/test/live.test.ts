@@ -1,5 +1,7 @@
 import { expect, test } from 'bun:test';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { request as httpRequest } from 'node:http';
+import { createServer as createHttpsServer } from 'node:https';
 import {
 	generateKeyPairSync,
 	createHash,
@@ -11,6 +13,7 @@ import {
 } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { unzipSync } from 'fflate';
 import { withStore } from '#store';
 import {
 	deriveMasterKey,
@@ -23,6 +26,7 @@ import {
 	type Kdf,
 } from '@kjanat/vaultwarden';
 import { writeTestCertificate } from '#test/fixtures/tls';
+import { registrationVerificationToken } from '#test/fixtures/registration';
 
 // Explicit opt-in. Only disposable loopback instances may be mutated by this test.
 const server = process.env.VW_TEST_SERVER;
@@ -82,7 +86,7 @@ for (
 					name: 'Compatibility fixture',
 				},
 			);
-			const verificationToken = verify.ok ? await verify.json() : undefined;
+			const verificationToken = verify.ok ? await registrationVerificationToken(verify) : undefined;
 			const registration = {
 				keys: {
 					publicKey: rsa.publicKey.toString('base64'),
@@ -191,30 +195,77 @@ for (
 			const ca = join(dir, 'ca.pem');
 			const keyPath = join(dir, 'key.pem');
 			await writeTestCertificate(ca, keyPath);
-			const proxy = Bun.serve({
-				hostname: '127.0.0.1',
-				port: 0,
-				tls: { cert: Bun.file(ca), key: Bun.file(keyPath) },
-				async fetch(request) {
-					const target = new URL(request.url);
-					const response = await fetch(
-						`${server}${target.pathname}${target.search}`,
-						{
-							method: request.method,
-							headers: { ...Object.fromEntries(request.headers), 'X-Forwarded-Proto': 'https' },
-							body: ['GET', 'HEAD'].includes(request.method)
-								? undefined
-								: await request.arrayBuffer(),
-							redirect: 'manual',
-						},
-					);
-					return new Response(response.body, {
-						status: response.status,
-						headers: response.headers,
-					});
-				},
+			const certificate = await readFile(ca);
+			const privateKey = await readFile(keyPath);
+			const proxy = createHttpsServer({ cert: certificate, key: privateKey }, (incoming, outgoing) => {
+				const target = new URL(incoming.url ?? '/', server);
+				const requestHeaders = { ...incoming.headers };
+				const requestConnectionHeaders = requestHeaders.connection
+					?.split(',')
+					.map(value => value.trim().toLowerCase()) ?? [];
+				for (
+					const name of [
+						'connection',
+						'keep-alive',
+						'proxy-authenticate',
+						'proxy-authorization',
+						'te',
+						'trailer',
+						'transfer-encoding',
+						'upgrade',
+						'host',
+						...requestConnectionHeaders,
+					]
+				) delete requestHeaders[name];
+				if (incoming.headers.host) requestHeaders.host = incoming.headers.host;
+				requestHeaders['x-forwarded-proto'] = 'https';
+				const upstream = httpRequest(target, {
+					method: incoming.method,
+					headers: requestHeaders,
+				}, response => {
+					const responseHeaders = { ...response.headers };
+					const responseConnectionHeaders = responseHeaders.connection
+						?.split(',')
+						.map(value => value.trim().toLowerCase()) ?? [];
+					for (
+						const name of [
+							'connection',
+							'keep-alive',
+							'proxy-authenticate',
+							'proxy-authorization',
+							'te',
+							'trailer',
+							'transfer-encoding',
+							'upgrade',
+							...responseConnectionHeaders,
+						]
+					) delete responseHeaders[name];
+					outgoing.writeHead(response.statusCode ?? 502, responseHeaders);
+					response.pipe(outgoing);
+				});
+				upstream.on('error', () => {
+					if (!outgoing.headersSent) outgoing.writeHead(502);
+					outgoing.end();
+				});
+				incoming.on('aborted', () => upstream.destroy());
+				incoming.pipe(upstream);
 			});
-			const tlsServer = `https://127.0.0.1:${proxy.port}`;
+			await new Promise<void>((resolve, reject) => {
+				proxy.once('error', reject);
+				proxy.listen(0, '127.0.0.1', resolve);
+			});
+			const proxyAddress = proxy.address();
+			if (proxyAddress === null || typeof proxyAddress === 'string') {
+				throw new Error('Could not determine the TLS compatibility-proxy port.');
+			}
+			const tlsServer = `https://127.0.0.1:${proxyAddress.port}`;
+			async function closeProxy(): Promise<void> {
+				if (!proxy.listening) return;
+				proxy.closeAllConnections();
+				await new Promise<void>((resolve, reject) => {
+					proxy.close(error => error ? reject(error) : resolve());
+				});
+			}
 			async function run(
 				args: string[],
 				session?: string,
@@ -300,7 +351,7 @@ for (
 				const encode = (data: unknown) => Buffer.from(JSON.stringify(data)).toString('base64');
 				const checked = async (args: string[], input?: string) => {
 					const result = await run(args, session, password, input);
-					if (result.code !== 0) throw new Error(`CLI operation failed: ${result.stderr}`);
+					if (result.code !== 0) throw new Error(`CLI operation failed (exit ${result.code}): ${result.stderr}`);
 					return result.stdout;
 				};
 				expect((await checked(['encode'], JSON.stringify({ name: 'Encoded' }))).trim()).toBe(
@@ -380,8 +431,30 @@ for (
 				const downloadPath = join(dir, 'download.bin');
 				await checked(['get', 'attachment', attachmentId, '--itemid', movable.id, '--output', downloadPath, '--quiet']);
 				const beforeMove = await readFile(downloadPath);
-				expect(beforeMove).toEqual(attachmentBytes);
+				expect(beforeMove.equals(attachmentBytes)).toBe(true);
 				expect((await stat(downloadPath)).mode & 0o777).toBe(0o600);
+				const collisionBytes = Buffer.from('filename collision must not replace the ID-selected attachment');
+				const collisionPath = join(dir, attachmentId);
+				await writeFile(collisionPath, collisionBytes, { mode: 0o600 });
+				const collision = JSON.parse(
+					await checked(['create', 'attachment', '--file', collisionPath, '--itemid', movable.id]),
+				);
+				expect(collision.attachments).toContainEqual(expect.objectContaining({ fileName: attachmentId }));
+				const collisionId = collision.attachments.find((value: { fileName: string }) => value.fileName === attachmentId)
+					?.id;
+				expect(collisionId).toBeTruthy();
+				expect(collisionId).not.toBe(attachmentId);
+				const collisionDownloadPath = join(dir, 'attachment-id-collision.bin');
+				await checked([
+					'get',
+					'attachment',
+					attachmentId,
+					'--itemid',
+					movable.id,
+					'--output',
+					collisionDownloadPath,
+				]);
+				expect((await readFile(collisionDownloadPath)).equals(attachmentBytes)).toBe(true);
 				const replacementItemKey = randomBytes(64);
 				try {
 					const itemForRotation = JSON.parse(await checked(['get', 'item', movable.id]));
@@ -404,7 +477,7 @@ for (
 						'--output',
 						rekeyedDownload,
 					]);
-					expect(await readFile(rekeyedDownload)).toEqual(attachmentBytes);
+					expect((await readFile(rekeyedDownload)).equals(attachmentBytes)).toBe(true);
 				} finally {
 					replacementItemKey.fill(0);
 				}
@@ -413,7 +486,7 @@ for (
 				expect(moved.login.password).toBe('moved-secret');
 				const movedDownload = join(dir, 'moved.bin');
 				await checked(['get', 'attachment', 'FIXTURE', '--itemid', 'MOVE FIXTURE', '--output', movedDownload]);
-				expect(await readFile(movedDownload)).toEqual(attachmentBytes);
+				expect((await readFile(movedDownload)).equals(attachmentBytes)).toBe(true);
 				const legacyItem = JSON.parse(
 					await checked([
 						'create',
@@ -490,7 +563,7 @@ for (
 						'--output',
 						legacyRekeyedPath,
 					]);
-					expect(await readFile(legacyRekeyedPath)).toEqual(legacyAttachmentBytes);
+					expect((await readFile(legacyRekeyedPath)).equals(legacyAttachmentBytes)).toBe(true);
 				} finally {
 					replacementLegacyItemKey.fill(0);
 				}
@@ -509,7 +582,7 @@ for (
 					'--output',
 					legacyDownloadPath,
 				]);
-				expect(await readFile(legacyDownloadPath)).toEqual(legacyAttachmentBytes);
+				expect((await readFile(legacyDownloadPath)).equals(legacyAttachmentBytes)).toBe(true);
 				const binaryChild = Bun.spawn([
 					'node',
 					new URL('../dist/main.js', import.meta.url).pathname,
@@ -572,7 +645,7 @@ for (
 						key: encrypt(memberKey, memberStretch),
 						kdf: 0,
 						kdfIterations: 600000,
-						emailVerificationToken: await verifyMember.json(),
+						emailVerificationToken: await registrationVerificationToken(verifyMember),
 						keys: {
 							publicKey: memberRsa.publicKey.toString('base64'),
 							encryptedPrivateKey: encrypt(memberRsa.privateKey, memberKey),
@@ -624,6 +697,261 @@ for (
 					);
 					if (memberCliLogin.code) throw new Error(`Member CLI login failed: ${memberCliLogin.stderr}`);
 					const memberSession = memberCliLogin.stdout.trim();
+					const sharedAttachmentItem = JSON.parse(
+						await checked([
+							'create',
+							'item',
+							encode({
+								type: 1,
+								name: `Shared attachment ID fixture ${randomUUID()}`,
+								organizationId: organization.id,
+								collectionIds: [collections[0].id],
+								login: { username: 'shared-attachment-fixture' },
+							}),
+						]),
+					);
+					const sharedExpectedBytes = Buffer.from('owner attachment selected by its explicit ID');
+					const sharedSubstituteBytes = Buffer.from('member attachment whose filename collides with that ID');
+					const sharedExpectedPath = join(dir, 'shared-attachment-owner.bin');
+					await writeFile(sharedExpectedPath, sharedExpectedBytes, { mode: 0o600 });
+					const sharedAttachment = JSON.parse(
+						await checked([
+							'create',
+							'attachment',
+							'--file',
+							sharedExpectedPath,
+							'--itemid',
+							sharedAttachmentItem.id,
+						]),
+					);
+					const sharedAttachmentId = sharedAttachment.attachments[0].id as string;
+					const memberSharedSync = await run(
+						['sync', '--force'],
+						memberSession,
+						password,
+						undefined,
+						undefined,
+						memberCliDir,
+					);
+					if (memberSharedSync.code) throw new Error(`Member shared-item sync failed: ${memberSharedSync.stderr}`);
+					const sharedSubstitutePath = join(dir, sharedAttachmentId);
+					await writeFile(sharedSubstitutePath, sharedSubstituteBytes, { mode: 0o600 });
+					const memberSharedAttachment = await run(
+						[
+							'create',
+							'attachment',
+							'--file',
+							sharedSubstitutePath,
+							'--itemid',
+							sharedAttachmentItem.id,
+						],
+						memberSession,
+						password,
+						undefined,
+						undefined,
+						memberCliDir,
+					);
+					if (memberSharedAttachment.code) {
+						throw new Error(`Member could not add the shared attachment collision: ${memberSharedAttachment.stderr}`);
+					}
+					const memberAttachmentRows = JSON.parse(memberSharedAttachment.stdout).attachments as {
+						id: string;
+						fileName: string;
+					}[];
+					const memberSubstitute = memberAttachmentRows.find(row => row.fileName === sharedAttachmentId);
+					expect(memberSubstitute).toBeDefined();
+					expect(memberSubstitute!.id).not.toBe(sharedAttachmentId);
+					expect(memberAttachmentRows.some(row => row.id === sharedAttachmentId)).toBe(true);
+					await checked(['sync', '--force']);
+					const ownerSharedDownload = join(dir, 'shared-attachment-by-id.bin');
+					await checked([
+						'get',
+						'attachment',
+						sharedAttachmentId,
+						'--itemid',
+						sharedAttachmentItem.id,
+						'--output',
+						ownerSharedDownload,
+					]);
+					expect(await readFile(ownerSharedDownload)).toEqual(sharedExpectedBytes);
+					await checked(['delete', 'item', sharedAttachmentItem.id, '--permanent']);
+					await checked(['sync']);
+					const policyMarker = Buffer.from(`restricted-policy-attachment-${randomUUID()}`);
+					const restrictedLoginName = `Policy restricted fixture login ${randomUUID()}`;
+					const restrictedLoginResult = await run(
+						[
+							'create',
+							'item',
+							encode({
+								type: 1,
+								name: restrictedLoginName,
+								login: { username: 'fixture-user', password: 'synthetic-password' },
+							}),
+						],
+						memberSession,
+						password,
+						undefined,
+						undefined,
+						memberCliDir,
+					);
+					expect(restrictedLoginResult.code).toBe(0);
+					const restrictedLogin = JSON.parse(restrictedLoginResult.stdout) as { id: string };
+					const restrictedCardResult = await run(
+						[
+							'create',
+							'item',
+							encode({ type: 3, name: 'Policy restricted fixture card', card: { number: 'synthetic-number' } }),
+						],
+						memberSession,
+						password,
+						undefined,
+						undefined,
+						memberCliDir,
+					);
+					expect(restrictedCardResult.code).toBe(0);
+					const restrictedCard = JSON.parse(restrictedCardResult.stdout) as { id: string };
+					const policyAttachmentPath = join(dir, 'restricted-policy-marker.txt');
+					await writeFile(policyAttachmentPath, policyMarker, { mode: 0o600 });
+					const policyAttachment = await run(
+						['create', 'attachment', '--file', policyAttachmentPath, '--itemid', restrictedCard.id],
+						memberSession,
+						password,
+						undefined,
+						undefined,
+						memberCliDir,
+					);
+					expect(policyAttachment.code).toBe(0);
+					const restrictedAttachmentId = (JSON.parse(policyAttachment.stdout) as {
+						attachments: { id: string }[];
+					}).attachments[0]!.id;
+					const policyResponse = await fetch(`${server}/api/organizations/${organization.id}/policies/15`, {
+						method: 'PUT',
+						headers: {
+							'Content-Type': 'application/json',
+							Authorization: `Bearer ${auth.access_token}`,
+						},
+						body: JSON.stringify(
+							serverVersion === '1.36.0'
+								? { enabled: true, data: [1, 3] }
+								: { policy: { enabled: true, data: [1, 3] } },
+						),
+					});
+					expect(policyResponse.status).toBe(200);
+					expect(await policyResponse.json()).toMatchObject({ enabled: true, data: [1, 3] });
+					const policySync = await run(
+						['sync', '--force'],
+						memberSession,
+						password,
+						undefined,
+						undefined,
+						memberCliDir,
+					);
+					expect(policySync.code).toBe(0);
+					const passwordHealth = await run(
+						['report', 'password-health', '--no-check-exposed'],
+						memberSession,
+						password,
+						undefined,
+						undefined,
+						memberCliDir,
+					);
+					expect(passwordHealth.code).toBe(0);
+					const passwordHealthRows = JSON.parse(passwordHealth.stdout) as { id: string; name: string }[];
+					expect(passwordHealthRows.some(row => row.id === restrictedLogin.id || row.name === restrictedLoginName))
+						.toBe(false);
+					const restorePolicy = await fetch(`${server}/api/organizations/${organization.id}/policies/15`, {
+						method: 'PUT',
+						headers: {
+							'Content-Type': 'application/json',
+							Authorization: `Bearer ${auth.access_token}`,
+						},
+						body: JSON.stringify(
+							serverVersion === '1.36.0'
+								? { enabled: true, data: [3] }
+								: { policy: { enabled: true, data: [3] } },
+						),
+					});
+					expect(restorePolicy.status).toBe(200);
+					const restorePolicySync = await run(
+						['sync', '--force'],
+						memberSession,
+						password,
+						undefined,
+						undefined,
+						memberCliDir,
+					);
+					expect(restorePolicySync.code).toBe(0);
+					const restrictedList = await run(
+						['list', 'items'],
+						memberSession,
+						password,
+						undefined,
+						undefined,
+						memberCliDir,
+					);
+					expect(restrictedList.code).toBe(0);
+					expect(JSON.parse(restrictedList.stdout).some((value: { id: string }) => value.id === restrictedCard.id))
+						.toBe(false);
+					const restrictedGet = await run(
+						['get', 'item', restrictedCard.id],
+						memberSession,
+						password,
+						undefined,
+						undefined,
+						memberCliDir,
+					);
+					expect(restrictedGet.code).toBe(1);
+					expect(restrictedGet.stderr).toContain('Access to this item type is restricted by organizational policy.');
+					const restrictedAttachmentPath = join(dir, 'restricted-policy-download.txt');
+					const restrictedAttachmentGet = await run(
+						[
+							'get',
+							'attachment',
+							restrictedAttachmentId,
+							'--itemid',
+							restrictedCard.id,
+							'--output',
+							restrictedAttachmentPath,
+						],
+						memberSession,
+						password,
+						undefined,
+						undefined,
+						memberCliDir,
+					);
+					expect(restrictedAttachmentGet.code).toBe(1);
+					expect(restrictedAttachmentGet.stderr).toContain(
+						'Access to this item type is restricted by organizational policy.',
+					);
+					await expect(stat(restrictedAttachmentPath)).rejects.toMatchObject({ code: 'ENOENT' });
+					const restrictedCreate = await run(
+						[
+							'create',
+							'item',
+							encode({ type: 3, name: 'Must not create policy restricted card', card: { number: 'synthetic-number' } }),
+						],
+						memberSession,
+						password,
+						undefined,
+						undefined,
+						memberCliDir,
+					);
+					expect(restrictedCreate.code).toBe(1);
+					expect(restrictedCreate.stderr).toContain('Creating this item type is restricted by organizational policy.');
+					const restrictedZipPath = join(dir, 'restricted-policy.zip');
+					const restrictedZip = await run(
+						['export', '--format', 'zip', '--output', restrictedZipPath],
+						memberSession,
+						password,
+						undefined,
+						undefined,
+						memberCliDir,
+					);
+					expect(restrictedZip.code).toBe(0);
+					const zipEntries = unzipSync(await readFile(restrictedZipPath));
+					const zipData = JSON.parse(Buffer.from(zipEntries['data.json']!).toString('utf8'));
+					expect(zipData.items.some((value: { id: string }) => value.id === restrictedCard.id)).toBe(false);
+					expect(Object.values(zipEntries).some(contents => Buffer.from(contents).includes(policyMarker))).toBe(false);
 					const memberImportName = `Member import into existing collection ${randomUUID()}`;
 					const memberImportPath = join(dir, 'member-existing-collection-import.json');
 					await writeFile(
@@ -783,13 +1111,106 @@ for (
 					} finally {
 						shared.fill(0);
 					}
+					const accessResponse = await fetch(`${server}/api/organizations/${organization.id}/collections/details`, {
+						headers: { Authorization: `Bearer ${auth.access_token}` },
+					});
+					expect(accessResponse.status).toBe(200);
+					const accessRows = (await accessResponse.json()).data as Record<string, unknown>[];
+					const defaultCollectionAccess = accessRows.find(row => row.id === collections[0].id)!;
+					const memberAssignments = (defaultCollectionAccess.users as Record<string, unknown>[]).map(user => ({
+						id: user.id,
+						readOnly: user.readOnly,
+						hidePasswords: user.id === confirmed.id ? true : user.hidePasswords,
+						manage: user.manage,
+					}));
+					expect(memberAssignments.some(user => user.id === confirmed.id && user.hidePasswords === true)).toBe(true);
+					await checked([
+						'edit',
+						'org-collection',
+						collections[0].id,
+						encode({ name: collections[0].name, users: memberAssignments }),
+						'--organizationid',
+						organization.id,
+					]);
+					const privateKeyMarker = `synthetic-passkey-private-key-${randomUUID()}`;
+					const passkeyItem = JSON.parse(
+						await checked([
+							'create',
+							'item',
+							encode({
+								type: 1,
+								name: 'Hidden passkey fixture',
+								organizationId: organization.id,
+								collectionIds: [collections[0].id],
+								login: {
+									username: 'passkey-fixture-user',
+									fido2Credentials: [{
+										credentialId: 'synthetic-credential-id',
+										keyType: 'public-key',
+										keyAlgorithm: 'ECDSA',
+										keyCurve: 'P-256',
+										keyValue: privateKeyMarker,
+										rpId: 'example.test',
+										userName: 'passkey-fixture-user',
+										counter: '0',
+										creationDate: '2026-10-27T00:00:00.000Z',
+									}],
+								},
+							}),
+						]),
+					);
+					const passkeySync = await run(
+						['sync', '--force'],
+						memberSession,
+						password,
+						undefined,
+						undefined,
+						memberCliDir,
+					);
+					expect(passkeySync.code).toBe(0);
+					const hiddenPasskeyGet = await run(
+						['get', 'item', passkeyItem.id],
+						memberSession,
+						password,
+						undefined,
+						undefined,
+						memberCliDir,
+					);
+					expect(hiddenPasskeyGet.code).toBe(0);
+					const hiddenPasskey = JSON.parse(hiddenPasskeyGet.stdout);
+					expect(hiddenPasskey.login.fido2Credentials[0].keyValue).toBeNull();
+					expect(hiddenPasskeyGet.stdout).not.toContain(privateKeyMarker);
+					const deniedExportPath = join(dir, 'member-organization-export.json');
+					const deniedOrganizationExport = await run(
+						[
+							'export',
+							'--format',
+							'json',
+							'--organizationid',
+							organization.id,
+							'--output',
+							deniedExportPath,
+						],
+						memberSession,
+						password,
+						undefined,
+						undefined,
+						memberCliDir,
+					);
+					expect(deniedOrganizationExport.code).toBe(1);
+					expect(deniedOrganizationExport.stderr).toContain('HTTP 401');
+					await expect(stat(deniedExportPath)).rejects.toMatchObject({ code: 'ENOENT' });
+					// This minimal credential only tests password-visibility redaction. Remove it before
+					// comparisons with bw, which deserializes the full FIDO2 credential model.
+					await checked(['delete', 'item', passkeyItem.id, '--permanent']);
+					await checked(['sync']);
+					if (process.env.VW_TEST_POLICY_REDACTION_ONLY === '1') return;
 				} finally {
 					memberKey.fill(0);
 					memberMaster.fill(0);
 					memberStretch.fill(0);
 					memberRsa.privateKey.fill(0);
 				}
-
 				expect(JSON.parse(await checked(['list', 'folders']))[0].name).toBe('Private folder');
 				const createdItem = JSON.parse(
 					await checked([
@@ -1022,15 +1443,39 @@ for (
 				const sendDestination = join(dir, 'send-file.bin');
 				const receiveFile = await run(['receive', fileSend.accessUrl, '--output', sendDestination]);
 				if (receiveFile.code) throw new Error(`Receive file failed: ${receiveFile.stderr}`);
-				expect(await readFile(sendDestination)).toEqual(attachmentBytes);
+				expect((await readFile(sendDestination)).equals(attachmentBytes)).toBe(true);
 				expect((await stat(sendDestination)).mode & 0o777).toBe(0o600);
+				const malformedUriSearch = `Malformed URI ${randomUUID()}`;
+				const malformedUriItem = JSON.parse(
+					await checked([
+						'create',
+						'item',
+						encode({ type: 1, name: malformedUriSearch, login: { uris: [{ match: 0 }] } }),
+					]),
+				) as { id: string };
+				const validUriItem = JSON.parse(
+					await checked([
+						'create',
+						'item',
+						encode({
+							type: 1,
+							name: malformedUriSearch,
+							login: { uris: [{ uri: 'https://valid.example.test', match: 0 }] },
+						}),
+					]),
+				) as { id: string };
+				await checked(['sync']);
+				expect(await checked(['get', 'uri', malformedUriSearch])).toBe('https://valid.example.test');
 				if (process.env.VW_TEST_BW) {
 					const officialDir = join(dir, 'official');
 					async function official(args: string[], token?: string) {
-						const child = Bun.spawn([process.env.VW_TEST_BW!, ...args], {
+						const executable = process.env.VW_TEST_BW!;
+						const command = executable.endsWith('.js') ? ['node', executable, ...args] : [executable, ...args];
+						const child = Bun.spawn(command, {
 							env: {
 								PATH: process.env.PATH,
 								HOME: dir,
+								VOLTA_HOME: process.env.VOLTA_HOME,
 								BITWARDENCLI_APPDATA_DIR: officialDir,
 								BW_NOINTERACTION: 'true',
 								BW_PASSWORD: password,
@@ -1180,10 +1625,47 @@ for (
 						if (reference.code) {
 							throw new Error(`Official list filter failed (${filter.join(' ')}): ${reference.stderr}`);
 						}
+						const actualItems = JSON.parse(await checked(['list', 'items', ...filter])) as Record<string, unknown>[];
+						const referenceItems = JSON.parse(reference.stdout) as Record<string, unknown>[];
+						const referenceIds = new Set(referenceItems.map(value => value.id));
+						const localOnly = actualItems.filter(value => !referenceIds.has(value.id)).map(value => ({
+							id: value.id,
+							name: value.name,
+							type: value.type,
+							folderId: value.folderId,
+							organizationId: value.organizationId,
+							collectionIds: value.collectionIds,
+							deletedDate: value.deletedDate,
+							archivedDate: value.archivedDate,
+						}));
+						if (localOnly.length) {
+							const referenceItem = await official(['get', 'item', String(localOnly[0]!.id)], login.stdout.trim());
+							let referenceSummary: Record<string, unknown>;
+							try {
+								const value = JSON.parse(referenceItem.stdout) as Record<string, unknown>;
+								referenceSummary = Object.fromEntries([
+									'id',
+									'type',
+									'folderId',
+									'organizationId',
+									'collectionIds',
+									'deletedDate',
+									'archivedDate',
+									'viewPassword',
+								].map(key => [key, value[key]]));
+							} catch {
+								referenceSummary = { code: referenceItem.code, error: referenceItem.stderr.trim() };
+							}
+							throw new Error(
+								`Local-only results for ${filter.join(' ')}: ${
+									JSON.stringify({ localOnly, referenceItem: referenceSummary })
+								}`,
+							);
+						}
 						expect(
-							ids(await checked(['list', 'items', ...filter])),
+							actualItems.map(value => value.id).sort(),
 							`list items ${filter.join(' ')}`,
-						).toEqual(ids(reference.stdout));
+						).toEqual(referenceItems.map(value => value.id).sort());
 					}
 					for (
 						const url of [
@@ -1226,6 +1708,12 @@ for (
 						expect(reference.code).toBe(0);
 						expect(await checked(['get', 'password', query])).toBe(reference.stdout);
 					}
+					expect(await checked(['get', 'uri', malformedUriSearch])).toBe('https://valid.example.test');
+					const referenceMalformedUri = await official(['get', 'uri', malformedUriSearch], login.stdout.trim());
+					expect(referenceMalformedUri.code).toBe(0);
+					expect(referenceMalformedUri.stdout).toBe('https://valid.example.test');
+					await checked(['delete', 'item', malformedUriItem.id, '--permanent']);
+					await checked(['delete', 'item', validUriItem.id, '--permanent']);
 					expect((await run(['get', 'item', 'lookup cafe'], session)).code).toBe(1);
 					expect((await official(['get', 'item', 'lookup cafe'], login.stdout.trim())).code).toBe(1);
 					expect(ids(await checked(['list', 'items', '--search', 'cafe alice']))).toEqual([lookupLogin.id]);
@@ -1338,15 +1826,36 @@ for (
 					const officialSend = await official(['send', 'get', textSend.id], login.stdout.trim());
 					if (officialSend.code) throw new Error(`Official Send read failed: ${officialSend.stderr}`);
 					expect(JSON.parse(officialSend.stdout).text.text).toBe('Synthetic Send payload');
+					const accessId = new URL(fileSend.accessUrl).hash.split('/')[2];
+					const accessTokenResponse = await fetch(`${server}/identity/connect/token`, {
+						method: 'POST',
+						body: new URLSearchParams({
+							grant_type: 'send_access',
+							client_id: 'send',
+							scope: 'api.send.access',
+							send_id: accessId!,
+						}),
+					});
+					expect(accessTokenResponse.status).toBe(200);
+					const sendAccessToken = (await accessTokenResponse.json()).access_token as string;
+					const fileDownloadData = await fetch(`${server}/api/sends/access/file/${fileSend.file.id}`, {
+						method: 'POST',
+						headers: { Authorization: `Bearer ${sendAccessToken}` },
+					});
+					expect(fileDownloadData.status).toBe(200);
+					const signedFileUrl = new URL((await fileDownloadData.json()).url as string);
+					const directFileResponse = await fetch(`${server}${signedFileUrl.pathname}${signedFileUrl.search}`);
+					expect(directFileResponse.status).toBe(200);
+					expect((await directFileResponse.arrayBuffer()).byteLength).toBeGreaterThan(0);
 					const officialReceive = await official(['receive', textSend.accessUrl, '--passwordenv', 'BW_PASSWORD']);
 					if (officialReceive.code) throw new Error(`Official Send receive failed: ${officialReceive.stderr}`);
 					expect(officialReceive.stdout.trim()).toBe('Synthetic Send payload');
 					const officialSendFile = join(dir, 'official-send-file.bin');
 					const officialFileReceive = await official(['receive', fileSend.accessUrl, '--output', officialSendFile]);
 					if (officialFileReceive.code) {
-						throw new Error(`Official Send file receive failed: ${officialFileReceive.stderr}`);
+						throw new Error(`Official Send file receive failed (exit ${officialFileReceive.code}).`);
 					}
-					expect(await readFile(officialSendFile)).toEqual(attachmentBytes);
+					expect((await readFile(officialSendFile)).equals(attachmentBytes)).toBe(true);
 					const officialCreated = await official([
 						'send',
 						'From official bw',
@@ -1393,7 +1902,8 @@ for (
 						officialAttachment,
 					], login.stdout.trim());
 					expect(officialDownload.code).toBe(0);
-					expect(await readFile(officialAttachment)).toEqual(attachmentBytes);
+					// bw 2026.10.0 selects the colliding filename here, despite the requested ID matching A.
+					expect((await readFile(officialAttachment)).equals(collisionBytes)).toBe(true);
 					const officialLegacyAttachment = join(dir, 'official-legacy.bin');
 					const officialLegacyDownload = await official([
 						'get',
@@ -1407,7 +1917,7 @@ for (
 					if (officialLegacyDownload.code) {
 						throw new Error(`Official legacy attachment read failed: ${officialLegacyDownload.stderr}`);
 					}
-					expect(await readFile(officialLegacyAttachment)).toEqual(legacyAttachmentBytes);
+					expect((await readFile(officialLegacyAttachment)).equals(legacyAttachmentBytes)).toBe(true);
 					const officialMoved = await official(['get', 'password', movable.id], login.stdout.trim());
 					expect(officialMoved.code).toBe(0);
 					expect(officialMoved.stdout.trim()).toBe('moved-secret');
@@ -1454,7 +1964,7 @@ for (
 								'--output',
 								destination,
 							]);
-							expect(await readFile(destination)).toEqual(attachmentBytes);
+							expect((await readFile(destination)).equals(attachmentBytes)).toBe(true);
 						}
 						for (const value of added) await checked(['delete', 'item', value.id, '--permanent']);
 						const folders = JSON.parse(await checked(['list', 'folders']));
@@ -1595,6 +2105,7 @@ for (
 				await checked(['delete', 'folder', folder.id]);
 				expect(JSON.parse(await checked(['list', 'folders']))).toEqual([]);
 				await checked(['delete', 'attachment', attachmentId, '--itemid', movable.id]);
+				await checked(['delete', 'attachment', collisionId, '--itemid', movable.id]);
 				expect((await run(['get', 'attachment', attachmentId, '--itemid', movable.id, '--raw'], session)).code).toBe(1);
 				const persisted = await readFile(join(dir, 'state.json'), 'utf8');
 				for (
@@ -1609,7 +2120,7 @@ for (
 					expect(persisted).not.toContain(secret);
 				}
 				expect((await stat(join(dir, 'state.json'))).mode & 0o777).toBe(0o600);
-				proxy.stop(true);
+				await closeProxy();
 				expect((await run(['get', 'password', item.id], session)).stdout).toBe(
 					'fixture-secret',
 				);
@@ -1620,7 +2131,7 @@ for (
 					'unauthenticated',
 				);
 			} finally {
-				proxy.stop(true);
+				await closeProxy();
 				orgKey.fill(0);
 				userKey.fill(0);
 				itemKey.fill(0);

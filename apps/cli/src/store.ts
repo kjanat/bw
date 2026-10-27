@@ -17,6 +17,7 @@ export interface State {
 export function dataDirectory(): string {
 	return (
 		process.env.VW_APPDATA_DIR
+			?? process.env.BITWARDENCLI_APPDATA_DIR
 			?? join(
 				process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'),
 				'vaultwarden-cli',
@@ -91,7 +92,7 @@ async function acquireStoreLock(directory: string): Promise<() => Promise<void>>
 				await rename(claim, lock);
 				acquired = true;
 				return async () => {
-					// Keep ownership intact until the published lock is atomically detached.
+					// Leave the published lock attached to its owner until the atomic detach completes.
 					// Interruption during deletion then leaves only an unused claim directory.
 					await rename(lock, claim);
 					await rm(claim, { recursive: true, force: true });

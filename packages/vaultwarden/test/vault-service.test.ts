@@ -11,7 +11,7 @@ import {
 import { template } from '#templates';
 import { totp } from '#totp';
 import { findNamedObject, MultipleResultsError } from '#search';
-import { VaultService } from '#vault-service';
+import { assertAttachmentSize, VaultService } from '#vault-service';
 import { expect, test } from 'bun:test';
 import { constants, createPublicKey, generateKeyPairSync, publicEncrypt } from 'node:crypto';
 
@@ -74,6 +74,28 @@ test('ambiguous item search exposes candidate IDs in the reference error', async
 			'More than one result was found. Try getting a specific object by `id` instead. '
 				+ 'The following objects were found:\nfirst-match\nsecond-match',
 		);
+	} finally {
+		vault.dispose();
+	}
+});
+test('item lookup applies bw term matching to notes and URI hostnames', async () => {
+	const itemId = '00000000-0000-0000-0000-000000000004';
+	const cipher = encryptItem({
+		id: itemId,
+		type: 1,
+		name: 'Alpha record',
+		notes: 'marker in notes',
+		login: { username: 'Beta user', password: 'secret', uris: [{ uri: 'https://example.test/private-path' }] },
+	}, itemKey);
+	const vault = service(() => Response.json({}), {
+		profile: { id: 'user' },
+		folders: [],
+		ciphers: [{ ...cipher, id: itemId, key: encrypt(itemKey, userKey), edit: true, viewPassword: true }],
+	});
+	try {
+		expect((await vault.findItem('Alpha marker')).id).toBe(itemId);
+		expect((await vault.findItem('Beta example.test')).id).toBe(itemId);
+		await expect(vault.findItem('private-path')).rejects.toMatchObject({ name: 'VaultObjectNotFoundError' });
 	} finally {
 		vault.dispose();
 	}
@@ -189,7 +211,7 @@ test('newer bank account, driver license, and passport fields encrypt and decryp
 	expect((template('item.driversLicense') as JsonObject).licenseNumber).toBe('D12345678');
 	expect((template('item.passport') as JsonObject).passportNumber).toBe('A12345678');
 });
-test('item responses whitelist nested export fields and preserve field response types', () => {
+test('item responses whitelist nested export fields and report field response types', () => {
 	const response = vaultItemResponse({
 		id: 'item',
 		type: 3,
@@ -278,6 +300,15 @@ test('item responses project FIDO2 credentials into the pinned export response s
 		creationDate: '2026-01-02T03:04:05.000Z',
 	}]);
 });
+test('item responses redact FIDO2 private keys when the caller cannot view passwords', () => {
+	const response = vaultItemResponse({
+		id: 'item',
+		type: 1,
+		viewPassword: false,
+		login: { fido2Credentials: [{ credentialId: 'credential', keyValue: 'private-key-material' }] },
+	});
+	expect(((response.login as JsonObject).fido2Credentials as JsonObject[])[0]!.keyValue).toBeNull();
+});
 test('library response models project collections and Sends instead of leaking sync properties', () => {
 	expect(localApiObject('collection', {
 		id: 'collection',
@@ -310,6 +341,12 @@ test('library response models project collections and Sends instead of leaking s
 		groups: [{ id: 'group', readOnly: true, hidePasswords: false, manage: false }],
 		users: [{ id: 'member', readOnly: false, hidePasswords: true, manage: true }],
 	});
+	expect(organizationCollectionResponse({
+		id: 'org-collection',
+		organizationId: 'organization',
+		name: 'Engineering',
+		externalId: null,
+	})).toMatchObject({ groups: null, users: null });
 	const send = {
 		object: 'send',
 		id: 'send-id',
@@ -345,7 +382,36 @@ test('library response models project collections and Sends instead of leaking s
 			text: { text: 'payload', hidden: true },
 		});
 });
-test('edits retain existing item key and send the client revision guard', async () => {
+test('organization lists exclude unconfirmed memberships while lookup includes provider organizations', () => {
+	const vault = service(() => Response.json({}), {
+		profile: {
+			organizations: [
+				{ id: 'invited', name: 'Invited', status: 0 },
+				{ id: 'accepted', name: 'Accepted', status: 1 },
+				{ id: 'confirmed', name: 'Confirmed', status: 2, key: 'wrapped-key' },
+			],
+			organizationsNew: [
+				{ id: 'invited', name: 'Invited', status: 0 },
+				{ id: 'accepted', name: 'Accepted', status: 1 },
+				{ id: 'confirmed', name: 'Confirmed', status: 2, key: 'wrapped-key' },
+			],
+			providerOrganizations: [{ id: 'provider', name: 'Managed by provider', key: 'provider-wrapped-key' }],
+		},
+	});
+	try {
+		expect(vault.listOrganizations()).toEqual([
+			{ id: 'confirmed', name: 'Confirmed', status: 2 },
+		]);
+		expect(vault.findOrganization('Managed by provider')).toMatchObject({
+			id: 'provider',
+			name: 'Managed by provider',
+			status: 2,
+		});
+	} finally {
+		vault.dispose();
+	}
+});
+test('edits reuse the existing item key and send the client revision guard', async () => {
 	const vault = service((path, init) => {
 		expect(path).toEndWith('/api/ciphers/item');
 		expect(init.method).toBe('PUT');
@@ -625,7 +691,7 @@ test('member confirmation reports the pinned status-specific errors before reque
 		}
 	}
 });
-test('member confirmation wraps the organization key and sends the default collection name', async () => {
+test('member confirmation uses the accepted user account key, not a key in the membership projection', async () => {
 	const organizationId = '11111111-1111-1111-1111-111111111111';
 	const memberId = '22222222-2222-2222-2222-222222222222';
 	const userId = '33333333-3333-3333-3333-333333333333';
@@ -636,9 +702,16 @@ test('member confirmation wraps the organization key and sends the default colle
 		publicKeyEncoding: { type: 'spki', format: 'der' },
 		privateKeyEncoding: { type: 'pkcs8', format: 'der' },
 	});
+	const projectionKeys = generateKeyPairSync('rsa', {
+		modulusLength: 2048,
+		publicKeyEncoding: { type: 'spki', format: 'der' },
+		privateKeyEncoding: { type: 'pkcs8', format: 'der' },
+	});
 	let confirmBody: JsonObject | undefined;
 	const vault = service((path, init) => {
-		if (path.endsWith(`/users/${memberId}`)) return Response.json({ status: 1, userId });
+		if (path.endsWith(`/users/${memberId}`)) {
+			return Response.json({ status: 1, userId, publicKey: projectionKeys.publicKey.toString('base64') });
+		}
 		if (path.endsWith(`/users/${userId}/public-key`)) {
 			return Response.json({ publicKey: memberKeys.publicKey.toString('base64') });
 		}
@@ -651,11 +724,13 @@ test('member confirmation wraps the organization key and sends the default colle
 	try {
 		await vault.confirmMember(organizationId, memberId);
 		expect(await decryptSharedKey(String(confirmBody?.key), memberKeys.privateKey)).toEqual(orgKey);
+		await expect(decryptSharedKey(String(confirmBody?.key), projectionKeys.privateKey)).rejects.toThrow();
 		expect(decrypt(String(confirmBody?.defaultUserCollectionName), orgKey).toString('utf8')).toBe('My Items');
 	} finally {
 		vault.dispose();
 		orgKey.fill(0);
 		memberKeys.privateKey.fill(0);
+		projectionKeys.privateKey.fill(0);
 	}
 });
 test('confirmed personal-ownership policies block personal edits for non-admin members', async () => {
@@ -906,7 +981,7 @@ test('folder edits and deletes accept uppercase IDs and send lowercase request p
 		vault.dispose();
 	}
 });
-test('editing a hidden-password item preserves secrets redacted from the CLI response', async () => {
+test('editing a hidden-password item leaves CLI-redacted secrets unchanged', async () => {
 	const privateItem = {
 		type: 1,
 		name: 'Private',
@@ -1300,6 +1375,36 @@ test('lists distinguish trash and archive and combine object filters with OR', a
 	expect((await vault.listItems({ archived: true })).map(i => i.id)).toEqual(['archive']);
 	expect((await vault.listItems({ folderId: 'folder', organizationId: 'notnull' })).map(i => i.id)).toEqual(['folder']);
 });
+test('basic list search matches bank, driver-license, and passport subtitles after decryption', async () => {
+	const ciphers = [
+		wire({
+			...encryptItem({ type: 6, name: 'Bank record', bankAccount: { bankName: 'Fixture Bank' } }, itemKey),
+			id: 'bank',
+		}),
+		wire({
+			...encryptItem(
+				{ type: 7, name: 'License record', driversLicense: { firstName: 'Fixture', issuingState: 'NH' } },
+				itemKey,
+			),
+			id: 'license',
+		}),
+		wire({
+			...encryptItem(
+				{ type: 8, name: 'Passport record', passport: { givenName: 'Fixture', issuingCountry: 'NL' } },
+				itemKey,
+			),
+			id: 'passport',
+		}),
+	];
+	const vault = service(() => Response.json({}), { profile: { id: 'user' }, folders: [], ciphers });
+	try {
+		for (const [query, id] of [['Fixture Bank', 'bank'], ['Fixture NH', 'license'], ['Fixture NL', 'passport']]) {
+			expect((await vault.listItems({ search: query })).map(item => item.id)).toEqual([id]);
+		}
+	} finally {
+		vault.dispose();
+	}
+});
 test('item list ID filters compare case-sensitively like the reference CLI', async () => {
 	const folderId = 'abcdef11-1111-1111-1111-111111111111';
 	const { orgKey, snapshot } = organizationSnapshot();
@@ -1360,7 +1465,7 @@ test('Vaultwarden archive and list agree when all synced premium fields are fals
 		vault.dispose();
 	}
 });
-test('restricted-item policies hide disallowed items from list and report the policy denial on get', async () => {
+test('restricted-item policies hide disallowed items and deny item and attachment reads before requests', async () => {
 	const organizationA = '11111111-1111-1111-1111-111111111111';
 	const organizationB = '22222222-2222-2222-2222-222222222222';
 	const rsa = generateKeyPairSync('rsa', {
@@ -1394,7 +1499,11 @@ test('restricted-item policies hide disallowed items from list and report the po
 		folders: [],
 		policies: [{ organizationId: organizationA.toUpperCase(), type: 15, enabled: true, data: [3] }],
 		ciphers: [
-			wire({ id: 'personal-card', type: 3 }),
+			wire({
+				id: 'personal-card',
+				type: 3,
+				attachments: [{ id: 'restricted-file', fileName: encrypt(Buffer.from('policy.txt'), itemKey) }],
+			}),
 			organizationCipher('org-a-card', 3, organizationA),
 			organizationCipher('org-b-card', 3, organizationB),
 			organizationCipher('org-a-login', 1, organizationA),
@@ -1405,6 +1514,15 @@ test('restricted-item policies hide disallowed items from list and report the po
 		await expect(vault.findItem('personal-card')).rejects.toThrow(
 			'Access to this item type is restricted by organizational policy.',
 		);
+		await expect(vault.getItem('personal-card')).rejects.toThrow(
+			'Access to this item type is restricted by organizational policy.',
+		);
+		await expect(vault.getAttachment('personal-card', 'restricted-file')).rejects.toThrow(
+			'Access to this item type is restricted by organizational policy.',
+		);
+		await expect(vault.getAttachmentById('personal-card', 'restricted-file')).rejects.toThrow(
+			'Access to this item type is restricted by organizational policy.',
+		);
 		await expect(vault.findItem('org-a-card')).rejects.toThrow(
 			'Access to this item type is restricted by organizational policy.',
 		);
@@ -1412,7 +1530,7 @@ test('restricted-item policies hide disallowed items from list and report the po
 			'Access to this item type is restricted by organizational policy.',
 		);
 		expect((await vault.findItem('org-b-card')).id).toBe('org-b-card');
-		await expect(vault.editItem('org-a-card', await vault.getItem('org-a-card'))).rejects.toThrow(
+		await expect(vault.editItem('org-a-card', { type: 3, name: 'Restricted card' })).rejects.toThrow(
 			'Editing this item type is restricted by organizational policy.',
 		);
 		await expect(vault.deleteItem('org-a-card')).rejects.toThrow(
@@ -1493,23 +1611,37 @@ test('restricted-item policies exempt organization administrators and provider u
 		}
 	}
 });
-test('password health includes archived and policy-hidden logins exactly once', async () => {
-	const vault = service(() => Response.json({}), {
+test('password health includes visible archived logins and excludes policy-hidden logins', async () => {
+	const visibleVault = service(() => Response.json({}), {
+		profile: { id: 'user', premium: false },
+		folders: [],
+		ciphers: [wire({ id: 'active' }), wire({ id: 'archived', archivedDate: '2026-01-01T00:00:00Z' })],
+	});
+	try {
+		expect((await visibleVault.listItems()).map(item => item.id)).toEqual(['active']);
+		const rows = await visibleVault.passwordHealth({ checkExposed: false });
+		expect(rows.map(row => row.id)).toEqual(['active', 'archived']);
+		expect(rows.map(row => row.reuseCount)).toEqual([2, 2]);
+	} finally {
+		visibleVault.dispose();
+	}
+	const restrictedVault = service(() => Response.json({}), {
 		profile: { id: 'user', premium: false, organizations: [policyOrganization('org')] },
 		folders: [],
 		policies: [{ organizationId: 'org', type: 15, enabled: true, data: [1] }],
 		ciphers: [
-			wire({ id: 'active' }),
-			wire({ id: 'archived', archivedDate: '2026-01-01T00:00:00Z' }),
+			wire({ id: 'policy-hidden-active' }),
+			wire({
+				id: 'policy-hidden-archived',
+				archivedDate: '2026-01-01T00:00:00Z',
+			}),
 		],
 	});
 	try {
-		expect((await vault.listItems()).map(item => item.id)).toEqual([]);
-		const rows = await vault.passwordHealth({ checkExposed: false });
-		expect(rows.map(row => row.id)).toEqual(['active', 'archived']);
-		expect(rows.map(row => row.reuseCount)).toEqual([2, 2]);
+		expect(await restrictedVault.listItems()).toEqual([]);
+		expect(await restrictedVault.passwordHealth({ checkExposed: false })).toEqual([]);
 	} finally {
-		vault.dispose();
+		restrictedVault.dispose();
 	}
 });
 test('decrypts organization items and collections using account RSA private key', async () => {
@@ -1753,7 +1885,7 @@ test('item edits merge omitted organization ownership, sections, fields, and col
 		orgKey.fill(0);
 	}
 });
-test('item edits preserve omitted relationships but honor explicit relationship and field clears', async () => {
+test('item edits leave omitted relationships unchanged but honor explicit relationship and field clears', async () => {
 	let requestBody: JsonObject | undefined;
 	const vault = service((_path, init) => {
 		requestBody = JSON.parse(String(init.body)) as JsonObject;
@@ -1846,7 +1978,7 @@ test('item edits honor an explicit key and rewrap attachment metadata without ch
 		attachmentKey.fill(0);
 	}
 });
-test('editing a legacy item keeps its data under the account key unless a new item key is supplied', async () => {
+test('editing a legacy item encrypts data with the account key unless a new item key is supplied', async () => {
 	const snapshot = {
 		profile: { id: 'user' },
 		folders: [],
@@ -2080,30 +2212,22 @@ test('moving a legacy item migrates its attachment bytes and keys before sharing
 		orgKey.fill(0);
 	}
 });
-test('collection rename preserves memberships when the request omits them', async () => {
+test('collection rename omits access assignments so the server leaves them unchanged', async () => {
 	const { snapshot, orgKey } = organizationSnapshot();
 	const vault = service((path, init) => {
-		if (path.endsWith('/api/organizations/org/collections/collection/details')) {
-			expect(init.method).toBe('GET');
-			return Response.json({
-				id: 'collection',
-				name: encrypt(Buffer.from('Old'), orgKey),
-				groups: [{ id: 'group' }],
-				users: [{ id: 'member', readOnly: true, hidePasswords: true, manage: false }],
-			});
-		}
+		if (path.endsWith('/api/config')) return Response.json({ server: { name: 'Bitwarden' } });
 		expect(path).toEndWith('/api/organizations/org/collections/collection');
 		expect(init.method).toBe('PUT');
 		const body = JSON.parse(String(init.body));
-		expect(body.users).toEqual([{ id: 'member', readOnly: true, hidePasswords: true, manage: false }]);
-		expect(body.groups).toEqual([{ id: 'group' }]);
+		expect(body.users).toBeNull();
+		expect(body.groups).toBeNull();
 		expect(body.externalId).toBeUndefined();
 		expect(decrypt(body.name, orgKey).toString()).toBe('New');
 		return Response.json({
 			id: 'collection',
 			name: body.name,
-			users: body.users,
-			groups: body.groups,
+			users: [{ id: 'member', readOnly: true, hidePasswords: true, manage: false }],
+			groups: [{ id: 'group' }],
 		});
 	}, snapshot);
 	try {
@@ -2114,9 +2238,79 @@ test('collection rename preserves memberships when the request omits them', asyn
 		vault.dispose();
 	}
 });
+test('Vaultwarden collection rename sends fresh assignments because its update endpoint replaces them', async () => {
+	const { snapshot, orgKey } = organizationSnapshot();
+	const vault = service((path, init) => {
+		if (path.endsWith('/api/config')) return Response.json({ server: { name: 'Vaultwarden' } });
+		if (path.endsWith('/api/organizations/org/collections/collection/details')) {
+			expect(init.method).toBe('GET');
+			return Response.json({
+				id: 'collection',
+				name: encrypt(Buffer.from('Old'), orgKey),
+				groups: [{ id: 'group', readOnly: true, hidePasswords: false, manage: true }],
+				users: [{ id: 'member', readOnly: false, hidePasswords: true, manage: true }],
+			});
+		}
+		expect(path).toEndWith('/api/organizations/org/collections/collection');
+		expect(init.method).toBe('PUT');
+		const body = JSON.parse(String(init.body));
+		expect(body.groups).toEqual([{ id: 'group', readOnly: true, hidePasswords: false, manage: true }]);
+		expect(body.users).toEqual([{ id: 'member', readOnly: false, hidePasswords: true, manage: true }]);
+		return Response.json({ id: 'collection', name: body.name, groups: body.groups, users: body.users });
+	}, snapshot);
+	try {
+		expect((await vault.editCollection('org', 'collection', { name: 'Renamed' })).name).toBe('Renamed');
+	} finally {
+		vault.dispose();
+		orgKey.fill(0);
+	}
+});
+test('Vaultwarden collection rename refuses to replace access when details omit assignments', async () => {
+	const { snapshot, orgKey } = organizationSnapshot();
+	const requests: string[] = [];
+	const vault = service(path => {
+		requests.push(new URL(path).pathname);
+		if (path.endsWith('/api/config')) return Response.json({ server: { name: 'Vaultwarden' } });
+		if (path.endsWith('/api/organizations/org/collections/collection/details')) {
+			return Response.json({ id: 'collection', name: encrypt(Buffer.from('Old'), orgKey) });
+		}
+		return Response.json({}, { status: 500 });
+	}, snapshot);
+	try {
+		await expect(vault.editCollection('org', 'collection', { name: 'Renamed' })).rejects.toThrow(
+			'Vaultwarden collection access details are incomplete; refusing to replace assignments.',
+		);
+		expect(requests).toEqual([
+			'/api/config',
+			'/api/organizations/org/collections/collection/details',
+		]);
+	} finally {
+		vault.dispose();
+		orgKey.fill(0);
+	}
+});
 test('new organization collections grant the current member manage access by default', async () => {
 	const { snapshot, orgKey } = organizationSnapshot();
 	const vault = service((path, init) => {
+		if (path.endsWith('/api/config')) return Response.json({ server: { name: 'Bitwarden' } });
+		expect(path).toEndWith('/api/organizations/org/collections');
+		expect(init.method).toBe('POST');
+		const body = JSON.parse(String(init.body));
+		expect(body.groups).toBeNull();
+		expect(body.users).toEqual([{ id: 'membership', readOnly: false, hidePasswords: false, manage: true }]);
+		return Response.json({ id: 'created-collection', name: encrypt(Buffer.from('Created'), orgKey) });
+	}, snapshot);
+	try {
+		expect((await vault.createCollection('ORG', { name: 'Created' })).name).toBe('Created');
+	} finally {
+		vault.dispose();
+		orgKey.fill(0);
+	}
+});
+test('Vaultwarden collection creation sends empty group assignments when omitted', async () => {
+	const { snapshot, orgKey } = organizationSnapshot();
+	const vault = service((path, init) => {
+		if (path.endsWith('/api/config')) return Response.json({ server: { name: 'Vaultwarden' } });
 		expect(path).toEndWith('/api/organizations/org/collections');
 		expect(init.method).toBe('POST');
 		const body = JSON.parse(String(init.body));
@@ -2125,7 +2319,7 @@ test('new organization collections grant the current member manage access by def
 		return Response.json({ id: 'created-collection', name: encrypt(Buffer.from('Created'), orgKey) });
 	}, snapshot);
 	try {
-		expect((await vault.createCollection('ORG', { name: 'Created' })).name).toBe('Created');
+		expect((await vault.createCollection('org', { name: 'Created' })).name).toBe('Created');
 	} finally {
 		vault.dispose();
 		orgKey.fill(0);
@@ -2166,6 +2360,44 @@ test('move applies the bw collection-edit rule from cached organization and coll
 			vault.dispose();
 			orgKey.fill(0);
 		}
+	}
+});
+
+test('custom roles with editAnyCollection can assign items to read-only collections', async () => {
+	const { snapshot, orgKey } = organizationSnapshot();
+	Object.assign(snapshot.profile.organizations[0]!, {
+		status: 2,
+		type: 4,
+		permissions: { editAnyCollection: true },
+	});
+	Object.assign(snapshot.collections[0]!, { readOnly: true, manage: false });
+	const cipher = {
+		...encryptItem(plaintext, itemKey),
+		id: 'custom-role-item',
+		key: encrypt(itemKey, orgKey),
+		organizationId: 'org',
+		collectionIds: [],
+		edit: true,
+		viewPassword: true,
+	};
+	snapshot.ciphers.push(cipher);
+	const requests: string[] = [];
+	const vault = service((path, init) => {
+		requests.push(`${init.method ?? 'GET'} ${path}`);
+		expect(path).toEndWith('/api/ciphers/custom-role-item/collections');
+		expect(init.method).toBe('PUT');
+		expect(JSON.parse(String(init.body))).toEqual({ collectionIds: ['collection'] });
+		return Response.json({ ...cipher, collectionIds: ['collection'] });
+	}, snapshot);
+	try {
+		expect((await vault.editItemCollections('custom-role-item', ['collection'])).collectionIds)
+			.toEqual(['collection']);
+		expect(requests).toEqual([
+			'PUT https://example.com/api/ciphers/custom-role-item/collections',
+		]);
+	} finally {
+		vault.dispose();
+		orgKey.fill(0);
 	}
 });
 
@@ -2293,6 +2525,34 @@ test('failed binary upload removes incomplete attachment metadata', async () => 
 	vault.dispose();
 });
 
+test('attachment size limits follow Bitwarden plaintext and Vaultwarden encrypted payload caps', () => {
+	const bitwardenMaximum = 500 * 1024 * 1024;
+	const vaultwardenMaximum = Math.floor((550_502_400 - 49) / 16) * 16 - 1;
+	expect(() => assertAttachmentSize(bitwardenMaximum, false)).not.toThrow();
+	expect(() => assertAttachmentSize(bitwardenMaximum + 1, false)).toThrow('500 MiB');
+	expect(() => assertAttachmentSize(vaultwardenMaximum, true)).not.toThrow();
+	expect(() => assertAttachmentSize(vaultwardenMaximum + 1, true)).toThrow('Vaultwarden size');
+	for (const size of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+		expect(() => assertAttachmentSize(size, false)).toThrow('Invalid attachment size.');
+	}
+});
+
+test('oversized Bitwarden attachments are rejected before attachment metadata is created', async () => {
+	const requests: string[] = [];
+	const vault = service(path => {
+		requests.push(path);
+		if (path.endsWith('/api/config')) return Response.json({ server: { name: 'Bitwarden' } });
+		throw new Error(`Unexpected request: ${path}`);
+	});
+	try {
+		const oversized = { length: 500 * 1024 * 1024 + 1 } as Uint8Array;
+		await expect(vault.createAttachment('item', 'large.bin', oversized)).rejects.toThrow('500 MiB');
+		expect(requests).toEqual(['https://example.com/api/config']);
+	} finally {
+		vault.dispose();
+	}
+});
+
 test('attachment queries search item names and filenames, preferring one exact filename before downloading', async () => {
 	const key = Buffer.alloc(64, 7), contents = Buffer.from([0, 255, 10, 1]);
 	const attachments = [
@@ -2325,7 +2585,7 @@ test('attachment queries search item names and filenames, preferring one exact f
 			await expect(vault.getAttachment('item', query)).rejects.toThrow('More than one result was found.');
 		}
 		await expect(vault.getAttachment('item', 'missing')).rejects.toThrow(
-			'Attachment `missing` was not found.',
+			'Attachment "missing" was not found.',
 		);
 		await expect(vault.getAttachment('item', '')).rejects.toThrow('Attachment not found.');
 		expect(paths).toHaveLength(4);
@@ -2360,7 +2620,7 @@ test('attachment reads distinguish items without attachments from unknown attach
 	}
 });
 
-test('ID-only attachment downloads never resolve item names or filename searches', async () => {
+test('exact attachment IDs beat colliding filenames and ID-only downloads reject searches', async () => {
 	const key = Buffer.alloc(64, 9);
 	const attachments = [
 		{ id: 'first', fileName: encrypt(Buffer.from('file.bin'), itemKey), key: encrypt(key, itemKey) },
@@ -2379,20 +2639,28 @@ test('ID-only attachment downloads never resolve item names or filename searches
 		await expect(vault.getAttachmentById('Example', 'first')).rejects.toThrow('Item not found');
 		await expect(vault.getAttachmentById('item', 'file.bin')).rejects.toThrow('Attachment ID was not found');
 		expect(requests).toHaveLength(0);
+		const queryResult = await vault.getAttachment('item', 'first');
+		try {
+			expect(queryResult.contents.toString()).toBe('first-body');
+			expect(queryResult.fileName).toBe('file.bin');
+		} finally {
+			queryResult.contents.fill(0);
+		}
+		expect(requests).toHaveLength(2);
 		const result = await vault.getAttachmentById('ITEM', 'FIRST');
 		try {
 			expect(result.contents.toString()).toBe('first-body');
 		} finally {
 			result.contents.fill(0);
 		}
-		expect(requests).toHaveLength(2);
+		expect(requests).toHaveLength(4);
 	} finally {
 		vault.dispose();
 		key.fill(0);
 	}
 });
 
-test('attachment metadata falls back only on 404, retaining cached keys and credential-free downloads', async () => {
+test('attachment metadata falls back only on 404 and uses cached keys without credentials', async () => {
 	const key = Buffer.alloc(64, 8), contents = Buffer.from('synthetic attachment');
 	for (const status of [404, 401, 403, 429, 500]) {
 		let downloads = 0;
@@ -2518,6 +2786,76 @@ test('Vaultwarden attachment operations use server access instead of the Bitward
 	} finally {
 		vault.dispose();
 		attachmentKey.fill(0);
+	}
+});
+test('Bitwarden attachments upload encrypted contents to Azure without account credentials', async () => {
+	let uploaded = false, renewed = false;
+	const vault = service((path, init) => {
+		if (path.endsWith('/attachment/v2')) {
+			const data = JSON.parse(String(init.body));
+			return Response.json({
+				attachmentId: 'azure-attachment',
+				fileUploadType: 1,
+				url: 'https://storage.example/blob?sv=2023-11-03&se=2000-01-01T00%3A00%3A00Z&sig=expired',
+				cipherResponse: wire({
+					attachments: [{ id: 'azure-attachment', fileName: data.fileName, key: data.key, size: data.fileSize }],
+				}),
+			});
+		}
+		if (path.endsWith('/ciphers/item/attachment/azure-attachment/renew')) {
+			expect(init.method).toBe('GET');
+			renewed = true;
+			return Response.json({ url: 'https://storage.example/blob?sv=2023-11-03&sig=renewed' });
+		}
+		expect(path).toBe('https://storage.example/blob?sv=2023-11-03&sig=renewed');
+		expect(init.method).toBe('PUT');
+		expect(new Headers(init.headers).get('Authorization')).toBeNull();
+		expect(Buffer.from(init.body as Buffer).includes(Buffer.from('synthetic attachment'))).toBe(false);
+		uploaded = true;
+		return new Response(null, { status: 201 });
+	}, {
+		profile: { id: 'user', premiumPersonally: true },
+		ciphers: [wire()],
+	});
+	try {
+		const result = await vault.createAttachment('item', 'synthetic.bin', Buffer.from('synthetic attachment'));
+		expect(result.id).toBe('item');
+		expect(uploaded).toBe(true);
+		expect(renewed).toBe(true);
+	} finally {
+		vault.dispose();
+	}
+});
+test('failed Azure attachment upload removes metadata without exposing the signed URL', async () => {
+	const methods: string[] = [];
+	const signedUrl = 'https://storage.example/blob?sv=2023-11-03&se=2099-01-01T00%3A00%3A00Z&sig=synthetic-secret';
+	const vault = service((path, init) => {
+		methods.push(init.method!);
+		if (path.endsWith('/attachment/v2')) {
+			const data = JSON.parse(String(init.body));
+			return Response.json({
+				attachmentId: 'azure-attachment',
+				fileUploadType: 1,
+				url: signedUrl,
+				cipherResponse: wire({
+					attachments: [{ id: 'azure-attachment', fileName: data.fileName, key: data.key, size: data.fileSize }],
+				}),
+			});
+		}
+		if (path === signedUrl) {
+			expect(new Headers(init.headers).get('Authorization')).toBeNull();
+			return new Response(null, { status: 500 });
+		}
+		expect(path).toBe('https://example.com/api/ciphers/item/attachment/azure-attachment');
+		expect(init.method).toBe('DELETE');
+		return Response.json({});
+	}, { profile: { id: 'user', premiumPersonally: true }, ciphers: [wire()] });
+	try {
+		await expect(vault.createAttachment('item', 'synthetic.bin', Buffer.from('synthetic attachment')))
+			.rejects.toThrow('Attachment upload failed; incomplete metadata was removed.');
+		expect(methods).toEqual(['POST', 'PUT', 'DELETE']);
+	} finally {
+		vault.dispose();
 	}
 });
 test('attachment deletion validates membership before sending the server request', async () => {

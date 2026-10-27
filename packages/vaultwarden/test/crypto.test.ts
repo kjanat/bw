@@ -9,7 +9,7 @@ import {
 	decryptAttachment,
 } from '#crypto';
 import { decryptItem, personalItems } from '#vault';
-import { createAccountKeyMaterial, decryptSharedKey, encryptSharedKey } from '#crypto';
+import { createAccountKeyMaterial, decryptSharedKey, encryptApprovedUserKey, encryptSharedKey } from '#crypto';
 import { constants, createPrivateKey, createPublicKey, privateDecrypt, publicEncrypt } from 'node:crypto';
 
 test('micro509 account keys interoperate with Node RSA-OAEP SHA-256 and legacy SHA-1', async () => {
@@ -56,6 +56,43 @@ test('micro509 account keys interoperate with Node RSA-OAEP SHA-256 and legacy S
 	} finally {
 		privateDer.fill(0);
 		material.userKey.fill(0);
+	}
+});
+
+test('device approval moves a recovery-wrapped user key to the requesting device key', async () => {
+	const organization = await createAccountKeyMaterial('organization-password', 'org@example.test', {
+		type: 0,
+		iterations: 1,
+	});
+	const device = await createAccountKeyMaterial('device-password', 'device@example.test', {
+		type: 0,
+		iterations: 1,
+	});
+	const organizationKey = Buffer.alloc(64, 31);
+	const recoveredUserKey = Buffer.alloc(64, 47);
+	const organizationPrivateKey = decrypt(organization.encryptedPrivateKey, organization.userKey);
+	const devicePrivateKey = decrypt(device.encryptedPrivateKey, device.userKey);
+	try {
+		const result = await encryptApprovedUserKey(
+			await encryptSharedKey(recoveredUserKey, organization.publicKey),
+			encrypt(organizationPrivateKey, organizationKey),
+			organizationKey,
+			device.publicKey,
+		);
+		expect(await decryptSharedKey(result, devicePrivateKey)).toEqual(recoveredUserKey);
+		await expect(encryptApprovedUserKey(
+			await encryptSharedKey(recoveredUserKey, organization.publicKey),
+			encrypt(organizationPrivateKey, organizationKey),
+			Buffer.alloc(64, 32),
+			device.publicKey,
+		)).rejects.toThrow('Could not prepare the trusted-device approval key.');
+	} finally {
+		organizationKey.fill(0);
+		recoveredUserKey.fill(0);
+		organizationPrivateKey.fill(0);
+		devicePrivateKey.fill(0);
+		organization.userKey.fill(0);
+		device.userKey.fill(0);
 	}
 });
 

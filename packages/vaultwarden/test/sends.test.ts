@@ -166,6 +166,94 @@ test('Vaultwarden file Sends bypass the Bitwarden premium gate for create and ed
 		'https://vault.example/api/sends/send-id',
 	]);
 });
+test('Bitwarden file Sends upload encrypted contents to Azure without account credentials', async () => {
+	let uploaded = false, renewed = false;
+	const client = new VaultwardenClient('https://vault.example', {
+		fetch: (async (url: unknown, init: RequestInit) => {
+			const path = String(url);
+			if (path.endsWith('/api/config')) return Response.json({ server: { name: 'Bitwarden' } });
+			if (path.endsWith('/api/sends/file/v2')) {
+				const data = JSON.parse(String(init.body));
+				return Response.json({
+					fileUploadType: 1,
+					url: 'https://storage.example/blob?sv=2023-11-03&se=2000-01-01T00%3A00%3A00Z&sig=expired',
+					sendResponse: {
+						...data,
+						id: 'created-send',
+						accessId,
+						file: { ...data.file, id: 'created-file' },
+					},
+				});
+			}
+			if (path.endsWith('/sends/created-send/file/created-file')) {
+				expect(init.method).toBe('GET');
+				renewed = true;
+				return Response.json({ url: 'https://storage.example/blob?sv=2023-11-03&sig=renewed' });
+			}
+			expect(path).toBe('https://storage.example/blob?sv=2023-11-03&sig=renewed');
+			expect(init.method).toBe('PUT');
+			expect(new Headers(init.headers).get('Authorization')).toBeNull();
+			expect(Buffer.from(init.body as Buffer).includes(Buffer.from('synthetic payload'))).toBe(false);
+			uploaded = true;
+			return new Response(null, { status: 201 });
+		}) as unknown as typeof fetch,
+	});
+	const service = new SendService(
+		client,
+		'owner-token',
+		{ profile: { premiumPersonally: true }, sends: [] },
+		accountKey,
+	);
+	const result = await service.create(
+		{ type: 1, name: 'Azure Send', file: { fileName: 'payload.bin' } },
+		Buffer.from('synthetic payload'),
+	);
+	expect(result.name).toBe('Azure Send');
+	expect(uploaded).toBe(true);
+	expect(renewed).toBe(true);
+});
+test('failed Azure Send upload removes the incomplete Send and hides the signed URL', async () => {
+	const methods: string[] = [];
+	const signedUrl = 'https://storage.example/blob?sv=2023-11-03&se=2099-01-01T00%3A00%3A00Z&sig=synthetic-secret';
+	const client = new VaultwardenClient('https://vault.example', {
+		fetch: (async (url: unknown, init: RequestInit) => {
+			const path = String(url);
+			methods.push(init.method!);
+			if (path.endsWith('/api/config')) return Response.json({ server: { name: 'Bitwarden' } });
+			if (path.endsWith('/api/sends/file/v2')) {
+				const data = JSON.parse(String(init.body));
+				return Response.json({
+					fileUploadType: 1,
+					url: signedUrl,
+					sendResponse: {
+						...data,
+						id: 'created-send',
+						accessId,
+						file: { ...data.file, id: 'created-file' },
+					},
+				});
+			}
+			if (path === signedUrl) {
+				expect(new Headers(init.headers).get('Authorization')).toBeNull();
+				return new Response(null, { status: 500 });
+			}
+			expect(path).toBe('https://vault.example/api/sends/created-send');
+			expect(init.method).toBe('DELETE');
+			return Response.json({});
+		}) as unknown as typeof fetch,
+	});
+	const service = new SendService(
+		client,
+		'owner-token',
+		{ profile: { premiumPersonally: true }, sends: [] },
+		accountKey,
+	);
+	await expect(service.create(
+		{ type: 1, name: 'Azure Send', file: { fileName: 'payload.bin' } },
+		Buffer.from('synthetic payload'),
+	)).rejects.toThrow('Send file upload failed; incomplete Send removed.');
+	expect(methods).toEqual(['POST', 'PUT', 'DELETE']);
+});
 test('Send creation rejects a deletion date that is not in the future before network access', async () => {
 	let requests = 0;
 	const client = new VaultwardenClient('https://vault.example', {
@@ -183,7 +271,7 @@ test('Send creation rejects a deletion date that is not in the future before net
 	})).rejects.toMatchObject({ message: 'Must specify a valid deletion date after the current time' });
 	expect(requests).toBe(0);
 });
-test('Send creation rejects recipient lists and malformed email values before network access', async () => {
+test('Send creation rejects malformed recipient lists before network access', async () => {
 	let requests = 0;
 	const client = new VaultwardenClient('https://vault.example', {
 		fetch: (async () => {
@@ -192,21 +280,22 @@ test('Send creation rejects recipient lists and malformed email values before ne
 		}) as unknown as typeof fetch,
 	});
 	const service = new SendService(client, 'owner-token', { sends: [] }, accountKey);
-	for (const emails of [['recipient@example.com'], '', {}, 0]) {
+	for (const emails of ['', {}, 0, [''], ['bad,delimiter@example.com']]) {
 		await expect(service.create({
 			type: 0,
 			name: 'Email Send',
 			text: { text: 'payload' },
 			emails: emails as string[],
-		})).rejects.toThrow('Vaultwarden does not support email-verification Sends.');
+		})).rejects.toThrow('Invalid Send recipient email list.');
 	}
 	expect(requests).toBe(0);
 });
 test('Send response email defaults round-trip through create and edit without enabling email verification', async () => {
 	let requests = 0;
 	const client = new VaultwardenClient('https://vault.example', {
-		fetch: (async (_url: unknown, init?: RequestInit) => {
+		fetch: (async (url: unknown, init?: RequestInit) => {
 			requests++;
+			if (String(url).endsWith('/api/config')) return Response.json({ server: { name: 'Vaultwarden' } });
 			const body = JSON.parse(String(init!.body));
 			expect(Object.hasOwn(body, 'emails')).toBe(false);
 			expect(Object.hasOwn(body, 'authType')).toBe(false);
@@ -221,7 +310,38 @@ test('Send response email defaults round-trip through create and edit without en
 	expect(displayed.emails).toEqual([]);
 	expect((await service.edit('send-id', { ...displayed, name: 'Renamed' })).name).toBe('Renamed');
 	await expect(service.edit('send-id', { emails: ['recipient@example.com'] })).rejects.toThrow('email-verification');
-	expect(requests).toBe(2);
+	expect(requests).toBe(3);
+});
+test('Bitwarden Cloud email-restricted Sends serialize recipients and omit password authentication', async () => {
+	const requests: Array<{ path: string; body?: JsonObject }> = [];
+	const client = new VaultwardenClient('https://vault.example', {
+		fetch: (async (url: unknown, init?: RequestInit) => {
+			const path = String(url);
+			if (init?.method === 'POST') {
+				const body = JSON.parse(String(init.body)) as JsonObject;
+				requests.push({ path, body });
+				return Response.json({ ...encryptedSend(), ...body, emails: 'alice@example.com,bob@example.com' });
+			}
+			requests.push({ path });
+			if (path.endsWith('/api/config')) return Response.json({ server: { name: 'Bitwarden' } });
+			throw new Error(`Unexpected request: ${path}`);
+		}) as unknown as typeof fetch,
+	});
+	const service = new SendService(client, 'owner-token', { sends: [] }, accountKey);
+	const result = await service.create({
+		type: 0,
+		name: 'Restricted Send',
+		text: { text: 'payload' },
+		emails: [' Alice@Example.com ', 'BOB@example.com'],
+		password: '',
+	});
+	expect(result.emails).toEqual(['alice@example.com', 'bob@example.com']);
+	expect(requests.map(request => request.path)).toEqual([
+		'https://vault.example/api/config',
+		'https://vault.example/api/sends',
+	]);
+	expect(requests[1]?.body?.emails).toBe('alice@example.com,bob@example.com');
+	expect(requests[1]?.body?.password).toBeNull();
 });
 test('Send file size limits match Bitwarden and Vaultwarden wire payload limits', () => {
 	const fiveHundredMiB = 500 * 1024 * 1024;
@@ -231,7 +351,7 @@ test('Send file size limits match Bitwarden and Vaultwarden wire payload limits'
 	expect(() => assertSendFileSize(maxVaultwardenPlaintext, true)).not.toThrow();
 	expect(() => assertSendFileSize(maxVaultwardenPlaintext + 1, true)).toThrow('525 MiB');
 });
-test('editing retains the seed, omits unchanged password proofs, and never transmits plaintext', async () => {
+test('editing leaves the seed unchanged, omits unchanged password proofs, and never transmits plaintext', async () => {
 	let requests = 0;
 	const client = new VaultwardenClient('https://vault.example', {
 		fetch: (async (url: unknown, init?: RequestInit) => {
@@ -251,7 +371,7 @@ test('editing retains the seed, omits unchanged password proofs, and never trans
 	await expect(service.edit('send-id', { type: 1 })).rejects.toThrow('type');
 	expect(requests).toBe(1);
 });
-test('Send edits may preserve or set deletion dates in the past like the Vaultwarden update API', async () => {
+test('Send edits accept deletion dates in the past like the Vaultwarden update API', async () => {
 	const deletionDate = new Date(Date.now() - 60_000).toISOString();
 	const client = new VaultwardenClient('https://vault.example', {
 		fetch: (async (_url: unknown, init?: RequestInit) => {
@@ -263,7 +383,7 @@ test('Send edits may preserve or set deletion dates in the past like the Vaultwa
 	const service = new SendService(client, 'owner-token', { sends: [encryptedSend()] }, accountKey);
 	await service.edit('send-id', { deletionDate });
 });
-test('recipient access isolates Send credentials and keeps fragment keys off the wire', async () => {
+test('recipient access isolates Send credentials and excludes fragment keys from the wire', async () => {
 	const calls: { url: string; init: RequestInit }[] = [];
 	const raw = encryptedSend();
 	delete raw.key;

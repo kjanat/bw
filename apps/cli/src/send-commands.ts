@@ -18,14 +18,39 @@ import {
 import type { VaultRuntime } from '#vault-commands';
 import { writeAttachment, writeStdout } from '#files';
 
-const session = () => flag.string().env('VW_SESSION');
-const input = () => arg.string().stdin({ trim: true }).optional();
+const session = () => flag.string().sensitive().env('SESSION');
+const input = () => arg.string().sensitive().stdin({ trim: true }).optional();
 function decodeSendJson(value: string): JsonObject {
 	try {
 		return decodeJson(value);
 	} catch {
 		throw new Error('Error parsing the encoded request data.');
 	}
+}
+export async function sendPassword(
+	value: string | undefined,
+	source: string | undefined,
+	environmentName: string | undefined,
+	passwordFile?: string,
+	requireNamedEnvironment = false,
+): Promise<string | undefined> {
+	const explicitValue = source === 'env' ? undefined : value;
+	const defaultValue = source === 'env' ? value : undefined;
+	if (explicitValue) return explicitValue;
+	if (passwordFile !== undefined) {
+		return (await readFile(passwordFile, 'utf8')).split(/\r\n|\r|\n/, 1)[0] || undefined;
+	}
+	if (environmentName !== undefined) {
+		const environmentValue = process.env[environmentName];
+		if (!environmentValue) {
+			if (requireNamedEnvironment) {
+				throw new Error('The selected Send password environment variable is unset.');
+			}
+			return undefined;
+		}
+		return environmentValue;
+	}
+	return defaultValue || undefined;
 }
 export function sendResponseData(send: JsonObject, objectType = 'send'): JsonObject {
 	return sendObjectResponse(send, objectType);
@@ -38,21 +63,23 @@ async function raw(contents: Uint8Array): Promise<void> {
 }
 export function receiveCommand() {
 	return command('receive').description('Read a Send without logging in; decrypt its fragment key locally')
-		.arg('url', arg.string()).flag('password', flag.string()).flag('passwordenv', flag.string())
+		.arg('url', arg.string().sensitive()).flag('password', flag.string().sensitive().env('SEND_PASSWORD'))
+		.flag(
+			'passwordenv',
+			flag.string().describe(
+				'Read the Send password from this variable. Without this option, receive reads VW_SEND_PASSWORD.',
+			),
+		)
 		.flag('passwordfile', flag.path({ mustExist: true })).flag('obj', flag.boolean())
 		.flag('output', flag.path())
-		.action(async ({ args, flags, out }) => {
-			if (
-				[flags.password !== undefined, flags.passwordenv !== undefined, flags.passwordfile !== undefined].filter(
-					Boolean,
-				).length > 1
-			) throw new Error('Choose one Send password source.');
-			let password = flags.password;
-			if (flags.passwordfile) password = (await readFile(flags.passwordfile, 'utf8')).split(/\r\n|\r|\n/, 1)[0] ?? '';
-			if (flags.passwordenv) {
-				password = process.env[flags.passwordenv];
-				if (password === undefined) throw new Error('The selected Send password environment variable is unset.');
-			}
+		.action(async ({ args, flags, out, sources }) => {
+			let password = await sendPassword(
+				flags.password,
+				sources.flags.password?.stage,
+				flags.passwordenv,
+				flags.passwordfile,
+				true,
+			);
 			let result;
 			try {
 				result = await receiveSend(args.url, { password, download: !flags.obj });
@@ -77,7 +104,7 @@ export function receiveCommand() {
 export function sendCommands(runtime: VaultRuntime) {
 	async function create(data: JsonObject, session: string | undefined, filePath?: string): Promise<JsonObject> {
 		const type = data.type ?? (filePath ? 1 : 0);
-		if (type !== 0 && type !== 1) throw new Error('Vaultwarden supports text and file Sends only.');
+		if (type !== 0 && type !== 1) throw new Error('This server accepts text and file Sends only.');
 		const file = data.file == null ? {} : object(data.file);
 		const path = typeof file.fileName === 'string' ? file.fileName : filePath;
 		if (type === 1) {
@@ -98,7 +125,7 @@ export function sendCommands(runtime: VaultRuntime) {
 	}
 	const createCommand = command('create').description('Create a Send from encoded JSON, or file/text options')
 		.arg('encodedJson', input()).flag('session', session()).flag('file', flag.path({ mustExist: true }))
-		.flag('text', flag.string()).flag('hidden', flag.boolean())
+		.flag('text', flag.string().sensitive()).flag('hidden', flag.boolean())
 		.action(async ({ args, flags, out }) => {
 			if (!args.encodedJson) throw new Error('`requestJson` was not provided.');
 			const data = decodeSendJson(args.encodedJson);
@@ -156,26 +183,34 @@ export function sendCommands(runtime: VaultRuntime) {
 	)
 		.action(({ args, out }) => out.json(sendTemplate(args.object.endsWith('file') ? 1 : 0)));
 	return command('send').description('Create or manage encrypted text and file Sends')
-		.arg('data', arg.string().stdin({ trim: false }).optional()).flag('session', session())
+		.arg('data', arg.string().sensitive().stdin({ trim: false }).optional()).flag('session', session())
 		.flag('file', flag.boolean().alias('f')).flag(
 			'deleteInDays',
 			flag.number({ min: 0, max: 31 }).alias('d').default(7),
 		)
-		.flag('password', flag.string()).flag('passwordenv', flag.string()).flag('emails', flag.string())
+		.flag('password', flag.string().sensitive().env('SEND_PASSWORD')).flag(
+			'passwordenv',
+			flag.string().describe(
+				'Read the Send password from this variable. Without this option, send reads VW_SEND_PASSWORD.',
+			),
+		)
+		.flag('emails', flag.string())
 		.flag('maxAccessCount', flag.number({ int: true, min: 0, max: 2147483647 }).alias('a'))
-		.flag('hidden', flag.boolean()).flag('name', flag.string().alias('n')).flag('notes', flag.string())
+		.flag('hidden', flag.boolean()).flag('name', flag.string().alias('n'))
+		.flag('notes', flag.string().sensitive())
 		.flag('fullObject', flag.boolean())
 		.command(createCommand).command(list).command(get).command(edit).command(remove).command(removePassword).command(
 			template,
 		).command(receiveCommand())
-		.action(async ({ args, flags, out }) => {
+		.action(async ({ args, flags, out, sources }) => {
 			if (args.data === undefined) throw new Error('Send data is required.');
-			if (flags.emails !== undefined) throw new Error('Vaultwarden does not support email-verification Sends.');
-			if (flags.password !== undefined && flags.passwordenv) throw new Error('Choose one Send password source.');
-			const password = flags.passwordenv ? process.env[flags.passwordenv] : flags.password;
-			if (flags.passwordenv && password === undefined) {
-				throw new Error('The selected Send password environment variable is unset.');
-			}
+			const password = await sendPassword(
+				flags.password,
+				sources.flags.password?.stage,
+				flags.passwordenv,
+				undefined,
+				true,
+			);
 			const result = await create(
 				{
 					type: flags.file ? 1 : 0,
@@ -183,6 +218,9 @@ export function sendCommands(runtime: VaultRuntime) {
 					notes: flags.notes,
 					deletionDate: new Date(Date.now() + flags.deleteInDays * 86400000).toISOString(),
 					password,
+					emails: flags.emails === undefined
+						? undefined
+						: flags.emails.split(',').map(email => email.trim()).filter(Boolean),
 					maxAccessCount: flags.maxAccessCount,
 					...(flags.file ? {} : { text: { text: args.data, hidden: flags.hidden } }),
 				},

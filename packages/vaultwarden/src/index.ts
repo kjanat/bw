@@ -12,6 +12,7 @@ export * from '#totp';
 export * from '#generator';
 export * from '#transfer';
 export * from '#sends';
+export * from '#device-approval';
 export * from '#reports';
 export * from '#fingerprint';
 export * from '#search';

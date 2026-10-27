@@ -13,12 +13,22 @@ import {
 	exportVault,
 	ImportFailure,
 	IncompleteExportError,
+	importFormats,
 	importVault,
 	officialZipAttachments,
 } from '#transfer';
 
 const key = Buffer.alloc(64, 6);
 const itemKey = Buffer.alloc(64, 7);
+test('import formats cover the pinned bw list plus the native ZIP extension', async () => {
+	const reference = await Bun.file(
+		new URL('../../../docs/reference/bw-import-formats-2026.10.0.json', import.meta.url),
+	).json() as { formats: string[] };
+	expect([...importFormats].filter(format => format !== 'bitwardenzip').sort().join('\n')).toBe(
+		[...reference.formats].sort().join('\n'),
+	);
+	expect(importFormats).toContain('bitwardenzip');
+});
 const item = {
 	id: 'old-item',
 	type: 1,
@@ -61,7 +71,7 @@ test('CSV parser and writer round-trip commas, quoted newlines, escaped quotes, 
 	expect(() => parseCsv('name\n"unfinished')).toThrow('Unterminated');
 	expect(() => parseCsv('"closed"junk')).toThrow('quoting');
 });
-test('export KDF salts retain case while account email salts normalize', async () => {
+test('export KDF salts are case-sensitive while account email salts normalize', async () => {
 	const kdf = { type: 0, iterations: 1000 } as const;
 	expect(
 		(await deriveKdfKey('password', 'UPPER+Salt==', kdf)).equals(await deriveKdfKey('password', 'upper+salt==', kdf)),
@@ -88,6 +98,30 @@ test('plain and account-encrypted JSON exports round-trip without exposing per-i
 		vault.dispose();
 	}
 });
+test('exports redact passkey private keys when viewPassword is false', async () => {
+	const passkeyItem = {
+		...encryptItem({
+			...item,
+			login: { fido2Credentials: [{ credentialId: 'credential', keyValue: 'synthetic-private-key' }] },
+		}, itemKey),
+		key: encrypt(itemKey, key),
+		viewPassword: false,
+	};
+	const vault = fixture();
+	vault.snapshot.ciphers = [passkeyItem];
+	try {
+		const plain = JSON.parse((await vault.exportVault('json')).toString());
+		expect(plain.items[0].login.fido2Credentials[0].keyValue).toBeNull();
+		const encrypted = JSON.parse((await vault.exportVault('encrypted_json')).toString());
+		const clear = await decryptExportDocument(encrypted, key);
+		expect(((clear.items as JsonObject[])[0]!.login as JsonObject).fido2Credentials)
+			.toEqual([{ credentialId: 'credential', keyValue: null }]);
+		const csv = (await vault.exportVault('csv')).toString();
+		expect(csv).not.toContain('synthetic-private-key');
+	} finally {
+		vault.dispose();
+	}
+});
 test('Bitwarden CSV export serializes URI arrays with bw flat comma joining', async () => {
 	const vault = fixture();
 	try {
@@ -107,7 +141,7 @@ test('Bitwarden CSV export resolves folder IDs regardless of letter case', async
 		vault.dispose();
 	}
 });
-test('production CSV export limits output to login and secure-note items while JSON retains newer Vaultwarden types', async () => {
+test('production CSV export limits output to login and secure-note items while JSON includes newer Vaultwarden types', async () => {
 	const vault = fixture();
 	const entries = [
 		{ type: 1, name: 'login', login: {} },
@@ -319,7 +353,7 @@ test('organization exports match uppercase organization IDs against synced ciphe
 		organizationKey.fill(0);
 	}
 });
-test('JSON export retains bank account, driver license, and passport sections', async () => {
+test('JSON export includes bank account, driver license, and passport sections', async () => {
 	const items = [
 		{ id: 'bank', type: 6, name: 'Bank', bankAccount: { accountNumber: 'bank-number' } },
 		{ id: 'license', type: 7, name: 'License', driversLicense: { licenseNumber: 'license-number' } },
@@ -544,7 +578,7 @@ test('placeholder-only malformed imports are rejected without false positives fo
 		vault.dispose();
 	}
 });
-test('Bitwarden JSON imports keep only the five newest password history records', async () => {
+test('Bitwarden JSON imports include only the five newest password history records', async () => {
 	let imported: JsonObject | undefined;
 	const vault = fixture((_path, init) => {
 		const body = JSON.parse(String(init.body));
@@ -961,7 +995,7 @@ test('Vaultwarden 1.37.4 organization imports preflight existing and new collect
 		unknownRoleVault.dispose();
 	}
 });
-test('Bitwarden CSV imports ignore favorites for organizations but preserve personal favorites', async () => {
+test('Bitwarden CSV imports ignore organization favorites and import personal favorites', async () => {
 	for (const [organizationId, favorite] of [[undefined, true], ['organization', false]] as const) {
 		let imported: JsonObject | undefined;
 		const vault = fixture((path, init) => {
@@ -994,7 +1028,7 @@ test('Bitwarden CSV imports ignore favorites for organizations but preserve pers
 		}
 	}
 });
-test('Bitwarden CSV keeps blank rows and tolerates short or extra fields like bw', async () => {
+test('Bitwarden CSV handles blank rows and tolerates short or extra fields like bw', async () => {
 	let imported: JsonObject | undefined;
 	const vault = fixture((_path, init) => {
 		imported = JSON.parse(String(init.body));
@@ -1021,7 +1055,7 @@ test('Bitwarden CSV keeps blank rows and tolerates short or extra fields like bw
 		vault.dispose();
 	}
 });
-test('Bitwarden CSV import preserves significant whitespace at the end of the source', async () => {
+test('Bitwarden CSV import includes significant whitespace at the end of the source', async () => {
 	let imported: JsonObject | undefined;
 	const vault = fixture((_path, init) => {
 		imported = JSON.parse(String(init.body));
@@ -1377,7 +1411,7 @@ test('ZIP export rejects missing attachments by default and supports explicit pa
 	}];
 	vault.getAttachmentById = async (_itemId, attachmentId) => {
 		if (attachmentId === 'unavailable') throw new Error('synthetic download failure');
-		return { fileName: 'kept.bin', contents: Buffer.from('kept') };
+		return { fileName: 'attachment.bin', contents: Buffer.from('attachment-bytes') };
 	};
 	const skipped: Array<[string, string]> = [];
 	try {
@@ -1402,7 +1436,7 @@ test('ZIP export rejects missing attachments by default and supports explicit pa
 			}),
 		);
 		expect(skipped).toEqual([['item-with-attachments', 'unavailable']]);
-		expect(Buffer.from(archive['attachments/Example, _quoted_/kept.bin']!).toString()).toBe('kept');
+		expect(Buffer.from(archive['attachments/Example, _quoted_/attachment.bin']!).toString()).toBe('attachment-bytes');
 	} finally {
 		vault.dispose();
 	}
@@ -1489,7 +1523,7 @@ for (const names of [['A/B', 'A\\B'], ['A', 'A', 'A_1'], ['A', 'A_1', 'A']]) {
 	});
 }
 
-test('ZIP export/import preserves every attachment when generated and original filenames collide', async () => {
+test('ZIP export/import includes every attachment when generated and original filenames collide', async () => {
 	const attachmentKey = Buffer.alloc(64, 19);
 	const bodies = new Map([
 		['first', { name: 'file.txt', contents: 'first' }],

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
 	ApiError,
+	type JsonObject,
 	VaultwardenClient,
 	VaultService,
 	deriveMasterKey,
@@ -23,7 +24,10 @@ import {
 	totp,
 } from '@kjanat/vaultwarden';
 
-const server = process.env.VW_TEST_SERVER, provider = process.env.VW_TEST_OIDC, control = process.env.VW_OIDC_CONTROL;
+const server = process.env.VW_TEST_SERVER,
+	provider = process.env.VW_TEST_OIDC,
+	control = process.env.VW_OIDC_CONTROL,
+	mailbox = process.env.VW_TEST_MAILPIT;
 const live = server && provider && control ? test : test.skip;
 for (const kdf of [{ type: 0, iterations: 600000 }, { type: 1, iterations: 3, memory: 64, parallelism: 2 }] as const) {
 	live(`real Vaultwarden: SSO OIDC (${kdf.type === 0 ? 'PBKDF2' : 'Argon2id'})`, async () => {
@@ -74,7 +78,7 @@ for (const kdf of [{ type: 0, iterations: 600000 }, { type: 1, iterations: 3, me
 			]);
 			return { code, stdout, stderr };
 		}
-		async function runSsoLogin(appDataDir: string): Promise<string> {
+		async function runSsoLogin(appDataDir: string, extraArgs: string[] = []): Promise<string> {
 			const child = Bun.spawn([
 				'node',
 				new URL('../dist/main.js', import.meta.url).pathname,
@@ -83,6 +87,7 @@ for (const kdf of [{ type: 0, iterations: 600000 }, { type: 1, iterations: 3, me
 				'--sso',
 				'fixture-organization',
 				'--nointeraction',
+				...extraArgs,
 				'--raw',
 			], {
 				env: { PATH: process.env.PATH, VW_APPDATA_DIR: appDataDir, VW_PASSWORD: password },
@@ -111,6 +116,11 @@ for (const kdf of [{ type: 0, iterations: 600000 }, { type: 1, iterations: 3, me
 				const session = (await stdout).trim();
 				expect(session).not.toBe('');
 				expect(diagnostic).not.toContain(password);
+				for (let index = 0; index < extraArgs.length; index++) {
+					if (extraArgs[index] === '--code') {
+						expect(diagnostic).not.toContain(extraArgs[index + 1]);
+					}
+				}
 				return session;
 			} finally {
 				clearTimeout(deadline);
@@ -281,6 +291,91 @@ for (const kdf of [{ type: 0, iterations: 600000 }, { type: 1, iterations: 3, me
 			);
 			expect(callbacks).toBe(1);
 			expect(twoFactor.email).toBe(email);
+			const recovery = await client.api(twoFactor.accessToken, 'POST', '/two-factor/get-recover', {
+				masterPasswordHash: hash,
+			});
+			const recoveryCode = text(field(recovery, 'code'));
+			const recoverySession = await runSsoLogin(directory, ['--method', '8', '--code', recoveryCode]);
+			expect(JSON.parse((await run(['status', '--session', recoverySession])).stdout).status).toBe('unlocked');
+			const methods = await client.api(twoFactor.accessToken, 'GET', '/two-factor');
+			expect(field(methods, 'data')).toEqual([]);
+			if (mailbox) {
+				const mailboxUrl = new URL(mailbox);
+				if (mailboxUrl.protocol !== 'http:' || mailboxUrl.hostname !== '127.0.0.1') {
+					throw new Error('SSO email tests require a disposable loopback SMTP receiver.');
+				}
+				const recipient = `sso-secondfactor-${randomUUID()}@example.com`;
+				async function messages(): Promise<JsonObject[]> {
+					const response = await fetch(`${mailbox}/api/v1/messages`);
+					if (!response.ok) throw new Error('SMTP receiver API is unavailable.');
+					const data = object(await response.json());
+					if (!Array.isArray(data.messages)) throw new Error('SMTP receiver returned an invalid message list.');
+					return data.messages.map(object).filter(message =>
+						Array.isArray(message.To)
+						&& message.To.some(to => object(to).Address === recipient)
+					);
+				}
+				const seen = async () => new Set((await messages()).map(message => message.ID));
+				async function delivered(before: Set<unknown>): Promise<string> {
+					const deadline = Date.now() + 10000;
+					while (Date.now() < deadline) {
+						const fresh = (await messages()).find(message => !before.has(message.ID));
+						if (fresh) {
+							const response = await fetch(
+								`${mailbox}/api/v1/message/${encodeURIComponent(String(fresh.ID))}`,
+							);
+							if (!response.ok) throw new Error('Could not read captured SSO email factor.');
+							const message = object(await response.json());
+							const codes = new Set(String(message.Text ?? '').match(/(?<!\d)\d{6}(?!\d)/g) ?? []);
+							if (codes.size !== 1) throw new Error('Captured SSO email has no unique six-digit code.');
+							return [...codes][0]!;
+						}
+						await Bun.sleep(50);
+					}
+					throw new Error('SSO email factor was not delivered to the disposable SMTP receiver.');
+				}
+				const setup = await client.api(twoFactor.accessToken, 'POST', '/two-factor/get-email', {
+					masterPasswordHash: hash,
+				});
+				const beforeEnrollment = await seen();
+				await client.api(twoFactor.accessToken, 'POST', '/two-factor/send-email', {
+					email: recipient,
+					masterPasswordHash: hash,
+					userVerificationToken: setup.userVerificationToken,
+				});
+				const enrollmentCode = await delivered(beforeEnrollment);
+				await client.api(twoFactor.accessToken, 'PUT', '/two-factor/email', {
+					email: recipient,
+					token: enrollmentCode,
+					masterPasswordHash: hash,
+					userVerificationToken: setup.userVerificationToken,
+				});
+				const emailAuthorization = await createSsoAuthorization(client, 'http://localhost:8065');
+				let emailCallbacks = 0;
+				const emailAccount = await loginWithSso(
+					client,
+					ssoCredentialsFromCallback(emailAuthorization, await browser(emailAuthorization.url)),
+					undefined,
+					{
+						onTwoFactor: async challenge => {
+							emailCallbacks++;
+							expect(challenge.providers).toContain(1);
+							const beforeCode = await seen();
+							await challenge.requestEmail();
+							return { provider: 1, token: await delivered(beforeCode) };
+						},
+					},
+				);
+				expect(emailCallbacks).toBe(1);
+				expect(emailAccount.email).toBe(email);
+				if (!emailAccount.encryptedUserKey) throw new Error('Expected initialized SSO account fixture.');
+				const emailKey = await unlockAccount(emailAccount, password);
+				try {
+					expect(emailKey.equals(key)).toBe(true);
+				} finally {
+					emailKey.fill(0);
+				}
+			}
 		} finally {
 			key.fill(0);
 			if (jitDirectory) await rm(jitDirectory, { recursive: true, force: true });

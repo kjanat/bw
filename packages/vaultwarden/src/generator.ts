@@ -18,6 +18,8 @@ export interface GeneratorOptions {
 	includeNumber?: boolean;
 	avoidAmbiguous?: boolean;
 }
+const MAX_GENERATED_PASSWORD_LENGTH = 65_536;
+const MAX_GENERATED_PASSPHRASE_WORDS = 8_192;
 /** Match bw's CLI/query parsing: parseInt prefixes and fall back when no number is present. */
 export function parseGeneratorNumber(value: unknown, fallback: number): number {
 	if (value == null) return fallback;
@@ -28,8 +30,8 @@ export function parseGeneratorNumber(value: unknown, fallback: number): number {
 		return fallback;
 	}
 }
-function count(value: number, min: number, name: string): number {
-	if (!Number.isSafeInteger(value) || value < min) throw new Error(`Invalid ${name}.`);
+function count(value: number, min: number, name: string, max = Number.MAX_SAFE_INTEGER): number {
+	if (!Number.isSafeInteger(value) || value < min || value > max) throw new Error(`Invalid ${name}.`);
 	return value;
 }
 /** Applies cached organization policies without requiring a decrypted vault. */
@@ -72,7 +74,12 @@ export function generatePassword(input: GeneratorOptions = {}): string {
 		options.lowercase = true;
 		options.number = true;
 	}
-	const requestedLength = count(Math.max(5, options.length ?? 14), 5, 'password length');
+	const requestedLength = count(
+		Math.max(5, options.length ?? 14),
+		5,
+		'password length',
+		MAX_GENERATED_PASSWORD_LENGTH,
+	);
 	const groups: [string, number][] = [];
 	if (options.uppercase) {
 		groups.push([options.avoidAmbiguous ? 'ABCDEFGHJKLMNPQRSTUVWXYZ' : 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 1]);
@@ -83,11 +90,17 @@ export function generatePassword(input: GeneratorOptions = {}): string {
 	if (options.number) {
 		groups.push([
 			options.avoidAmbiguous ? '23456789' : '0123456789',
-			count(options.minNumber ?? 1, 0, 'minimum number count'),
+			count(options.minNumber ?? 1, 0, 'minimum number count', MAX_GENERATED_PASSWORD_LENGTH),
 		]);
 	}
-	if (options.special) groups.push(['!@#$%^&*', count(options.minSpecial ?? 0, 0, 'minimum special count')]);
+	if (options.special) {
+		groups.push([
+			'!@#$%^&*',
+			count(options.minSpecial ?? 0, 0, 'minimum special count', MAX_GENERATED_PASSWORD_LENGTH),
+		]);
+	}
 	const length = Math.max(requestedLength, groups.reduce((n, [, minimum]) => n + minimum, 0));
+	if (length > MAX_GENERATED_PASSWORD_LENGTH) throw new Error('Invalid password length.');
 	const alphabet = groups.map(([characters]) => characters).join('');
 	const result: string[] = [];
 	for (const [characters, minimum] of groups) {
@@ -101,7 +114,12 @@ export function generatePassword(input: GeneratorOptions = {}): string {
 	return result.join('');
 }
 export function generatePassphrase(options: GeneratorOptions = {}): string {
-	const countWords = count(Math.max(3, options.words ?? 6), 3, 'word count');
+	const countWords = count(
+		Math.max(3, options.words ?? 6),
+		3,
+		'word count',
+		MAX_GENERATED_PASSPHRASE_WORDS,
+	);
 	let separator = options.separator ?? '-';
 	separator = separator === 'space' ? ' ' : separator === 'empty' ? '' : separator.slice(0, 1);
 	const words = Array.from({ length: countWords }, () => {

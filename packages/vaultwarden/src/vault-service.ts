@@ -10,11 +10,12 @@ import {
 	encryptSharedKey,
 } from '#crypto';
 import { fingerprintWords } from '#fingerprint';
+import { DeviceApprovalService } from '#device-approval';
 import { encryptItem } from '#item-codec';
 import type { EditVaultItem, ItemFilter, VaultFolder, VaultItem } from '#models';
 import { passwordHealth, type PasswordHealthOptions, type PasswordHealthRow } from '#reports';
 import { applicableOrganizationPolicies } from '#policy';
-import { findNamedObject, MultipleResultsError, searchItems, VaultObjectNotFoundError } from '#search';
+import { findNamedObject, MultipleResultsError, searchItemsBasic, VaultObjectNotFoundError } from '#search';
 import { SendService } from '#sends';
 import {
 	type ExportFormat,
@@ -30,6 +31,17 @@ import { randomBytes } from 'node:crypto';
 
 const normalizedId = (id: string) => text(id).toLowerCase();
 const idPath = (id: string) => encodeURIComponent(normalizedId(id));
+const maxBitwardenAttachmentBytes = 500 * 1024 * 1024;
+export function assertAttachmentSize(plaintextSize: number, vaultwarden: boolean): void {
+	if (!Number.isSafeInteger(plaintextSize) || plaintextSize < 0) throw new Error('Invalid attachment size.');
+	if (vaultwarden) {
+		if (encryptedAttachmentSize(plaintextSize) > vaultwardenCapabilities.fileUploads.maximumEncryptedBytes) {
+			throw new Error('Attachment exceeds the supported Vaultwarden size.');
+		}
+	} else if (plaintextSize > maxBitwardenAttachmentBytes) {
+		throw new Error('Attachment exceeds Bitwarden’s 500 MiB per-file limit.');
+	}
+}
 function sameId(value: unknown, id: string): boolean {
 	return typeof value === 'string' && normalizedId(value) === normalizedId(id);
 }
@@ -114,10 +126,10 @@ export class VaultService {
 		);
 		const activeCiphers = array(this.snapshot.ciphers).filter(item => !item.deletedDate && !item.archivedDate);
 		const candidates = exact
-			? [await this.getItem(text(exact.id))]
+			? [await this.decryptItem(exact)]
 			: byGuid
 			? []
-			: searchItems(await Promise.all(activeCiphers.map(item => this.getItem(text(item.id)))), query);
+			: searchItemsBasic(await Promise.all(activeCiphers.map(item => this.decryptItem(item))), query);
 		if (candidates.length === 1 && this.isRestrictedItem(candidates[0]!)) {
 			throw new Error('Access to this item type is restricted by organizational policy.');
 		}
@@ -133,16 +145,24 @@ export class VaultService {
 		return matches[0]!;
 	}
 	async passwordHealth(options: PasswordHealthOptions = {}): Promise<PasswordHealthRow[]> {
-		// bw's report reads all decrypted ciphers directly. Ordinary listing applies
-		// visibility and premium archive filters that must not affect report totals.
+		// Reports ignore premium archive filtering, but still honor item visibility policy.
 		const items: VaultItem[] = [];
 		for (const item of array(field(this.snapshot, 'ciphers'))) {
+			if (this.isRestrictedItem(item as VaultItem)) continue;
 			items.push(decryptOwnedItem(item, await this.ownerKey(item)) as VaultItem);
 		}
 		return passwordHealth(items, options);
 	}
 	get sends(): SendService {
 		return new SendService(this.client, this.accessToken, this.snapshot, this.userKey);
+	}
+	get deviceApprovals(): DeviceApprovalService {
+		return new DeviceApprovalService(
+			this.client,
+			this.accessToken,
+			this.snapshot,
+			organizationId => this.ownerKey({ organizationId }),
+		);
 	}
 	exportVault(format: ExportFormat, options: TransferOptions = {}): Promise<Buffer> {
 		return exportVault(
@@ -213,13 +233,27 @@ export class VaultService {
 		}
 	}
 	listOrganizations(): JsonObject[] {
-		return structuredClone(array(object(field(this.snapshot, 'profile')).organizations ?? [])).map(org => {
+		return this.organizationRecords(false);
+	}
+	findOrganization(query: string): JsonObject {
+		return findNamedObject(this.organizationRecords(true), query);
+	}
+	private organizationRecords(includeProviderOrganizations: boolean): JsonObject[] {
+		const profile = object(field(this.snapshot, 'profile'));
+		const source = profile.organizationsNew ?? profile.organizations ?? [];
+		const organizations = structuredClone(array(source)).filter(org => org.status === 2);
+		if (includeProviderOrganizations) {
+			for (const providerOrganization of array(profile.providerOrganizations ?? [])) {
+				const providerId = text(providerOrganization.id);
+				if (providerId && !organizations.some(value => sameId(value.id, providerId))) {
+					organizations.push({ ...providerOrganization, status: 2 });
+				}
+			}
+		}
+		return organizations.map(org => {
 			delete org.key;
 			return org;
 		});
-	}
-	findOrganization(query: string): JsonObject {
-		return findNamedObject(this.listOrganizations(), query);
 	}
 	async findCollection(query: string): Promise<JsonObject> {
 		return findNamedObject(await this.listCollections(), query);
@@ -270,13 +304,25 @@ export class VaultService {
 		if (input.organizationId && !sameId(input.organizationId, organizationId)) {
 			throw new Error('Collection organization does not match.');
 		}
-		const current = id && (input.groups == null || input.users == null)
+		const groupsOmitted = input.groups == null;
+		const usersOmitted = input.users == null;
+		const needsServerCheck = id ? groupsOmitted || usersOmitted : groupsOmitted;
+		const vaultwarden = needsServerCheck ? await this.client.isVaultwardenServer() : false;
+		const current = id && vaultwarden && (groupsOmitted || usersOmitted)
 			? await this.getOrganizationCollection(normalizedId(organizationId), id)
 			: undefined;
+		if (
+			id && vaultwarden
+			&& (groupsOmitted && !Array.isArray(current?.groups) || usersOmitted && !Array.isArray(current?.users))
+		) {
+			throw new Error('Vaultwarden collection access details are incomplete; refusing to replace assignments.');
+		}
 		const body = {
 			name: encrypt(Buffer.from(input.name), await this.ownerKey({ organizationId })),
-			groups: input.groups ?? current?.groups ?? [],
-			users: input.users ?? current?.users ?? (id ? [] : this.defaultCollectionUsers(organizationId)),
+			groups: input.groups ?? (vaultwarden ? current?.groups ?? [] : null),
+			users: input.users ?? (id
+				? vaultwarden ? current?.users ?? [] : null
+				: this.defaultCollectionUsers(organizationId)),
 			externalId: input.externalId ?? undefined,
 		};
 		if (body.groups !== null && !Array.isArray(body.groups) || body.users !== null && !Array.isArray(body.users)) {
@@ -628,7 +674,7 @@ export class VaultService {
 		});
 		const decrypted: VaultItem[] = [];
 		for (const item of items) decrypted.push(decryptOwnedItem(item, await this.ownerKey(item)) as VaultItem);
-		return filter.search ? searchItems(decrypted, filter.search) : decrypted;
+		return filter.search ? searchItemsBasic(decrypted, filter.search) : decrypted;
 	}
 	/** Whether an encrypted or decrypted cipher is hidden by an active item-type policy. */
 	isRestrictedItem(item: { type?: unknown; organizationId?: unknown }): boolean {
@@ -661,6 +707,12 @@ export class VaultService {
 	}
 	async getItem(id: string): Promise<VaultItem> {
 		const wire = this.wire(id);
+		if (this.isRestrictedItem(wire as VaultItem)) {
+			throw new Error('Access to this item type is restricted by organizational policy.');
+		}
+		return this.decryptItem(wire);
+	}
+	private async decryptItem(wire: JsonObject): Promise<VaultItem> {
 		return decryptOwnedItem(wire, await this.ownerKey(wire)) as VaultItem;
 	}
 	canAccessTotp(id: string): boolean {
@@ -725,7 +777,7 @@ export class VaultService {
 				}
 			}
 			previousItemKey = existing?.key ? decrypt(text(existing.key), owner) : Buffer.from(owner);
-			// Keep the current key for ordinary edits so attachments and encrypted data remain readable.
+			// Reuse the current key for ordinary edits so attachments and encrypted data remain readable.
 			itemKey = explicitItemKey ?? (existing ? Buffer.from(previousItemKey) : randomBytes(64));
 			const plain = { ...input };
 			delete plain.key;
@@ -925,9 +977,10 @@ export class VaultService {
 		enforceEntitlement: boolean,
 	): Promise<JsonObject> {
 		if (!fileName || fileName.includes('\0')) throw new Error('Attachment file name is required.');
-		if (encryptedAttachmentSize(contents.length) > vaultwardenCapabilities.fileUploads.maximumEncryptedBytes) {
-			throw new Error('Attachment exceeds the supported size.');
-		}
+		const vaultwarden = contents.length > maxBitwardenAttachmentBytes
+			? await this.client.isVaultwardenServer()
+			: false;
+		assertAttachmentSize(contents.length, vaultwarden);
 		const item = this.wire(itemId);
 		if (enforceEntitlement && !(await this.canAccessAttachment(itemId))) {
 			throw new Error('Premium status is required to use this feature.');
@@ -943,15 +996,31 @@ export class VaultService {
 			});
 			const attachmentId = text(response.attachmentId);
 			try {
-				if (response.fileUploadType !== 0) throw new Error('Unsupported attachment upload provider.');
-				const form = new FormData();
-				form.set('data', new Blob([new Uint8Array(ciphertext)]), 'encrypted');
-				await this.client.uploadAttachment(
-					this.accessToken,
-					normalizedId(itemId),
-					normalizedId(attachmentId),
-					form,
-				);
+				if (response.fileUploadType === 0) {
+					const form = new FormData();
+					form.set('data', new Blob([new Uint8Array(ciphertext)]), 'encrypted');
+					await this.client.uploadAttachment(
+						this.accessToken,
+						normalizedId(itemId),
+						normalizedId(attachmentId),
+						form,
+					);
+				} else if (response.fileUploadType === 1) {
+					await this.client.uploadAzureFile(
+						text(response.url),
+						ciphertext,
+						async () =>
+							text(
+								(await this.client.api(
+									this.accessToken,
+									'GET',
+									`/ciphers/${idPath(itemId)}/attachment/${idPath(attachmentId)}/renew`,
+								)).url,
+							),
+					);
+				} else {
+					throw new Error('Unsupported attachment upload provider.');
+				}
 			} catch {
 				try {
 					await this.client.api(
@@ -986,6 +1055,9 @@ export class VaultService {
 	): Promise<{ fileName: string; contents: Buffer }> {
 		const resolvedItemId = idOnly ? normalizedId(itemId) : text((await this.findItem(itemId)).id);
 		const item = this.wire(resolvedItemId);
+		if (idOnly && this.isRestrictedItem(item)) {
+			throw new Error('Access to this item type is restricted by organizational policy.');
+		}
 		const attachments = array(item.attachments ?? []);
 		if (attachments.length === 0) throw new Error('No attachments available for this item.');
 		const itemKey = await this.itemKey(item);
@@ -1004,7 +1076,7 @@ export class VaultService {
 				if (matches.length > 1) {
 					throw new MultipleResultsError(matches.map(value => text(value.attachment.id)));
 				}
-				throw new Error(`Attachment \`${idOrName}\` was not found.`);
+				throw new Error(`Attachment "${idOrName}" was not found.`);
 			}
 			if (enforceEntitlement && !(await this.canAccessAttachment(resolvedItemId))) {
 				throw new Error('Premium status is required to use this feature.');

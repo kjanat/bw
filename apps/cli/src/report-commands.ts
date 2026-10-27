@@ -12,10 +12,12 @@ export function reportProgressMessage(count: number, checkExposed: boolean): str
 export function reportCommand(runtime: VaultRuntime) {
 	return command('report').description('Report login password strength, reuse, and exposure')
 		.arg('object', arg.enum(['password-health']))
-		.flag('session', flag.string().env('VW_SESSION'))
+		.flag('session', flag.string().sensitive().env('SESSION'))
 		.flag(
 			'no-check-exposed',
-			flag.boolean().describe('Skip checking passwords against Have I Been Pwned (avoids network requests)'),
+			flag.boolean().describe(
+				'Do not check passwords against Have I Been Pwned; this prevents those network requests.',
+			),
 		)
 		.flag('hibp-url', flag.string().describe('HIBP-compatible range API base URL'))
 		.action(async ({ flags, out }) => {

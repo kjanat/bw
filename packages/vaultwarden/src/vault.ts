@@ -17,7 +17,7 @@ export function decryptOwnedItem(input: JsonObject, ownerKey: Uint8Array): JsonO
 			key = unwrapped;
 		}
 		const item = transformItem(input, key, 'decrypt');
-		// Modern per-item-key ciphers require authenticated URI hashes. Legacy owner-key ciphers retain compatibility.
+		// Modern per-item-key ciphers require authenticated URI hashes. Legacy owner-key ciphers use the older format.
 		if (input.key && item.login != null) {
 			const login = object(item.login);
 			if (Array.isArray(login.uris)) login.uris = login.uris.filter(value => validUriChecksum(object(value)));

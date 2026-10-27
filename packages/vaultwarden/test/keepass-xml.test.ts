@@ -8,7 +8,7 @@ import { decryptOwnedItem } from '#vault';
 
 const wrap = (entries: string) =>
 	`<?xml version="1.0" encoding="utf-8"?><KeePassFile><Root><Group><Name>Ignored root</Name>${entries}</Group></Root></KeePassFile>`;
-test('KeePass XML traverses direct entries and nested folders, preserving XML text and protected fields', () => {
+test('KeePass XML traverses direct entries and nested folders with exact XML text and protected fields', () => {
 	const hidden = 'hidden\n' + 'x'.repeat(220);
 	const document = parseKeePassXml(wrap(`
 <Entry><String><Key>Title</Key><Value>Root login</Value></String><String><Key>Password</Key><Value>  secret  </Value></String>
@@ -19,7 +19,7 @@ test('KeePass XML traverses direct entries and nested folders, preserving XML te
 <String><Key>otp</Key><Value>key=JBSWY3DPEHPK3PXP</Value></String><String><Key>Notes</Key><Value>first&#10;second</Value></String>
 <String><Key>Protected</Key><Value ProtectInMemory="True">${hidden}</Value></String>
 <String><Key>Long</Key><Value>${'x'.repeat(201)}</Value></String>
-<String><Key>Custom</Key><Value>text:kept</Value></String></Entry>
+<String><Key>Custom</Key><Value>text:marker</Value></String></Entry>
 <Group><Name>Web</Name><Entry><String><Key>Title</Key><Value>Nested login</Value></String></Entry></Group>
 </Group>`));
 	const items = document.items as JsonObject[], folders = document.folders as JsonObject[];
@@ -30,7 +30,7 @@ test('KeePass XML traverses direct entries and nested folders, preserving XML te
 		name: 'Café <login>',
 		folderId: folders[0]!.id,
 		login: { username: 'alice', totp: 'JBSWY3DPEHPK3PXP', uris: [{ uri: 'http://example.com/a,b' }] },
-		fields: [{ name: 'Protected', value: hidden, type: 1 }, { name: 'Custom', value: 'text:kept', type: 0 }],
+		fields: [{ name: 'Protected', value: hidden, type: 1 }, { name: 'Custom', value: 'text:marker', type: 0 }],
 	});
 	expect(items[1]!.notes).toBe(`first\nsecond\nLong: ${'x'.repeat(201)}\n`);
 	expect(items[2]!.folderId).toBe(folders[1]!.id);
@@ -73,7 +73,7 @@ test('invalid or externally dependent KeePass XML fails before any mutation and 
 	expect(calls).toBe(0);
 	vault.dispose();
 });
-test('KeePass XML imports encrypt hidden fields and preserve empty folder names through bulk remapping', async () => {
+test('KeePass XML imports encrypt hidden fields and carry empty folder names through bulk remapping', async () => {
 	const key = Buffer.alloc(64, 7);
 	let calls = 0;
 	const client = new VaultwardenClient('https://example.com', {

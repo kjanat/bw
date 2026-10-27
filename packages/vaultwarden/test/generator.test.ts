@@ -76,11 +76,18 @@ test('special characters are not required unless a minimum is supplied', () => {
 			.toMatch(/[!@#$%^&*]/);
 	}
 });
-test('generation clamps small values and accepts values beyond the old CLI caps', () => {
+test('generation clamps small values, accepts large values, and enforces resource bounds', () => {
 	expect(generatePassword({ length: -1 })).toHaveLength(5);
 	expect(generatePassword({ length: 4097 })).toHaveLength(4097);
 	expect(generatePassphrase({ words: -1 }).split('-')).toHaveLength(3);
 	expect(generatePassphrase({ words: 129, separator: '/' }).split('/')).toHaveLength(129);
+	expect(generatePassword({ length: 65_536 })).toHaveLength(65_536);
+	expect(() => generatePassword({ length: 65_537 })).toThrow('password length');
+	expect(generatePassphrase({ words: 8_192, separator: '/' }).split('/')).toHaveLength(8_192);
+	expect(() => generatePassphrase({ words: 8_193 })).toThrow('word count');
+	expect(() => generatePassword({ length: Number.MAX_SAFE_INTEGER })).toThrow('password length');
+	expect(() => generatePassword({ number: true, minNumber: Number.MAX_SAFE_INTEGER })).toThrow('minimum number count');
+	expect(() => generatePassphrase({ words: Number.MAX_SAFE_INTEGER })).toThrow('word count');
 });
 test('generation numeric options use bw parseInt and fallback behavior', () => {
 	expect(parseGeneratorNumber('5.9', 14)).toBe(5);

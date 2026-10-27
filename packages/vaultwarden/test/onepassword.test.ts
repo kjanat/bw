@@ -202,7 +202,7 @@ test('1PUX upload uses fresh item keys and reports skipped records without plain
 		vault.dispose();
 	}
 });
-test('1PUX SSH conversion retains unsupported-algorithm and malformed-key errors', async () => {
+test('1PUX SSH conversion reports unsupported algorithms and malformed keys', async () => {
 	for (
 		const pair of [
 			generateKeyPairSync('x25519'),

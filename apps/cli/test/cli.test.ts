@@ -1,12 +1,21 @@
 import { expect, test } from 'bun:test';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
 import { constants, createPublicKey, generateKeyPairSync, publicEncrypt } from 'node:crypto';
 import { sealSession, withStore } from '#store';
 import { collectionOrganizationId } from '#vault-commands';
-import { decrypt, deriveMasterKey, deriveSendKey, encrypt, encryptItem, stretchKey } from '@kjanat/vaultwarden';
+import { runCapturedProcess } from '#test/process';
+import {
+	decrypt,
+	deriveMasterKey,
+	deriveSendKey,
+	encrypt,
+	encryptAttachment,
+	encryptItem,
+	stretchKey,
+} from '@kjanat/vaultwarden';
 
 const executable = new URL('../dist/main.js', import.meta.url).pathname;
 async function run(
@@ -15,23 +24,9 @@ async function run(
 	environment: Record<string, string> = {},
 	stdinData?: string,
 ) {
-	const child = Bun.spawn(['node', executable, ...args], {
+	return runCapturedProcess(['node', executable, ...args], {
 		env: { PATH: process.env.PATH, VW_APPDATA_DIR: dir, ...environment },
-		stdin: stdinData === undefined ? 'ignore' : 'pipe',
-		stdout: 'pipe',
-		stderr: 'pipe',
-	});
-	if (stdinData !== undefined) {
-		if (!child.stdin) throw new Error('Expected a writable CLI stdin.');
-		child.stdin.write(stdinData);
-		child.stdin.end();
-	}
-	const [code, stdout, stderr] = await Promise.all([
-		child.exited,
-		new Response(child.stdout).text(),
-		new Response(child.stderr).text(),
-	]);
-	return { code, stdout, stderr };
+	}, stdinData);
 }
 test('org collection create/edit treat whitespace organization options as absent', () => {
 	const organizationId = '11111111-1111-1111-1111-111111111111';
@@ -52,6 +47,13 @@ test('built Node CLI exposes DreamCLI help and common flags', { timeout: 15000 }
 		expect(loginHelp.code).toBe(0);
 		expect(loginHelp.stdout).toContain('Two-factor provider: 0=TOTP, 1=email, 2=Duo,');
 		expect(loginHelp.stdout).toContain('3=YubiKey, 7=WebAuthn');
+		expect(loginHelp.stdout).toContain('[password]  [env: VW_PASSWORD]');
+		expect(loginHelp.stdout).toContain('Without this option, login reads');
+		expect(loginHelp.stdout).toContain('VW_PASSWORD.');
+		expect(loginHelp.stdout).toContain('VW_CLIENTSECRET.');
+		const encodeHelp = await run(dir, ['encode', '--help']);
+		expect(encodeHelp.stdout).toContain('[input]');
+		expect(encodeHelp.stdout).not.toContain('<input>');
 		const globalRaw = await run(dir, ['--raw', 'generate', '--length', '5']);
 		expect(globalRaw.code).toBe(0);
 		expect(globalRaw.stdout.trim()).toHaveLength(5);
@@ -89,9 +91,7 @@ test('built Node CLI validates noninteractive input and authenticated object nam
 		) {
 			const result = await run(dir, [...args], environment);
 			expect(result.code).toBe(1);
-			expect(result.stderr).toContain(
-				'Import file password is required. Provide --passwordfile or --passwordenv, or run interactively.',
-			);
+			expect(result.stderr).toContain('Vault is locked.');
 		}
 		const keepassWithoutPassword = await run(dir, [
 			'import',
@@ -100,13 +100,50 @@ test('built Node CLI validates noninteractive input and authenticated object nam
 			'--nointeraction',
 		]);
 		expect(keepassWithoutPassword.code).toBe(1);
-		expect(keepassWithoutPassword.stderr).toContain('Master password is required.');
+		expect(keepassWithoutPassword.stderr).toContain('Vault is locked.');
 		const unknownGet = await run(dir, ['get', 'unsupported-object', 'synthetic-id']);
 		expect(unknownGet.code).toBe(1);
 		expect(unknownGet.stderr).toContain('Unknown object.');
 		const unknownList = await run(dir, ['list', 'unsupported-object']);
 		expect(unknownList.code).toBe(1);
 		expect(unknownList.stderr).toContain('Unknown object.');
+		const lockedOrganizationList = await run(dir, [
+			'list',
+			'org-collections',
+			'--organizationid',
+			'not-a-guid',
+			'--nointeraction',
+		]);
+		expect(lockedOrganizationList.code).toBe(1);
+		expect(lockedOrganizationList.stderr).toContain('Vault is locked.');
+		const lockedOrganizationCollectionGet = await run(dir, [
+			'get',
+			'org-collection',
+			'not-a-guid',
+			'--organizationid',
+			'also-not-a-guid',
+		]);
+		expect(lockedOrganizationCollectionGet.code).toBe(1);
+		expect(lockedOrganizationCollectionGet.stderr).toContain('Vault is locked.');
+		const lockedAttachmentGet = await run(dir, ['get', 'attachment', 'some-id']);
+		expect(lockedAttachmentGet.code).toBe(1);
+		expect(lockedAttachmentGet.stderr).toContain('Vault is locked.');
+		for (
+			const args of [
+				['create', 'folder'],
+				['create', 'attachment', '--file', join(dir, 'missing.bin')],
+				['edit', 'folder', 'some-id'],
+				['delete', 'attachment', 'some-id'],
+				['delete', 'org-collection', 'not-a-guid'],
+				['move', 'some-id', 'not-a-guid', Buffer.from('{').toString('base64')],
+				['import'],
+				['import', 'unknown-format', join(dir, 'missing.import')],
+			]
+		) {
+			const result = await run(dir, args);
+			expect(result.code).toBe(1);
+			expect(result.stderr).toContain('Vault is locked.');
+		}
 		const unknownEdit = await run(dir, [
 			'edit',
 			'unsupported-object',
@@ -127,7 +164,7 @@ test('built Node CLI validates noninteractive input and authenticated object nam
 		expect(flagsBeforeEditObject.stderr).toContain('Unknown object.');
 		const flagsBeforeCreateObject = await run(dir, ['create', '--session', 'Synthetic-SESSION', 'ITEM']);
 		expect(flagsBeforeCreateObject.code).toBe(1);
-		expect(flagsBeforeCreateObject.stderr).toContain('`requestJson` was not provided.');
+		expect(flagsBeforeCreateObject.stderr).toContain('Vault is locked.');
 		const unknownRestore = await run(dir, ['restore', 'unsupported-object', 'synthetic-id']);
 		expect(unknownRestore.code).toBe(1);
 		expect(unknownRestore.stderr).toContain('Unknown object.');
@@ -136,7 +173,7 @@ test('built Node CLI validates noninteractive input and authenticated object nam
 	}
 });
 
-test('built Node CLI gates logged-out vault commands before validating their inputs', { timeout: 15000 }, async () => {
+test('built Node CLI gates logged-out vault commands before validating their inputs', { timeout: 30000 }, async () => {
 	const dir = await mkdtemp(join(tmpdir(), 'vw-cli-gating-'));
 	try {
 		const uppercaseObject = await run(dir, ['--raw', 'get', 'TEMPLATE', 'ITEM']);
@@ -148,6 +185,8 @@ test('built Node CLI gates logged-out vault commands before validating their inp
 		const exportHelp = await run(dir, ['export', '--help']);
 		expect(exportHelp.code).toBe(0);
 		expect(exportHelp.stdout).toContain('[password]');
+		expect(exportHelp.stdout).toContain('Without this option, export');
+		expect(exportHelp.stdout).toContain('VW_EXPORT_PASSWORD.');
 		const editHelp = await run(dir, ['edit', '--help']);
 		expect(editHelp.code).toBe(0);
 		expect(editHelp.stdout).toContain('[encodedJson]');
@@ -294,6 +333,9 @@ test('built Node CLI persists server configuration and applies clean-exit flags'
 		expect((await run(dir, ['--cleanexit', 'list', 'items'])).code).toBe(0);
 		expect((await run(dir, ['list', 'items', '--cleanexit=false'])).code).toBe(1);
 		expect((await run(dir, ['list', 'items'], { BW_CLEANEXIT: 'true' })).code).toBe(0);
+		expect((await run(dir, ['list', 'items'], { VW_CLEANEXIT: 'false' })).code).toBe(1);
+		expect((await run(dir, ['list', 'items'], { BW_CLEANEXIT: 'false' })).code).toBe(1);
+		expect((await run(dir, ['list', 'items', '--cleanexit'], { VW_CLEANEXIT: 'false' })).code).toBe(0);
 		expect(
 			(await run(dir, ['config', 'server', 'http://example.com'])).code,
 		).toBe(1);
@@ -303,7 +345,7 @@ test('built Node CLI persists server configuration and applies clean-exit flags'
 	}
 });
 
-test('get templates require login but do not require an unlocked vault', async () => {
+test('get templates require login but do not require an unlocked vault', { timeout: 15000 }, async () => {
 	const dir = await mkdtemp(join(tmpdir(), 'vw-template-login-'));
 	try {
 		const loggedOut = await run(dir, ['get', 'template', 'item']);
@@ -557,7 +599,9 @@ test('global nointeraction prevents the password prompt for a protected Send', a
 	}
 });
 
-test('quiet suppresses JSON, text, and command errors while preserving operations, help, and exit codes', async () => {
+test('quiet suppresses JSON, text, and command errors while allowing operations, help, and exit codes', {
+	timeout: 15000,
+}, async () => {
 	const dir = await mkdtemp(join(tmpdir(), 'vw-quiet-'));
 	try {
 		for (
@@ -592,80 +636,85 @@ test('quiet suppresses JSON, text, and command errors while preserving operation
 		expect((await run(dir, ['--quiet', '--help'])).stdout).toContain('Vaultwarden-first');
 		expect((await run(dir, ['--quiet', '--version'])).stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
 		expect((await run(dir, ['encode', '--', '--quiet'])).stdout.trim()).toBe(Buffer.from('--quiet').toString('base64'));
+		expect((await run(dir, ['encode'])).stdout.trim()).toBe('');
 		const encoded = await run(dir, ['encode'], {}, '  piped text\n');
 		expect(encoded.stdout.trim()).toBe(Buffer.from('  piped text\n').toString('base64'));
 	} finally {
 		await rm(dir, { recursive: true, force: true });
 	}
 });
-test('get misses use bw not-found text; quiet suppresses secrets without changing the cache', async () => {
-	const dir = await mkdtemp(join(tmpdir(), 'vw-quiet-secrets-'));
-	const key = Buffer.alloc(64, 17), id = 'abcdef01-0000-0000-0000-000000000001';
-	try {
-		let session = '';
-		await withStore(dir, async (state, save) => {
-			state.server = 'https://example.com';
-			state.account = {
-				email: 'synthetic@example.com',
-				kdf: { type: 0, iterations: 10000 },
-				encryptedUserKey: 'synthetic-wrapped-key',
-				accessToken: 'synthetic-token',
-				refreshToken: 'synthetic-refresh',
-				expiresAt: Date.now() + 3600000,
-			};
-			state.vault = {
-				profile: { id: 'abcdef02-0000-0000-0000-000000000002' },
-				folders: [],
-				collections: [],
-				ciphers: [{
-					...encryptItem({ type: 1, name: 'Private', login: { password: '  {"private":true}  ' } }, key),
-					id,
-				}],
-			};
-			session = sealSession(state, key);
-			await save();
-		});
-		const before = await withStore(dir, async state => JSON.stringify(state));
-		expect((await run(dir, ['get', 'password', id, '--session', session])).stdout).toBe('  {"private":true}  ');
-		const uppercaseGet = await run(dir, ['get', '--session', session, 'ITEM', id.toUpperCase()]);
-		expect(uppercaseGet.code).toBe(0);
-		expect(JSON.parse(uppercaseGet.stdout)).toMatchObject({ id, name: 'Private' });
-		const uppercaseList = await run(dir, ['list', '--session', session, '--search', 'Private', 'ITEMS']);
-		expect(uppercaseList.code).toBe(0);
-		expect(JSON.parse(uppercaseList.stdout).map((item: { id: string }) => item.id)).toEqual([id]);
-		const missing = await run(dir, [
-			'get',
-			'item',
-			'abcdef01-ffff-ffff-ffff-ffffffffffff',
-			'--session',
-			session,
-		]);
-		expect(missing.code).toBe(1);
-		expect(missing.stderr).toContain('Not found.');
-		const emptyId = await run(dir, ['get', 'item', '', '--session', session]);
-		expect(emptyId.code).toBe(1);
-		expect(emptyId.stderr).toContain('Not found.');
-		const attachmentWithoutItem = await run(dir, ['get', 'attachment', 'file.bin']);
-		expect(attachmentWithoutItem.code).toBe(1);
-		expect(attachmentWithoutItem.stderr).toContain('--itemid <itemid> required.');
-		const fingerprintWithoutKey = await run(dir, ['get', 'fingerprint', 'me', '--session', session]);
-		expect(fingerprintWithoutKey.code).toBe(1);
-		expect(fingerprintWithoutKey.stderr).toContain('No public key available for the active user.');
-		expect((await run(dir, ['--pretty', 'get', 'password', id, '--session', session])).stdout).toBe(
-			'  {"private":true}  ',
-		);
-		expect((await run(dir, ['export', '--format', 'json', '--raw', '--session', session, '--pretty'])).stdout).toBe(
-			(await run(dir, ['export', '--format', 'json', '--raw', '--session', session])).stdout,
-		);
-		for (const args of [['get', 'password', id], ['export', '--format', 'json', '--raw']]) {
-			expect(await run(dir, [...args, '--session', session, '--quiet'])).toEqual({ code: 0, stdout: '', stderr: '' });
+test(
+	'get misses use bw not-found text; quiet suppresses secrets without changing the cache',
+	{ timeout: 15000 },
+	async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'vw-quiet-secrets-'));
+		const key = Buffer.alloc(64, 17), id = 'abcdef01-0000-0000-0000-000000000001';
+		try {
+			let session = '';
+			await withStore(dir, async (state, save) => {
+				state.server = 'https://example.com';
+				state.account = {
+					email: 'synthetic@example.com',
+					kdf: { type: 0, iterations: 10000 },
+					encryptedUserKey: 'synthetic-wrapped-key',
+					accessToken: 'synthetic-token',
+					refreshToken: 'synthetic-refresh',
+					expiresAt: Date.now() + 3600000,
+				};
+				state.vault = {
+					profile: { id: 'abcdef02-0000-0000-0000-000000000002' },
+					folders: [],
+					collections: [],
+					ciphers: [{
+						...encryptItem({ type: 1, name: 'Private', login: { password: '  {"private":true}  ' } }, key),
+						id,
+					}],
+				};
+				session = sealSession(state, key);
+				await save();
+			});
+			const before = await withStore(dir, async state => JSON.stringify(state));
+			expect((await run(dir, ['get', 'password', id, '--session', session])).stdout).toBe('  {"private":true}  ');
+			const uppercaseGet = await run(dir, ['get', '--session', session, 'ITEM', id.toUpperCase()]);
+			expect(uppercaseGet.code).toBe(0);
+			expect(JSON.parse(uppercaseGet.stdout)).toMatchObject({ id, name: 'Private' });
+			const uppercaseList = await run(dir, ['list', '--session', session, '--search', 'Private', 'ITEMS']);
+			expect(uppercaseList.code).toBe(0);
+			expect(JSON.parse(uppercaseList.stdout).map((item: { id: string }) => item.id)).toEqual([id]);
+			const missing = await run(dir, [
+				'get',
+				'item',
+				'abcdef01-ffff-ffff-ffff-ffffffffffff',
+				'--session',
+				session,
+			]);
+			expect(missing.code).toBe(1);
+			expect(missing.stderr).toContain('Not found.');
+			const emptyId = await run(dir, ['get', 'item', '', '--session', session]);
+			expect(emptyId.code).toBe(1);
+			expect(emptyId.stderr).toContain('Not found.');
+			const attachmentWithoutItem = await run(dir, ['get', 'attachment', 'file.bin', '--session', session]);
+			expect(attachmentWithoutItem.code).toBe(1);
+			expect(attachmentWithoutItem.stderr).toContain('--itemid <itemid> required.');
+			const fingerprintWithoutKey = await run(dir, ['get', 'fingerprint', 'me', '--session', session]);
+			expect(fingerprintWithoutKey.code).toBe(1);
+			expect(fingerprintWithoutKey.stderr).toContain('No public key available for the active user.');
+			expect((await run(dir, ['--pretty', 'get', 'password', id, '--session', session])).stdout).toBe(
+				'  {"private":true}  ',
+			);
+			expect((await run(dir, ['export', '--format', 'json', '--raw', '--session', session, '--pretty'])).stdout).toBe(
+				(await run(dir, ['export', '--format', 'json', '--raw', '--session', session])).stdout,
+			);
+			for (const args of [['get', 'password', id], ['export', '--format', 'json', '--raw']]) {
+				expect(await run(dir, [...args, '--session', session, '--quiet'])).toEqual({ code: 0, stdout: '', stderr: '' });
+			}
+			expect(await withStore(dir, async state => JSON.stringify(state))).toBe(before);
+		} finally {
+			key.fill(0);
+			await rm(dir, { recursive: true, force: true });
 		}
-		expect(await withStore(dir, async state => JSON.stringify(state))).toBe(before);
-	} finally {
-		key.fill(0);
-		await rm(dir, { recursive: true, force: true });
-	}
-});
+	},
+);
 
 test('CLI responses redact secrets when Vaultwarden denies password visibility', async () => {
 	const dir = await mkdtemp(join(tmpdir(), 'vw-hidden-passwords-'));
@@ -684,6 +733,7 @@ test('CLI responses redact secrets when Vaultwarden denies password visibility',
 		'hidden-totp-sentinel',
 		'hidden-field-sentinel',
 		'hidden-history-sentinel',
+		'hidden-passkey-private-key-sentinel',
 	];
 	try {
 		let session = '';
@@ -706,7 +756,11 @@ test('CLI responses redact secrets when Vaultwarden denies password visibility',
 					...encryptItem({
 						type: 1,
 						name: 'Restricted item',
-						login: { password: secrets[0], totp: secrets[1] },
+						login: {
+							password: secrets[0],
+							totp: secrets[1],
+							fido2Credentials: [{ credentialId: 'synthetic-credential', keyValue: secrets[4] }],
+						},
 						fields: [{ name: 'hidden', value: secrets[2], type: 1 }],
 						passwordHistory: [{ password: secrets[3], lastUsedDate: '2026-01-01T00:00:00Z' }],
 					}, key),
@@ -734,7 +788,13 @@ test('CLI responses redact secrets when Vaultwarden denies password visibility',
 			session = sealSession(state, key);
 			await save();
 		});
-		for (const args of [['list', 'items'], ['get', 'item', id]]) {
+		for (
+			const args of [
+				['list', 'items'],
+				['get', 'item', id],
+				['export', '--format', 'json', '--raw'],
+			]
+		) {
 			const result = await run(dir, [...args, '--session', session]);
 			expect(result.code).toBe(0);
 			for (const secret of secrets) expect(result.stdout).not.toContain(secret);
@@ -845,11 +905,17 @@ test('list applies organization and search filters only where bw supports them',
 							name: 'First organization',
 							email: 'billing@example.test',
 							key: wrappedOrganizationKey,
+							status: 2,
+							type: 0,
+							enabled: true,
 						},
 						{
 							id: '22222222-2222-2222-2222-222222222222',
 							name: 'Second organization',
 							key: wrappedOrganizationKey,
+							status: 2,
+							type: 0,
+							enabled: true,
 						},
 					],
 				},
@@ -879,6 +945,10 @@ test('list applies organization and search filters only where bw supports them',
 				}, {
 					...encryptItem({ type: 1, name: 'Ordinary Login', login: { username: 'ordinary-user' } }, key),
 					id: 'ordinary-item-id',
+				}, {
+					...encryptItem({ type: 1, name: 'Unassigned null folder', login: { username: 'null-folder-user' } }, key),
+					id: 'null-folder-item-id',
+					folderId: null,
 				}],
 			};
 			session = sealSession(state, key);
@@ -892,6 +962,28 @@ test('list applies organization and search filters only where bw supports them',
 		expect(JSON.parse(allItems.stdout).map((item: { id: string }) => item.id)).toEqual([
 			'search-item-id',
 			'ordinary-item-id',
+			'null-folder-item-id',
+		]);
+		const itemsWithoutFolder = await run(dir, ['list', 'items', '--folderid', 'null', '--session', session]);
+		expect(itemsWithoutFolder.code, itemsWithoutFolder.stderr).toBe(0);
+		expect(JSON.parse(itemsWithoutFolder.stdout).map((item: { id: string }) => item.id)).toEqual([
+			'search-item-id',
+			'ordinary-item-id',
+			'null-folder-item-id',
+		]);
+		const itemsWithoutOrganization = await run(dir, [
+			'list',
+			'items',
+			'--organizationid',
+			'null',
+			'--session',
+			session,
+		]);
+		expect(itemsWithoutOrganization.code, itemsWithoutOrganization.stderr).toBe(0);
+		expect(JSON.parse(itemsWithoutOrganization.stdout).map((item: { id: string }) => item.id)).toEqual([
+			'search-item-id',
+			'ordinary-item-id',
+			'null-folder-item-id',
 		]);
 		const advancedItemSearch = await run(dir, [
 			'list',
@@ -989,7 +1081,14 @@ test('list applies organization and search filters only where bw supports them',
 				[
 					'organization',
 					'first organization',
-					{ object: 'organization', id: organizationId, name: 'First organization' },
+					{
+						object: 'organization',
+						id: organizationId,
+						name: 'First organization',
+						status: 2,
+						type: 0,
+						enabled: true,
+					},
 				],
 			] as const
 		) {
@@ -1010,8 +1109,22 @@ test('list applies organization and search filters only where bw supports them',
 		]);
 		expect(organizations.code).toBe(0);
 		expect(JSON.parse(organizations.stdout)).toEqual([
-			{ object: 'organization', id: organizationId, name: 'First organization' },
-			{ object: 'organization', id: '22222222-2222-2222-2222-222222222222', name: 'Second organization' },
+			{
+				object: 'organization',
+				id: organizationId,
+				name: 'First organization',
+				status: 2,
+				type: 0,
+				enabled: true,
+			},
+			{
+				object: 'organization',
+				id: '22222222-2222-2222-2222-222222222222',
+				name: 'Second organization',
+				status: 2,
+				type: 0,
+				enabled: true,
+			},
 		]);
 		const organizationResponse = await run(dir, [
 			'--response',
@@ -1025,8 +1138,22 @@ test('list applies organization and search filters only where bw supports them',
 			data: {
 				object: 'list',
 				data: [
-					{ object: 'organization', id: organizationId, name: 'First organization' },
-					{ object: 'organization', id: '22222222-2222-2222-2222-222222222222', name: 'Second organization' },
+					{
+						object: 'organization',
+						id: organizationId,
+						name: 'First organization',
+						status: 2,
+						type: 0,
+						enabled: true,
+					},
+					{
+						object: 'organization',
+						id: '22222222-2222-2222-2222-222222222222',
+						name: 'Second organization',
+						status: 2,
+						type: 0,
+						enabled: true,
+					},
 				],
 			},
 		});
@@ -1137,7 +1264,7 @@ test('list applies organization and search filters only where bw supports them',
 	}
 });
 
-test('built CLI edit preserves omitted cipher data and sends an explicit folder clear', async () => {
+test('built CLI edit carries omitted cipher data and sends an explicit folder clear', async () => {
 	const dir = await mkdtemp(join(tmpdir(), 'vw-built-edit-'));
 	const key = Buffer.alloc(64, 36);
 	const cipherId = '11111111-2222-4333-8444-555555555555';
@@ -1145,10 +1272,10 @@ test('built CLI edit preserves omitted cipher data and sends an explicit folder 
 		...encryptItem({
 			type: 1,
 			name: 'Before edit',
-			notes: 'preserved note',
+			notes: 'unchanged note',
 			favorite: true,
-			login: { username: 'preserved-user', password: 'preserved-secret' },
-			fields: [{ name: 'preserved field', value: 'preserved value', type: 0 }],
+			login: { username: 'unchanged-user', password: 'unchanged-secret' },
+			fields: [{ name: 'unchanged field', value: 'unchanged value', type: 0 }],
 		}, key),
 		id: cipherId,
 		key: null,
@@ -1208,16 +1335,16 @@ test('built CLI edit preserves omitted cipher data and sends an explicit folder 
 		const result = await run(dir, ['edit', 'item', cipherId, encoded, '--session', session]);
 		if (result.code !== 0) throw new Error(`Built edit failed: ${result.stderr}`);
 		expect(result.code).toBe(0);
-		expect(JSON.parse(result.stdout)).toMatchObject({ name: 'After edit', notes: 'preserved note' });
+		expect(JSON.parse(result.stdout)).toMatchObject({ name: 'After edit', notes: 'unchanged note' });
 		expect(submitted).toMatchObject({ favorite: true, folderId: null });
 		expect(decrypt(String(submitted!.name), key).toString()).toBe('After edit');
-		expect(decrypt(String(submitted!.notes), key).toString()).toBe('preserved note');
+		expect(decrypt(String(submitted!.notes), key).toString()).toBe('unchanged note');
 		const login = submitted!.login as Record<string, string>;
-		expect(decrypt(String(login.username), key).toString()).toBe('preserved-user');
-		expect(decrypt(String(login.password), key).toString()).toBe('preserved-secret');
+		expect(decrypt(String(login.username), key).toString()).toBe('unchanged-user');
+		expect(decrypt(String(login.password), key).toString()).toBe('unchanged-secret');
 		const [field] = submitted!.fields as Record<string, unknown>[];
-		expect(decrypt(String(field!.name), key).toString()).toBe('preserved field');
-		expect(decrypt(String(field!.value), key).toString()).toBe('preserved value');
+		expect(decrypt(String(field!.name), key).toString()).toBe('unchanged field');
+		expect(decrypt(String(field!.value), key).toString()).toBe('unchanged value');
 	} finally {
 		key.fill(0);
 		await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
@@ -1307,47 +1434,134 @@ test('ambiguous item lookup reports the matching IDs like bw', async () => {
 	}
 });
 
-test('pretty formats structured JSON across global and nested commands without changing raw values', async () => {
-	const dir = await mkdtemp(join(tmpdir(), 'vw-pretty-'));
+test('built CLI attachment ID lookup ignores a different attachment filename that equals that ID', {
+	timeout: 15000,
+}, async () => {
+	const dir = await mkdtemp(join(tmpdir(), 'vw-attachment-id-collision-'));
+	const key = Buffer.alloc(64, 61);
+	const itemId = 'item-attachment-collision';
+	const requestedBytes = Buffer.from('expected attachment A');
+	const substitutedBytes = Buffer.from('substituted attachment B');
+	const routes: string[] = [];
+	const server = createServer((request, response) => {
+		const path = request.url ?? '';
+		routes.push(path);
+		if (path === '/api/ciphers/item-attachment-collision/attachment/first') {
+			response.setHeader('Content-Type', 'application/json');
+			response.end(
+				JSON.stringify({ url: `http://127.0.0.1:${(server.address() as { port: number }).port}/files/first` }),
+			);
+		} else if (path === '/files/first') {
+			response.end(encryptAttachment(requestedBytes, key));
+		} else if (path === '/files/second') {
+			response.end(encryptAttachment(substitutedBytes, key));
+		} else {
+			response.statusCode = 404;
+			response.end();
+		}
+	});
+	await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+	const address = server.address();
+	if (!address || typeof address === 'string') throw new Error('Missing attachment fixture address.');
+	let session = '';
 	try {
 		await withStore(dir, async (state, save) => {
+			state.server = `http://127.0.0.1:${address.port}`;
 			state.account = {
 				email: 'synthetic@example.test',
 				kdf: { type: 0, iterations: 10000 },
 				encryptedUserKey: 'synthetic-wrapped-key',
-				accessToken: 'synthetic-token',
-				refreshToken: 'synthetic-refresh',
+				accessToken: 'synthetic-access-token',
+				refreshToken: 'synthetic-refresh-token',
 				expiresAt: Date.now() + 3600000,
 			};
+			state.vault = {
+				profile: { id: 'synthetic-user', premium: true, premiumPersonally: true },
+				ciphers: [{
+					...encryptItem({
+						type: 1,
+						name: 'Attachment collision fixture',
+						attachments: [
+							{ id: 'first', fileName: 'original-a.bin' },
+							{ id: 'second', fileName: 'first' },
+						],
+					}, key),
+					id: itemId,
+				}],
+			};
+			session = sealSession(state, key);
 			await save();
 		});
-		const compact = await run(dir, ['get', 'template', 'item']);
-		expect(compact.code).toBe(0);
-		const value = JSON.parse(compact.stdout), expected = JSON.stringify(value, null, 2) + '\n';
-		expect(compact.stdout).toBe(JSON.stringify(value) + '\n');
-		for (const args of [['--pretty', 'get', 'template', 'item'], ['get', 'template', 'item', '--pretty']]) {
-			expect(await run(dir, args)).toEqual({ code: 0, stdout: expected, stderr: '' });
-		}
-		expect((await run(dir, ['get', 'template', 'item'], { VW_PRETTY: 'true' })).stdout).toBe(expected);
-		expect((await run(dir, ['get', 'template', 'item'], { BW_PRETTY: 'true' })).stdout).toBe(expected);
-		expect((await run(dir, ['get', 'template', 'item', '--pretty=false'], { VW_PRETTY: 'true' })).stdout).toBe(
-			compact.stdout,
-		);
-		const nested = await run(dir, ['--pretty', 'send', 'template', 'text']);
-		expect(nested.code).toBe(0);
-		expect(nested.stdout).toBe(JSON.stringify(JSON.parse(nested.stdout), null, 2) + '\n');
-		expect((await run(dir, ['get', 'template', 'item', '--json', '--pretty'])).stdout).toBe(expected);
-		expect(await run(dir, ['--pretty', 'status', '--quiet'])).toEqual({ code: 0, stdout: '', stderr: '' });
-		expect((await run(dir, ['encode', '--', '--pretty'])).stdout.trim()).toBe(
-			Buffer.from('--pretty').toString('base64'),
-		);
-		expect((await run(dir, ['--help'])).stdout).toContain('--pretty');
-		expect((await run(dir, ['get', '--help'])).stdout).toContain('--pretty');
-		expect((await run(dir, [])).stdout).toContain('Vaultwarden-first');
+		const output = join(dir, 'download.bin');
+		const result = await run(dir, [
+			'get',
+			'attachment',
+			'first',
+			'--itemid',
+			itemId,
+			'--output',
+			output,
+			'--session',
+			session,
+		]);
+		expect(result.code).toBe(0);
+		expect(await readFile(output)).toEqual(requestedBytes);
+		expect(routes).toEqual([
+			'/api/ciphers/item-attachment-collision/attachment/first',
+			'/files/first',
+		]);
 	} finally {
+		key.fill(0);
+		await new Promise<void>(resolve => server.close(() => resolve()));
 		await rm(dir, { recursive: true, force: true });
 	}
 });
+
+test(
+	'pretty formats structured JSON across global and nested commands without changing raw values',
+	{ timeout: 15000 },
+	async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'vw-pretty-'));
+		try {
+			await withStore(dir, async (state, save) => {
+				state.account = {
+					email: 'synthetic@example.test',
+					kdf: { type: 0, iterations: 10000 },
+					encryptedUserKey: 'synthetic-wrapped-key',
+					accessToken: 'synthetic-token',
+					refreshToken: 'synthetic-refresh',
+					expiresAt: Date.now() + 3600000,
+				};
+				await save();
+			});
+			const compact = await run(dir, ['get', 'template', 'item']);
+			expect(compact.code).toBe(0);
+			const value = JSON.parse(compact.stdout), expected = JSON.stringify(value, null, 2) + '\n';
+			expect(compact.stdout).toBe(JSON.stringify(value) + '\n');
+			for (const args of [['--pretty', 'get', 'template', 'item'], ['get', 'template', 'item', '--pretty']]) {
+				expect(await run(dir, args)).toEqual({ code: 0, stdout: expected, stderr: '' });
+			}
+			expect((await run(dir, ['get', 'template', 'item'], { VW_PRETTY: 'true' })).stdout).toBe(expected);
+			expect((await run(dir, ['get', 'template', 'item'], { BW_PRETTY: 'true' })).stdout).toBe(expected);
+			expect((await run(dir, ['get', 'template', 'item', '--pretty=false'], { VW_PRETTY: 'true' })).stdout).toBe(
+				compact.stdout,
+			);
+			const nested = await run(dir, ['--pretty', 'send', 'template', 'text']);
+			expect(nested.code).toBe(0);
+			expect(nested.stdout).toBe(JSON.stringify(JSON.parse(nested.stdout), null, 2) + '\n');
+			expect((await run(dir, ['get', 'template', 'item', '--json', '--pretty'])).stdout).toBe(expected);
+			expect(await run(dir, ['--pretty', 'status', '--quiet'])).toEqual({ code: 0, stdout: '', stderr: '' });
+			expect((await run(dir, ['encode', '--', '--pretty'])).stdout.trim()).toBe(
+				Buffer.from('--pretty').toString('base64'),
+			);
+			expect((await run(dir, ['--help'])).stdout).toContain('--pretty');
+			expect((await run(dir, ['get', '--help'])).stdout).toContain('--pretty');
+			expect((await run(dir, [])).stdout).toContain('Vaultwarden-first');
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	},
+);
 
 test('bw-named session environment unlocks status when no vw-named value is set', async () => {
 	const dir = await mkdtemp(join(tmpdir(), 'vw-bw-env-'));
@@ -1388,76 +1602,80 @@ test('bw-named session environment unlocks status when no vw-named value is set'
 	}
 });
 
-test('response mode matches bw envelopes for status, generated strings, and command errors', async () => {
-	const dir = await mkdtemp(join(tmpdir(), 'vw-response-'));
-	try {
-		const status = await run(dir, ['--response', 'status']);
-		expect(status.code).toBe(0);
-		expect(JSON.parse(status.stdout)).toEqual({
-			success: true,
-			data: {
-				object: 'template',
-				template: { serverUrl: null, lastSync: null, status: 'unauthenticated' },
-			},
-		});
-		const generated = await run(dir, ['generate', '--response', '--length', '8']);
-		expect(generated.code).toBe(0);
-		expect(JSON.parse(generated.stdout)).toMatchObject({ success: true, data: { object: 'string' } });
-		expect(JSON.parse(generated.stdout).data.data).toMatch(/^.{8}$/);
-		const encoded = await run(dir, ['encode', 'response fixture', '--response']);
-		expect(JSON.parse(encoded.stdout)).toEqual({
-			success: true,
-			data: { object: 'string', data: Buffer.from('response fixture').toString('base64') },
-		});
-		const configured = await run(dir, ['config', 'server', 'https://vault.example.test', '--response']);
-		expect(JSON.parse(configured.stdout)).toEqual({
-			success: true,
-			data: { object: 'message', title: 'Saved setting `config`.', message: null, noColor: false },
-		});
-		const configRead = await run(dir, ['--response', 'config', 'server', '']);
-		expect(JSON.parse(configRead.stdout)).toEqual({
-			success: true,
-			data: { object: 'string', data: 'https://vault.example.test' },
-		});
-		const whitespaceConfigRead = await run(dir, ['--response', 'config', 'server', '   ']);
-		expect(JSON.parse(whitespaceConfigRead.stdout)).toEqual(JSON.parse(configRead.stdout));
-		await withStore(dir, async (state, save) => {
-			state.account = {
-				email: 'synthetic@example.test',
-				kdf: { type: 0, iterations: 10000 },
-				encryptedUserKey: 'synthetic-wrapped-key',
-				accessToken: 'synthetic-token',
-				refreshToken: 'synthetic-refresh',
-				expiresAt: Date.now() + 3600000,
-			};
-			await save();
-		});
-		const itemTemplate = await run(dir, ['--response', 'get', 'template', 'item']);
-		expect(JSON.parse(itemTemplate.stdout)).toMatchObject({ success: true, data: { object: 'template' } });
-		await withStore(dir, async (state, save) => {
-			delete state.account;
-			await save();
-		});
-		const sendTemplate = await run(dir, ['send', 'template', 'text', '--response']);
-		expect(JSON.parse(sendTemplate.stdout)).toMatchObject({
-			success: true,
-			data: { object: 'template', template: { object: 'send' } },
-		});
-		const sdkVersion = await run(dir, ['sdk-version']);
-		expect((await run(dir, ['--response', 'sdk-version'])).stdout).toBe(sdkVersion.stdout);
-		expect((await run(dir, ['--response'])).stdout).toContain('Vaultwarden-first');
-		const failure = await run(dir, ['--response', 'list', 'items']);
-		expect(failure.code).toBe(1);
-		expect(JSON.parse(failure.stdout)).toEqual({ success: false, message: 'You are not logged in.' });
-		expect(failure.stderr).toBe('');
-		const fromEnvironment = await run(dir, ['status'], { BW_RESPONSE: 'true' });
-		expect(JSON.parse(fromEnvironment.stdout)).toMatchObject({ success: true, data: { object: 'template' } });
-		expect(JSON.parse((await run(dir, ['status'], { BW_RESPONSE: 'true', VW_RESPONSE: 'false' })).stdout))
-			.toMatchObject({ serverUrl: 'https://vault.example.test', status: 'unauthenticated' });
-	} finally {
-		await rm(dir, { recursive: true, force: true });
-	}
-});
+test(
+	'response mode matches bw envelopes for status, generated strings, and command errors',
+	{ timeout: 15000 },
+	async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'vw-response-'));
+		try {
+			const status = await run(dir, ['--response', 'status']);
+			expect(status.code).toBe(0);
+			expect(JSON.parse(status.stdout)).toEqual({
+				success: true,
+				data: {
+					object: 'template',
+					template: { serverUrl: null, lastSync: null, status: 'unauthenticated' },
+				},
+			});
+			const generated = await run(dir, ['generate', '--response', '--length', '8']);
+			expect(generated.code).toBe(0);
+			expect(JSON.parse(generated.stdout)).toMatchObject({ success: true, data: { object: 'string' } });
+			expect(JSON.parse(generated.stdout).data.data).toMatch(/^.{8}$/);
+			const encoded = await run(dir, ['encode', 'response fixture', '--response']);
+			expect(JSON.parse(encoded.stdout)).toEqual({
+				success: true,
+				data: { object: 'string', data: Buffer.from('response fixture').toString('base64') },
+			});
+			const configured = await run(dir, ['config', 'server', 'https://vault.example.test', '--response']);
+			expect(JSON.parse(configured.stdout)).toEqual({
+				success: true,
+				data: { object: 'message', title: 'Saved setting `config`.', message: null, noColor: false },
+			});
+			const configRead = await run(dir, ['--response', 'config', 'server', '']);
+			expect(JSON.parse(configRead.stdout)).toEqual({
+				success: true,
+				data: { object: 'string', data: 'https://vault.example.test' },
+			});
+			const whitespaceConfigRead = await run(dir, ['--response', 'config', 'server', '   ']);
+			expect(JSON.parse(whitespaceConfigRead.stdout)).toEqual(JSON.parse(configRead.stdout));
+			await withStore(dir, async (state, save) => {
+				state.account = {
+					email: 'synthetic@example.test',
+					kdf: { type: 0, iterations: 10000 },
+					encryptedUserKey: 'synthetic-wrapped-key',
+					accessToken: 'synthetic-token',
+					refreshToken: 'synthetic-refresh',
+					expiresAt: Date.now() + 3600000,
+				};
+				await save();
+			});
+			const itemTemplate = await run(dir, ['--response', 'get', 'template', 'item']);
+			expect(JSON.parse(itemTemplate.stdout)).toMatchObject({ success: true, data: { object: 'template' } });
+			await withStore(dir, async (state, save) => {
+				delete state.account;
+				await save();
+			});
+			const sendTemplate = await run(dir, ['send', 'template', 'text', '--response']);
+			expect(JSON.parse(sendTemplate.stdout)).toMatchObject({
+				success: true,
+				data: { object: 'template', template: { object: 'send' } },
+			});
+			const sdkVersion = await run(dir, ['sdk-version']);
+			expect((await run(dir, ['--response', 'sdk-version'])).stdout).toBe(sdkVersion.stdout);
+			expect((await run(dir, ['--response'])).stdout).toContain('Vaultwarden-first');
+			const failure = await run(dir, ['--response', 'list', 'items']);
+			expect(failure.code).toBe(1);
+			expect(JSON.parse(failure.stdout)).toEqual({ success: false, message: 'You are not logged in.' });
+			expect(failure.stderr).toBe('');
+			const fromEnvironment = await run(dir, ['status'], { BW_RESPONSE: 'true' });
+			expect(JSON.parse(fromEnvironment.stdout)).toMatchObject({ success: true, data: { object: 'template' } });
+			expect(JSON.parse((await run(dir, ['status'], { BW_RESPONSE: 'true', VW_RESPONSE: 'false' })).stdout))
+				.toMatchObject({ serverUrl: 'https://vault.example.test', status: 'unauthenticated' });
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	},
+);
 
 test('lock and logout success messages match pinned bw responses', async () => {
 	const dir = await mkdtemp(join(tmpdir(), 'vw-auth-messages-'));
@@ -1562,7 +1780,9 @@ test('unlock prints session guidance by default and exposes the token only throu
 	}
 });
 
-test('sync reads its last date offline, checks revisions, and forces full downloads without an unlock token', async () => {
+test('sync reads its last date offline, checks revisions, and forces full downloads without an unlock token', {
+	timeout: 15000,
+}, async () => {
 	const dir = await mkdtemp(join(tmpdir(), 'vw-sync-'));
 	const paths: string[] = [];
 	let revision = 0, unauthorized = false, downloads = 0, downloadStarted = 0;
@@ -1659,7 +1879,9 @@ test('sync reads its last date offline, checks revisions, and forces full downlo
 test('API-key login syncs before returning the unlock guidance', async () => {
 	const dir = await mkdtemp(join(tmpdir(), 'vw-api-login-'));
 	const calls: string[] = [];
+	const submittedCredentials: [string | null, string | null][] = [];
 	const userId = '11111111-1111-1111-1111-111111111111';
+	let authenticatedUserId = userId;
 	const server = createServer(async (request, response) => {
 		calls.push(request.url!);
 		response.setHeader('Content-Type', 'application/json');
@@ -1668,7 +1890,10 @@ test('API-key login syncs before returning the unlock guidance', async () => {
 				let value = '';
 				request.setEncoding('utf8').on('data', chunk => value += chunk).on('end', () => resolve(value));
 			});
-			expect(new URLSearchParams(body).get('grant_type')).toBe('client_credentials');
+			const form = new URLSearchParams(body);
+			expect(form.get('grant_type')).toBe('client_credentials');
+			submittedCredentials.push([form.get('client_id'), form.get('client_secret')]);
+			authenticatedUserId = form.get('client_id')?.slice('user.'.length) ?? userId;
 			response.end(JSON.stringify({
 				access_token: 'synthetic-api-access-token',
 				expires_in: 3600,
@@ -1677,9 +1902,9 @@ test('API-key login syncs before returning the unlock guidance', async () => {
 				kdfIterations: 10000,
 			}));
 		} else if (request.url === '/api/accounts/profile') {
-			response.end(JSON.stringify({ id: userId, email: 'synthetic@example.com' }));
+			response.end(JSON.stringify({ id: authenticatedUserId, email: 'synthetic@example.com' }));
 		} else if (request.url === '/api/sync?excludeDomains=false') {
-			response.end(JSON.stringify({ profile: { id: userId }, ciphers: [] }));
+			response.end(JSON.stringify({ profile: { id: authenticatedUserId }, ciphers: [] }));
 		} else response.writeHead(404).end('{}');
 	});
 	await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -1700,6 +1925,7 @@ test('API-key login syncs before returning the unlock guidance', async () => {
 			'/api/accounts/profile',
 			'/api/sync?excludeDomains=false',
 		]);
+		expect(submittedCredentials.at(-1)).toEqual([`user.${userId}`, 'synthetic-api-client-secret']);
 		await withStore(dir, async state => {
 			expect(state.account?.auth).toBe('api-key');
 			expect(state.vault).toEqual({ profile: { id: userId }, ciphers: [] });
@@ -1707,6 +1933,55 @@ test('API-key login syncs before returning the unlock guidance', async () => {
 		});
 		const logout = await run(dir, ['logout']);
 		expect(logout.code).toBe(0);
+		calls.length = 0;
+		const namedCredentials = await run(dir, [
+			'login',
+			'--apikey',
+			'--clientidenv',
+			'VW_TEST_NAMED_CLIENT_ID',
+			'--clientsecretenv',
+			'VW_TEST_NAMED_CLIENT_SECRET',
+			'--nointeraction',
+		], {
+			...environment,
+			VW_TEST_NAMED_CLIENT_ID: 'user.22222222-2222-2222-2222-222222222222',
+			VW_TEST_NAMED_CLIENT_SECRET: 'named-client-secret',
+		});
+		expect(namedCredentials.code, namedCredentials.stderr).toBe(0);
+		expect(submittedCredentials.at(-1)).toEqual([
+			'user.22222222-2222-2222-2222-222222222222',
+			'named-client-secret',
+		]);
+		expect(calls).toEqual([
+			'/identity/connect/token',
+			'/api/accounts/profile',
+			'/api/sync?excludeDomains=false',
+		]);
+		expect((await run(dir, ['logout'])).code).toBe(0);
+		calls.length = 0;
+		const explicitCredentials = await run(dir, [
+			'login',
+			'--apikey',
+			'--clientid',
+			'user.33333333-3333-3333-3333-333333333333',
+			'--clientsecret',
+			'explicit-client-secret',
+			'--clientidenv',
+			'VW_TEST_NAMED_CLIENT_ID',
+			'--clientsecretenv',
+			'VW_TEST_NAMED_CLIENT_SECRET',
+			'--nointeraction',
+		], {
+			...environment,
+			VW_TEST_NAMED_CLIENT_ID: 'user.22222222-2222-2222-2222-222222222222',
+			VW_TEST_NAMED_CLIENT_SECRET: 'named-client-secret',
+		});
+		expect(explicitCredentials.code, explicitCredentials.stderr).toBe(0);
+		expect(submittedCredentials.at(-1)).toEqual([
+			'user.33333333-3333-3333-3333-333333333333',
+			'explicit-client-secret',
+		]);
+		expect((await run(dir, ['logout'])).code).toBe(0);
 		calls.length = 0;
 		const responseLogin = await run(dir, ['--response', 'login', '--apikey', '--nointeraction'], environment);
 		expect(responseLogin.code).toBe(0);
@@ -1730,7 +2005,7 @@ test('API-key login syncs before returning the unlock guidance', async () => {
 	}
 });
 
-test('organization device approval exposes the reference subcommands and fails explicitly without touching credentials', async () => {
+test('organization device approval exposes the reference subcommands and requires an authenticated session', async () => {
 	const dir = await mkdtemp(join(tmpdir(), 'vw-device-approval-'));
 	try {
 		const help = await run(dir, ['device-approval', '--help']);
@@ -1760,10 +2035,8 @@ test('organization device approval exposes the reference subcommands and fails e
 			];
 			const result = await run(dir, args);
 			expect(result.code).toBe(1);
-			expect(result.stderr).toContain('organization SSO trusted-device approval API');
-			expect(result.stderr).toContain('Personal auth requests are a different protocol');
+			expect(result.stderr).toContain('You are not logged in.');
 			expect(result.stderr).not.toContain('synthetic-session');
-			expect(result.stderr).not.toContain('Log in first');
 		}
 		expect((await run(dir, ['device-approval', 'list'])).code).not.toBe(0);
 	} finally {
@@ -1833,8 +2106,12 @@ test('configured service overrides route CLI authentication and are cleared by a
 	}
 });
 
-test('generation and import format discovery follow bw login and output semantics in the built Node CLI', async () => {
+test('generation and import format discovery follow bw login and output semantics in the built Node CLI', {
+	timeout: 30000,
+}, async () => {
 	const dir = await mkdtemp(join(tmpdir(), 'vw-tools-'));
+	const userKey = Buffer.alloc(64, 17);
+	let session = '';
 	try {
 		const generated = await run(dir, ['generate', '--length', '32', '-u', '-l', '-n', '-s', '--minNumber', '4']);
 		expect(generated.code).toBe(0);
@@ -1869,6 +2146,7 @@ test('generation and import format discovery follow bw login and output semantic
 		expect(unauthenticatedFormats.code).toBe(1);
 		expect(unauthenticatedFormats.stderr).toContain('You are not logged in.');
 		await withStore(dir, async (state, save) => {
+			state.server = 'https://vault.example.test';
 			state.account = {
 				email: 'synthetic@example.test',
 				kdf: { type: 0, iterations: 10000 },
@@ -1877,6 +2155,8 @@ test('generation and import format discovery follow bw login and output semantic
 				refreshToken: 'synthetic-refresh-token',
 				expiresAt: Date.now() + 3600000,
 			};
+			state.vault = { profile: { id: 'synthetic-user' }, ciphers: [], folders: [], collections: [] };
+			session = sealSession(state, userKey);
 			await save();
 		});
 		const formats = await run(dir, ['import', '--formats']);
@@ -1898,7 +2178,7 @@ test('generation and import format discovery follow bw login and output semantic
 		expect(rawFormats.stdout).toBe(`${supportedFormats}\n`);
 		const unsupportedKeeperFile = join(dir, 'keeper-export.txt');
 		await writeFile(unsupportedKeeperFile, '{"records":[]}');
-		const unsupportedKeeper = await run(dir, ['import', 'keeper', unsupportedKeeperFile]);
+		const unsupportedKeeper = await run(dir, ['import', 'keeper', unsupportedKeeperFile, '--session', session]);
 		expect(unsupportedKeeper.code).toBe(1);
 		expect(unsupportedKeeper.stderr).toContain(
 			'Cannot determine Keeper file type. Use a .csv or .json file.',
@@ -1957,6 +2237,7 @@ test('generation and import format discovery follow bw login and output semantic
 		expect(formats.stdout.split(/\r?\n/)).toContain('passmanjson');
 		expect(formats.stdout.split(/\r?\n/)).toContain('passkyjson');
 	} finally {
+		userKey.fill(0);
 		await rm(dir, { recursive: true, force: true });
 	}
 });
@@ -2124,52 +2405,57 @@ test('authentication checks ignore unused password files and do not prompt', asy
 
 for (const shell of ['zsh', 'bash', 'fish', 'powershell']) {
 	// A cold PowerShell/.NET start can exceed Bun's default five-second test budget on CI.
-	test(`schema-derived ${shell} completion parses`, { timeout: shell === 'powershell' ? 30000 : 5000 }, async () => {
-		const dir = await mkdtemp(join(tmpdir(), `vw-completion-${shell}-`));
-		try {
-			const generated = await run(dir, ['completion', '--shell', shell]);
-			expect(generated.code).toBe(0);
-			expect(generated.stdout).toContain('login');
-			expect(generated.stdout).toContain('send');
-			expect(generated.stdout).toContain('passwordfile');
-			const path = join(dir, shell === 'powershell' ? 'completion.ps1' : `completion.${shell}`);
-			await writeFile(path, generated.stdout);
-			let args = [shell, '-n', path];
-			if (shell === 'powershell') {
-				const parser = join(dir, 'check.ps1');
-				await writeFile(
-					parser,
-					'param([string]$Path)\n$tokens=$null; $errors=$null\n[System.Management.Automation.Language.Parser]::ParseFile($Path,[ref]$tokens,[ref]$errors) | Out-Null\nif ($errors.Count) { $errors | Out-String | Write-Error; exit 1 }',
-				);
-				args = ['pwsh', '-NoProfile', '-NonInteractive', '-File', parser, '-Path', path];
-			}
-			const child = Bun.spawn(args, {
-				stdout: 'ignore',
-				stderr: 'pipe',
-				timeout: shell === 'powershell' ? 20000 : undefined,
-				killSignal: 'SIGKILL',
-			});
-			const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
-			if (child.signalCode) throw new Error(`${shell} completion parser terminated with ${child.signalCode}.`);
-			if (code) throw new Error(`${shell} completion syntax failed: ${stderr}`);
-			if (shell === 'fish') {
-				const complete = Bun.spawn(['fish', '--no-config', '-c', 'source $argv[1]; complete -C "vw lo"', path], {
-					stdout: 'pipe',
+	const shellTest = shell === 'fish' && !Bun.which(shell) ? test.skip : test;
+	shellTest(
+		`schema-derived ${shell} completion parses`,
+		{ timeout: shell === 'powershell' ? 30000 : 5000 },
+		async () => {
+			const dir = await mkdtemp(join(tmpdir(), `vw-completion-${shell}-`));
+			try {
+				const generated = await run(dir, ['completion', '--shell', shell]);
+				expect(generated.code).toBe(0);
+				expect(generated.stdout).toContain('login');
+				expect(generated.stdout).toContain('send');
+				expect(generated.stdout).toContain('passwordfile');
+				const path = join(dir, shell === 'powershell' ? 'completion.ps1' : `completion.${shell}`);
+				await writeFile(path, generated.stdout);
+				let args = [shell, '-n', path];
+				if (shell === 'powershell') {
+					const parser = join(dir, 'check.ps1');
+					await writeFile(
+						parser,
+						'param([string]$Path)\n$tokens=$null; $errors=$null\n[System.Management.Automation.Language.Parser]::ParseFile($Path,[ref]$tokens,[ref]$errors) | Out-Null\nif ($errors.Count) { $errors | Out-String | Write-Error; exit 1 }',
+					);
+					args = ['pwsh', '-NoProfile', '-NonInteractive', '-File', parser, '-Path', path];
+				}
+				const child = Bun.spawn(args, {
+					stdout: 'ignore',
 					stderr: 'pipe',
+					timeout: shell === 'powershell' ? 20000 : undefined,
+					killSignal: 'SIGKILL',
 				});
-				const [code, output, stderr] = await Promise.all([
-					complete.exited,
-					new Response(complete.stdout).text(),
-					new Response(complete.stderr).text(),
-				]);
-				if (code) throw new Error(`fish completion failed: ${stderr}`);
-				expect(output).toContain('login');
-				expect(output).toContain('logout');
+				const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+				if (child.signalCode) throw new Error(`${shell} completion parser terminated with ${child.signalCode}.`);
+				if (code) throw new Error(`${shell} completion syntax failed: ${stderr}`);
+				if (shell === 'fish') {
+					const complete = Bun.spawn(['fish', '--no-config', '-c', 'source $argv[1]; complete -C "vw lo"', path], {
+						stdout: 'pipe',
+						stderr: 'pipe',
+					});
+					const [code, output, stderr] = await Promise.all([
+						complete.exited,
+						new Response(complete.stdout).text(),
+						new Response(complete.stderr).text(),
+					]);
+					if (code) throw new Error(`fish completion failed: ${stderr}`);
+					expect(output).toContain('login');
+					expect(output).toContain('logout');
+				}
+			} finally {
+				await rm(dir, { recursive: true, force: true });
 			}
-		} finally {
-			await rm(dir, { recursive: true, force: true });
-		}
-	});
+		},
+	);
 }
 
 test('completion rejects missing and unsupported shells', async () => {

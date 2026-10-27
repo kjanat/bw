@@ -66,6 +66,9 @@ function decodedSend(raw: JsonObject, seed: Uint8Array, server?: string): JsonOb
 	const decode = (value: unknown) => value == null ? null : decrypt(text(value), key).toString('utf8');
 	try {
 		const result: JsonObject = { ...raw, name: decode(raw.name) };
+		result.emails = typeof raw.emails === 'string'
+			? raw.emails.split(',').map(email => email.trim()).filter(Boolean)
+			: [];
 		if (raw.notes != null) result.notes = decode(raw.notes);
 		if (raw.type === 0) result.text = { ...object(raw.text), text: decode(object(raw.text).text) };
 		else if (raw.type === 1) result.file = { ...object(raw.file), fileName: decode(object(raw.file).fileName) };
@@ -85,13 +88,18 @@ function decodedSend(raw: JsonObject, seed: Uint8Array, server?: string): JsonOb
 	}
 }
 function validate(input: SendInput, requireFutureDeletion = false): void {
-	if (input.type !== 0 && input.type !== 1) throw new Error('Vaultwarden supports text and file Sends only.');
+	if (input.type !== 0 && input.type !== 1) throw new Error('This server accepts text and file Sends only.');
 	if (typeof input.name !== 'string' || !input.name.trim()) throw new Error('A Send name is required.');
-	// Send responses default to emails: []; accept that round-trip value, but never send it to Vaultwarden.
-	if (input.emails != null && (!Array.isArray(input.emails) || input.emails.length > 0)) {
-		throw new Error('Vaultwarden does not support email-verification Sends.');
+	if (
+		input.emails != null && (!Array.isArray(input.emails)
+			|| input.emails.some(email => typeof email !== 'string' || !email.trim() || email.includes(',')))
+	) {
+		throw new Error('Invalid Send recipient email list.');
 	}
 	if (input.password != null && typeof input.password !== 'string') throw new Error('Invalid Send password.');
+	if ((input.emails?.length ?? 0) > 0 && input.password != null && input.password.trim() !== '') {
+		throw new Error('Send password and email verification are mutually exclusive.');
+	}
 	if (input.notes != null && typeof input.notes !== 'string') throw new Error('Invalid Send notes.');
 	for (const flag of ['disabled', 'hideEmail']) {
 		if (input[flag] != null && typeof input[flag] !== 'boolean') throw new Error(`Invalid Send ${flag}.`);
@@ -197,6 +205,10 @@ export class SendService {
 		let encrypted: Buffer | undefined;
 		try {
 			validate(input, id === undefined);
+			const emails = input.emails?.map(email => email.trim()).filter(Boolean) ?? [];
+			if (emails.length > 0 && await this.client.isVaultwardenServer()) {
+				throw new Error('Vaultwarden does not support email-verification Sends.');
+			}
 			key = deriveSendKey(seed);
 			const enc = (value: string) => encrypt(Buffer.from(value), key!);
 			const data: JsonObject = {
@@ -210,7 +222,12 @@ export class SendService {
 				disabled: input.disabled ?? false,
 				hideEmail: input.hideEmail ?? false,
 			};
-			if (input.password != null && input.password !== '') data.password = hashSendPassword(input.password, seed);
+			if (emails.length > 0) {
+				data.emails = emails.join(',').toLowerCase();
+				data.password = null;
+			} else if (input.password != null && input.password !== '') {
+				data.password = hashSendPassword(input.password, seed);
+			}
 			if (input.type === 0) data.text = { text: enc(input.text!.text), hidden: input.text!.hidden ?? false };
 			else if (!id) {
 				if (contents === undefined || !input.file?.fileName) throw new Error('A Send file and filename are required.');
@@ -230,10 +247,27 @@ export class SendService {
 			const raw = object(upload.sendResponse);
 			const sendId = text(raw.id);
 			try {
-				if (upload.fileUploadType !== 0) throw new Error('Unsupported Send upload storage type.');
-				const form = new FormData();
-				form.set('data', new Blob([new Uint8Array(encrypted!)]), text(object(data.file).fileName));
-				await this.client.uploadSend(this.accessToken, sendId, text(object(raw.file).id), form);
+				if (upload.fileUploadType === 0) {
+					const form = new FormData();
+					form.set('data', new Blob([new Uint8Array(encrypted!)]), text(object(data.file).fileName));
+					await this.client.uploadSend(this.accessToken, sendId, text(object(raw.file).id), form);
+				} else if (upload.fileUploadType === 1) {
+					const fileId = text(object(raw.file).id);
+					await this.client.uploadAzureFile(
+						text(upload.url),
+						encrypted!,
+						async () =>
+							text(
+								(await this.client.api(
+									this.accessToken,
+									'GET',
+									`/sends/${encodeURIComponent(sendId)}/file/${encodeURIComponent(fileId)}`,
+								)).url,
+							),
+					);
+				} else {
+					throw new Error('Unsupported Send upload storage type.');
+				}
 			} catch {
 				try {
 					await this.client.api(this.accessToken, 'DELETE', `/sends/${encodeURIComponent(sendId)}`);

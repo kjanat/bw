@@ -194,6 +194,29 @@ export async function encryptSharedKey(key: Uint8Array, publicKey: string): Prom
 	}
 }
 
+/** Re-encrypt a recovery-wrapped user key for a trusted device during organization approval. */
+export async function encryptApprovedUserKey(
+	resetPasswordKey: string,
+	encryptedOrganizationPrivateKey: string,
+	organizationKey: Uint8Array,
+	devicePublicKey: string,
+): Promise<string> {
+	if (organizationKey.length !== 64) throw new Error('Expected a 512-bit organization key.');
+	let organizationPrivateKey: Buffer | undefined;
+	let userKey: Buffer | undefined;
+	try {
+		organizationPrivateKey = decrypt(encryptedOrganizationPrivateKey, organizationKey);
+		userKey = await decryptSharedKey(resetPasswordKey, organizationPrivateKey);
+		if (userKey.length !== 64) throw new Error('Unsupported recovered user key length.');
+		return await encryptSharedKey(userKey, devicePublicKey);
+	} catch {
+		throw new Error('Could not prepare the trusted-device approval key.');
+	} finally {
+		organizationPrivateKey?.fill(0);
+		userKey?.fill(0);
+	}
+}
+
 /** Bitwarden binary attachments: type byte, 16-byte IV, 32-byte MAC, then ciphertext. */
 export function encryptAttachment(value: Uint8Array, key: Uint8Array): Buffer {
 	const parts = encrypt(value, key).slice(2).split('|');

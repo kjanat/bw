@@ -5,6 +5,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { writeTestCertificate } from '#test/fixtures/tls';
+import { registrationVerificationToken } from '#test/fixtures/registration';
 
 const server = process.env.VW_TEST_SERVER;
 const live = server ? test : test.skip;
@@ -91,7 +92,7 @@ live('focused external import matches the independent bw importer', async () => 
 					},
 					kdf: kdf.type,
 					kdfIterations: kdf.iterations,
-					emailVerificationToken: await verify.text(),
+					emailVerificationToken: await registrationVerificationToken(verify),
 				}),
 			});
 			expect(registered.status).toBe(200);

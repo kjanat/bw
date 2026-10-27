@@ -37,6 +37,7 @@
 		"@types/bun": "catalog:",
 		"@vw/typescript-config": "workspace:*",
 		"eslint": "catalog:",
+		"fflate": "catalog:",
 		"micro509": "catalog:",
 		"typescript": "catalog:"
 	},

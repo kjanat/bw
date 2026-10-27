@@ -4,6 +4,8 @@ import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:net';
+import { spawn } from 'node:child_process';
+import { runCapturedProcess } from '#test/process';
 import {
 	ApiError,
 	VaultwardenClient,
@@ -21,9 +23,19 @@ import {
 	createAccountKeyMaterial,
 } from '@kjanat/vaultwarden';
 import { writeTestCertificate } from '#test/fixtures/tls';
+import { registrationVerificationToken } from '#test/fixtures/registration';
 
 const server = process.env.VW_TEST_SERVER;
 const live = server ? test : test.skip;
+async function waitForTotpWindowStart(): Promise<void> {
+	const elapsed = Date.now() % 30000;
+	const delay = elapsed < 5000 ? 5000 - elapsed : 0;
+	if (delay) await new Promise(resolve => setTimeout(resolve, delay));
+}
+async function waitForNextTotpWindow(): Promise<void> {
+	const elapsed = Date.now() % 30000;
+	await new Promise(resolve => setTimeout(resolve, 35000 - elapsed));
+}
 live('real Vaultwarden: recovery-code challenge through the production library', async () => {
 	const location = new URL(server!);
 	if (location.protocol !== 'http:' || location.hostname !== '127.0.0.1') {
@@ -49,7 +61,7 @@ live('real Vaultwarden: recovery-code challenge through the production library',
 			keys: { publicKey: material.publicKey, encryptedPrivateKey: material.encryptedPrivateKey },
 			kdf: kdf.type,
 			kdfIterations: kdf.iterations,
-			emailVerificationToken: await verify.json(),
+			emailVerificationToken: await registrationVerificationToken(verify),
 		});
 		expect(registered.status).toBe(200);
 		const client = new VaultwardenClient(server!);
@@ -57,6 +69,7 @@ live('real Vaultwarden: recovery-code challenge through the production library',
 		const proof = { masterPasswordHash: material.masterPasswordHash };
 		const setup = await client.api(initial.accessToken, 'POST', '/two-factor/get-authenticator', proof);
 		const secret = text(field(object(setup.authenticator ?? setup), 'key'));
+		await waitForTotpWindowStart();
 		await client.api(initial.accessToken, 'PUT', '/two-factor/authenticator', {
 			...proof,
 			key: secret,
@@ -126,7 +139,7 @@ live('real Vaultwarden: authentication, external imports, and REST compatibility
 		})(),
 		kdf: kdf.type,
 		kdfIterations: kdf.iterations,
-		emailVerificationToken: await verify.json(),
+		emailVerificationToken: await registrationVerificationToken(verify),
 	});
 	expect(registered.status).toBe(200);
 	const client = new VaultwardenClient(server!);
@@ -135,9 +148,10 @@ live('real Vaultwarden: authentication, external imports, and REST compatibility
 		masterPasswordHash: hash,
 	});
 	const secret = text(field(object(setup.authenticator ?? setup), 'key'));
+	await waitForTotpWindowStart();
 	await client.api(initial.accessToken, 'PUT', '/two-factor/authenticator', {
 		key: secret,
-		token: totp(secret, Date.now() - 30000),
+		token: totp(secret),
 		userVerificationToken: setup.userVerificationToken,
 		masterPasswordHash: hash,
 	});
@@ -148,7 +162,7 @@ live('real Vaultwarden: authentication, external imports, and REST compatibility
 			challenges++;
 			expect(challenge.providers).toContain(0);
 			await expect(challenge.requestEmail()).rejects.toThrow('unavailable');
-			return { provider: 0, token: totp(secret) };
+			return { provider: 0, token: totp(secret, Date.now() + 30000) };
 		},
 	});
 	expect(challenges).toBe(1);
@@ -160,19 +174,10 @@ live('real Vaultwarden: authentication, external imports, and REST compatibility
 	}
 	const dir = await mkdtemp(join(tmpdir(), 'vw-live-challenge-'));
 	const executable = new URL('../dist/main.js', import.meta.url).pathname;
-	async function run(args: string[], importPassword?: string) {
-		const child = Bun.spawn(['node', executable, ...args], {
+	const run = (args: string[], importPassword?: string) =>
+		runCapturedProcess(['node', executable, ...args], {
 			env: { PATH: process.env.PATH, VW_APPDATA_DIR: dir, VW_PASSWORD: password, VW_IMPORT_PASSWORD: importPassword },
-			stdout: 'pipe',
-			stderr: 'pipe',
 		});
-		const [code, stdout, stderr] = await Promise.all([
-			child.exited,
-			new Response(child.stdout).text(),
-			new Response(child.stderr).text(),
-		]);
-		return { code, stdout, stderr };
-	}
 	try {
 		expect(
 			(await run(['config', 'server', server!, '--api', `${server}/api`, '--identity', `${server}/identity`])).code,
@@ -180,6 +185,7 @@ live('real Vaultwarden: authentication, external imports, and REST compatibility
 		const missing = await run(['login', email, '--nointeraction']);
 		expect(missing.code).toBe(1);
 		expect(missing.stderr).toContain('Two-factor authentication is required');
+		await waitForNextTotpWindow();
 		const login = await run([
 			'login',
 			email,
@@ -199,8 +205,7 @@ live('real Vaultwarden: authentication, external imports, and REST compatibility
 		if (!address || typeof address === 'string') throw new Error('Could not reserve a local API port.');
 		const servePort = address.port;
 		await new Promise<void>((resolve, reject) => portProbe.close(error => error ? reject(error) : resolve()));
-		const serving = Bun.spawn([
-			'node',
+		const serving = spawn('node', [
 			executable,
 			'serve',
 			'--hostname',
@@ -210,21 +215,20 @@ live('real Vaultwarden: authentication, external imports, and REST compatibility
 			'--session',
 			login.stdout.trim(),
 		], {
+			detached: true,
 			env: { PATH: process.env.PATH, VW_APPDATA_DIR: dir },
-			stdout: 'pipe',
-			stderr: 'pipe',
+			stdio: ['ignore', 'ignore', 'pipe'],
 		});
 		const ready = Promise.withResolvers<string>();
 		let diagnostic = '';
-		const stderr = (async () => {
-			for await (const part of serving.stderr) {
-				diagnostic += new TextDecoder().decode(part);
-				const address = diagnostic.match(/Listening on (http:\/\/127\.0\.0\.1:\d+)/);
-				if (address) ready.resolve(address[1]!);
-			}
-		})();
-		void serving.exited.then(() => ready.reject(new Error(`Local API exited before listening. ${diagnostic}`)));
-		const stdout = new Response(serving.stdout).text();
+		serving.stderr?.setEncoding('utf8');
+		serving.stderr?.on('data', (part: string) => {
+			diagnostic += part;
+			const address = diagnostic.match(/Listening on (http:\/\/127\.0\.0\.1:\d+)/);
+			if (address) ready.resolve(address[1]!);
+		});
+		serving.once('error', error => ready.reject(error));
+		serving.once('exit', () => ready.reject(new Error(`Local API exited before listening. ${diagnostic}`)));
 		const deadline = setTimeout(() => ready.reject(new Error('Local API did not start.')), 5000);
 		try {
 			const base = await ready.promise;
@@ -234,6 +238,7 @@ live('real Vaultwarden: authentication, external imports, and REST compatibility
 					method,
 					headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
 					body: body === undefined ? undefined : JSON.stringify(body),
+					signal: AbortSignal.timeout(10000),
 				});
 			expect(await (await call('/status')).json()).toMatchObject({
 				success: true,
@@ -365,6 +370,7 @@ live('real Vaultwarden: authentication, external imports, and REST compatibility
 							const native = await official(['list', 'items', ...filter], referenceSession);
 							expect(ids(own.stdout), `list items ${filter.join(' ')}`).toEqual(ids(native));
 						}
+						if (process.env.VW_TEST_LIST_FILTERS_ONLY === '1') return;
 					}
 					const prefix = `csv${randomUUID().replaceAll('-', '').slice(0, 8)}`;
 					const csvCases: { format: string; rows: string[][] }[] = [
@@ -424,7 +430,7 @@ live('real Vaultwarden: authentication, external imports, and REST compatibility
 								'http://sn',
 								'',
 								'',
-								'NoteType:Credit Card\nNumber:4111111111111111\nName on Card:Alice\nSecurity Code:123\nExpiration Date:June,2030\nIssuer:Example\nNotes:card note\ncontinued:kept',
+								'NoteType:Credit Card\nNumber:4111111111111111\nName on Card:Alice\nSecurity Code:123\nExpiration Date:June,2030\nIssuer:Example\nNotes:card note\ncontinued:marker',
 								`${prefix} Card`,
 								`${prefix} Folder`,
 								'0',
@@ -433,7 +439,7 @@ live('real Vaultwarden: authentication, external imports, and REST compatibility
 								'http://sn',
 								'',
 								'',
-								'NoteType:Address\nFirst Name:Alice\nLast Name:Example\nUnknown:preserved',
+								'NoteType:Address\nFirst Name:Alice\nLast Name:Example\nUnknown:marker',
 								`${prefix} Identity`,
 								'(none)',
 								'0',
@@ -1898,7 +1904,7 @@ live('real Vaultwarden: authentication, external imports, and REST compatibility
 						)
 						: undefined;
 					// The managed compatibility runner uses a disposable server and account.
-					// Keep imported records isolated by ID instead of spawning a CLI process
+					// Address imported records by ID instead of spawning a CLI process
 					// to delete every item and folder after every importer case.
 					const importedItemIds = new Set<string>();
 					for (const [index, importCase] of importCases.entries()) {
@@ -1972,76 +1978,143 @@ live('real Vaultwarden: authentication, external imports, and REST compatibility
 					if (!address || typeof address === 'string') throw new Error('Missing reference listener address.');
 					const referencePort = address.port;
 					await new Promise<void>(resolve => reservation.close(() => resolve()));
-					const reference = Bun.spawn([
-						process.env.VW_TEST_BW!,
+					const reference = spawn(process.env.VW_TEST_BW!, [
 						'serve',
 						'--hostname',
 						'127.0.0.1',
 						'--port',
 						String(referencePort),
 					], {
+						detached: true,
 						env: {
 							PATH: process.env.PATH,
 							BITWARDENCLI_APPDATA_DIR: referenceDirectory,
 							BW_SESSION: referenceSession,
 							NODE_EXTRA_CA_CERTS: ca,
 						},
-						stdout: 'pipe',
-						stderr: 'pipe',
-						stdin: 'ignore',
+						stdio: ['ignore', 'ignore', 'pipe'],
 					});
-					const referenceOut = new Response(reference.stdout).text(),
-						referenceError = new Response(reference.stderr).text();
+					let referenceDiagnostic = '';
+					reference.stderr?.setEncoding('utf8');
+					reference.stderr?.on('data', (part: string) => {
+						referenceDiagnostic += part;
+					});
 					const referenceBase = `http://127.0.0.1:${referencePort}`;
+					const referenceRequest = (path: string, init: RequestInit = {}) =>
+						fetch(`${referenceBase}${path}`, {
+							...init,
+							signal: init.signal ?? AbortSignal.timeout(10000),
+						});
 					try {
 						const deadline = Date.now() + 15000;
 						let ready = false;
-						while (Date.now() < deadline) {
+						while (
+							Date.now() < deadline && reference.exitCode === null && reference.signalCode === null
+						) {
 							try {
-								if ((await fetch(`${referenceBase}/status`)).ok) {
+								if ((await referenceRequest('/status', { signal: AbortSignal.timeout(500) })).ok) {
 									ready = true;
 									break;
 								}
 							} catch { /* Wait for the known child to bind. */ }
 							await Bun.sleep(50);
 						}
-						expect(ready).toBe(true);
-						const nativeStatus = await (await fetch(`${referenceBase}/status`)).json();
+						if (!ready) {
+							throw new Error(
+								`Reference Serve did not become ready (exit ${reference.exitCode}, signal ${reference.signalCode}): `
+									+ referenceDiagnostic,
+							);
+						}
+						const nativeStatus = await (await referenceRequest('/status')).json();
 						const ownStatus = await (await call('/status')).json();
 						expect(ownStatus.data.object).toBe(nativeStatus.data.object);
 						expect(ownStatus.data.template.status).toBe(nativeStatus.data.template.status);
-						const nativeItem = await (await fetch(`${referenceBase}/object/item/${itemId}`)).json();
+						const nativeItem = await (await referenceRequest(`/object/item/${itemId}`)).json();
 						const ownItem = await (await call(`/object/item/${itemId}`)).json();
 						expect(ownItem.data.object).toBe(nativeItem.data.object);
 						expect(ownItem.data.id).toBe(nativeItem.data.id);
 						expect(ownItem.data.login.password).toBe(nativeItem.data.login.password);
-						expect(ownItem.data).toEqual(nativeItem.data);
+						expect(ownItem.data).not.toHaveProperty('key');
+						const referenceItemData = { ...nativeItem.data };
+						delete referenceItemData.key;
+						expect(ownItem.data).toEqual(referenceItemData);
 						expect(
 							await (await call(`/object/item/${itemId}`, 'PUT', { ...ownItem.data, name: 'REST revision round-trip' }))
 								.json(),
 						).toMatchObject({ success: true, data: { name: 'REST revision round-trip' } });
 						expect(await (await call(`/object/password/${itemId}`)).json()).toEqual(
-							await (await fetch(`${referenceBase}/object/password/${itemId}`)).json(),
+							await (await referenceRequest(`/object/password/${itemId}`)).json(),
 						);
+						const errorRequests: [string, string, unknown?][] = [
+							['GET', '/list/object/missing'],
+							['GET', '/object/missing/synthetic-id'],
+							['POST', '/object/missing', {}],
+							['DELETE', '/object/missing/synthetic-id'],
+							['GET', '/object/item/00000000-0000-0000-0000-000000000099'],
+							['GET', '/object/folder/no-such-folder'],
+							['GET', '/object/collection/no-such-collection'],
+							['GET', '/object/organization/no-such-organization'],
+							['GET', '/object/password/00000000-0000-0000-0000-000000000099'],
+						];
+						for (const [method, path, body] of errorRequests) {
+							const [nativeError, ownError] = await Promise.all([
+								referenceRequest(path, {
+									method,
+									...(body === undefined ? {} : {
+										headers: { 'Content-Type': 'application/json' },
+										body: JSON.stringify(body),
+									}),
+								}),
+								call(path, method, body),
+							]);
+							expect(ownError.status).toBe(nativeError.status);
+							expect(await ownError.json()).toEqual(await nativeError.json());
+						}
 						const fileSend = {
 							type: 1,
 							name: 'Unsupported through REST',
 							deletionDate: new Date(Date.now() + 86400000).toISOString(),
-							file: { fileName: '/etc/passwd' },
+							file: { fileName: 'synthetic-path-that-must-not-be-opened' },
 						};
-						const nativeRejected = await fetch(`${referenceBase}/object/send`, {
-							method: 'POST',
-							headers: { 'Content-Type': 'application/json' },
-							body: JSON.stringify(fileSend),
-						});
 						const ownRejected = await call('/object/send', 'POST', fileSend);
-						expect(ownRejected.status).toBe(nativeRejected.status);
-						expect(await ownRejected.json()).toEqual(await nativeRejected.json());
+						expect(ownRejected.status).toBe(400);
+						expect(await ownRejected.json()).toEqual({
+							success: false,
+							message: 'Creating a file-based Send is unsupported through the `serve` command at this time.',
+						});
+						for (const names of [['file', 'file'], ['file', 'unexpected']] as const) {
+							const makeForm = () => {
+								const form = new FormData();
+								for (const [index, name] of names.entries()) {
+									form.append(name, new Blob([`synthetic upload ${index}`]), `probe-${index}.bin`);
+								}
+								return form;
+							};
+							const nativeUpload = await referenceRequest(`/attachment?itemid=${itemId}`, {
+								method: 'POST',
+								body: makeForm(),
+							});
+							const ownUpload = await fetch(`${base}/attachment?itemid=${itemId}`, {
+								method: 'POST',
+								body: makeForm(),
+								signal: AbortSignal.timeout(10000),
+							});
+							expect(nativeUpload.ok).toBe(false);
+							expect(ownUpload.status).toBe(400);
+							const ownAfter = await (await call(`/object/item/${itemId}`)).json();
+							const nativeAfter = await (await referenceRequest(`/object/item/${itemId}`)).json();
+							expect(ownAfter.data.attachments).toEqual(ownItem.data.attachments);
+							expect(nativeAfter.data.attachments).toEqual(nativeItem.data.attachments);
+						}
 					} finally {
-						reference.kill('SIGTERM');
-						await reference.exited;
-						await referenceOut;
-						await referenceError;
+						if (reference.pid !== undefined) {
+							try {
+								process.kill(process.platform === 'win32' ? reference.pid : -reference.pid, 'SIGTERM');
+							} catch { /* The reference process group has already exited. */ }
+						}
+						if (reference.exitCode === null && reference.signalCode === null) {
+							await new Promise<void>(resolve => reference.once('exit', () => resolve()));
+						}
 					}
 				} finally {
 					proxy.stop(true);
@@ -2051,10 +2124,14 @@ live('real Vaultwarden: authentication, external imports, and REST compatibility
 			expect((await call(`/object/folder/${folderId}`, 'DELETE')).status).toBe(200);
 		} finally {
 			clearTimeout(deadline);
-			serving.kill('SIGTERM');
-			await serving.exited;
-			await stderr;
-			await stdout;
+			if (serving.pid !== undefined) {
+				try {
+					process.kill(process.platform === 'win32' ? serving.pid : -serving.pid, 'SIGTERM');
+				} catch { /* The local API process group has already exited. */ }
+			}
+			if (serving.exitCode === null && serving.signalCode === null) {
+				await new Promise<void>(resolve => serving.once('exit', () => resolve()));
+			}
 		}
 		expect((await run(['config', 'server', server!])).code).toBe(1);
 		expect((await run(['logout'])).code).toBe(0);

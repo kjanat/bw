@@ -16,7 +16,7 @@ export class SsoAuthorizationDeclinedError extends Error {
 		this.name = 'SsoAuthorizationDeclinedError';
 	}
 }
-/** Begin a Vaultwarden SSO flow. The caller keeps this short-lived object out of persistent storage. */
+/** Begin a Vaultwarden SSO flow. The caller must not write this short-lived object to persistent storage. */
 export async function createSsoAuthorization(
 	client: VaultwardenClient,
 	redirectUri: string,

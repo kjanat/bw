@@ -11,7 +11,7 @@ import { transformItem } from '#item-codec';
 const fixture = (file: string) =>
 	readFile(new URL(`../../../apps/cli/test/fixtures/onepassword/${file}`, import.meta.url), 'utf8');
 const pif = await fixture('legacy.1pif'), mac = await fixture('mac.csv'), windows = await fixture('windows.csv');
-test('1PIF standard and OPVault records preserve mapped data and exclude trash', () => {
+test('1PIF standard and OPVault records import mapped data and exclude trash', () => {
 	const result = parseOnePassword1Pif(pif), items = result.items as JsonObject[];
 	expect(items).toHaveLength(7);
 	expect(items.map(i => i.type)).toEqual([1, 3, 4, 2, 1, 3, 4]);
@@ -130,7 +130,7 @@ for (const format of ['1passwordmaccsv', '1passwordwincsv'] as const) {
 	});
 }
 
-test('Windows CSV infers card/identity types and retains multiline addresses', () => {
+test('Windows CSV infers card/identity types and supports multiline addresses', () => {
 	const items = parseOnePasswordCsv('1passwordwincsv', windows).items as JsonObject[];
 	expect(items).toHaveLength(3);
 	expect(items.map(i => i.type)).toEqual([1, 3, 4]);
@@ -145,7 +145,7 @@ test('Windows CSV infers card/identity types and retains multiline addresses', (
 	expect(items[2]!.identity).toEqual({ firstName: 'Bob', lastName: 'Example', email: 'bob@example.com' });
 	expect(items[2]!.notes).toBe('\n\naddress: Test street 1\nTest city\n');
 });
-test('Legacy CSV singular URLs are preserved, aliases stay case insensitive, malformed CSV fails', () => {
+test('Legacy CSV singular URLs stay intact, aliases stay case insensitive, malformed CSV fails', () => {
 	const parsed = parseOnePasswordCsv('1passwordmaccsv', 'TITLE,URL,USERNAME\nExample,example.com,alice\n');
 	expect((parsed.items as JsonObject[])[0]!.login).toMatchObject({
 		username: 'alice',
@@ -153,9 +153,9 @@ test('Legacy CSV singular URLs are preserved, aliases stay case insensitive, mal
 	});
 	expect(parseOnePasswordCsv('1passwordwincsv', 'Title,Username\n,skip\n').items).toEqual([]);
 	expect(
-		(parseOnePasswordCsv('1passwordmaccsv', 'Title,NotesPlain,Notes\nExample,  ,kept\n').items as JsonObject[])[0]!
+		(parseOnePasswordCsv('1passwordmaccsv', 'Title,NotesPlain,Notes\nExample,  ,sample\n').items as JsonObject[])[0]!
 			.notes,
-	).toBe('\nkept\n');
+	).toBe('\nsample\n');
 	for (const source of ['name,password\na,b', 'Title,title\na,b', 'Title,Username\na', 'Title\n"unfinished']) {
 		expect(() => parseOnePasswordCsv('1passwordmaccsv', source)).toThrow();
 	}

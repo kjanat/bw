@@ -41,46 +41,56 @@ node apps/cli/dist/main.js logout
 ```
 
 `--quiet` suppresses command results on stdout and command-error diagnostics on
-stderr, including raw secrets, attachment bytes, and raw exports. It preserves
-operations and exit codes: downloads to `--output` still write their files.
-Help/version output and argument-parser errors remain visible, matching the
-reference's separate command/parser paths. `VW_QUIET=true` supplies the default;
-`--quiet=false` overrides it. A literal `--quiet` after `--` remains data.
-`--pretty` formats structured JSON with two-space indentation; raw secret,
-attachment, export, and text output retain their exact bytes. It works before
-or after a command, including nested commands. `VW_PRETTY=true` sets the default
-and `--pretty=false` overrides it. `--response` emits success/data and
-failure/message JSON envelopes; exact response payload parity for every command
-is still under audit. `--cleanexit` makes command errors return status 0; `--cleanexit=false`
-restores the normal failure status, and `BW_CLEANEXIT` supplies the default.
+stderr, including raw secrets, attachment bytes, and raw exports. Downloads to
+`--output` still write files, and command exit codes do not change. Help, version,
+and argument-parser errors stay visible, matching the reference CLI. Set
+`VW_QUIET=true` for the default; pass `--quiet=false` to override it. After `--`,
+`--quiet` is treated as an argument.
+`--pretty` formats structured JSON with two-space indentation. Raw secrets,
+attachments, exports, and text bypass formatting and write their original bytes.
+The flag works before or after a command, including nested commands.
+`VW_PRETTY=true` sets the default and `--pretty=false` overrides it.
+`--response` emits success/data and failure/message JSON envelopes. Response
+payloads for some commands still need parity checks. `--cleanexit` makes command
+errors return status 0; `--cleanexit=false`
+restores the normal failure status. `VW_CLEANEXIT` and `BW_CLEANEXIT` accept
+`true` or `false` as the default.
 Equivalent `BW_*` variables are accepted as fallbacks for the corresponding
-`VW_*` session, password, email, 2FA, API-key, import/export-password, pretty,
+`VW_*` session, password, email, 2FA, API-key, import/export/Send-password, pretty,
 quiet, no-interaction, clean-exit, and response settings; an explicitly set `VW_*` value takes
 precedence.
 
-The CLI uses the published `@kjanat/dreamcli` 4.2.0 release, recorded in the
-Bun lockfile. The CLI uses its prompt session and
-password factory for master passwords, API secrets, verification codes, Send
-passwords, and protected import passwords; no Inquirer dependency is needed.
-Secret entry preserves whitespace, suppresses echo, and restores terminal state
-after answering or cancellation. Cancelling login exits 130 without authenticating.
+Environment reads have five roles:
+
+| Values                                                                                                                                                                                                                 | Read path                                                                                                                 | Purpose                                                                                                                 |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `VW_SESSION`, `VW_PASSWORD`, `VW_EMAIL`, `VW_2FA_TOKEN`, `VW_CLIENTID`, `VW_CLIENTSECRET`, `VW_IMPORT_PASSWORD`, `VW_EXPORT_PASSWORD`, `VW_SEND_PASSWORD`, `VW_SERVE_TOKEN`, `VW_PRETTY`, `VW_RAW`, `VW_NOINTERACTION` | DreamCLI `.env()` bindings on command inputs; `cli('vw').envPrefix('VW_')` maps `.env('SERVE_TOKEN')` to `VW_SERVE_TOKEN` | Resolve fixed-name command inputs. Credential values also use `.sensitive()` so parser diagnostics omit them.           |
+| `VW_CLEANEXIT`, `VW_RESPONSE`, `VW_NOINTERACTION`, `VW_QUIET` and their `BW_*` aliases                                                                                                                                 | `apps/cli/src/main.ts`                                                                                                    | Apply process-wide exit, response, prompt, and output behavior before command execution.                                |
+| Names supplied to `--passwordenv`, `--clientidenv`, and `--clientsecretenv`                                                                                                                                            | `apps/cli/src/auth-input.ts`, `tool-commands.ts`, and `send-commands.ts`                                                  | Read a variable chosen at runtime; `.env()` takes a fixed name declared in the command schema.                          |
+| `VW_APPDATA_DIR`, `BITWARDENCLI_APPDATA_DIR`, `XDG_CONFIG_HOME`                                                                                                                                                        | `apps/cli/src/store.ts`                                                                                                   | Select the local account-state directory; `VW_APPDATA_DIR` wins, then the Bitwarden CLI variable, then the XDG default. |
+| `PATH`                                                                                                                                                                                                                 | `apps/cli/src/webauthn.ts`                                                                                                | Give the system WebAuthn helper access to installed commands.                                                           |
+
+The CLI depends on `@kjanat/dreamcli` 5.0.0, as recorded in the Bun lockfile. Its
+prompt session and password factory handle master passwords, API secrets,
+verification codes, Send passwords, and protected-import passwords. The hidden
+prompt accepts whitespace as entered and restores terminal state after submission
+or cancellation. Cancelling login exits with status 130 before authentication.
 
 Password login syncs the vault, unlocks it, and prints a session token. `--raw`
 prints only that token. Login and unlock accept a positional password,
 `--passwordfile PATH` (first line), or `--passwordenv NAME` (default `VW_PASSWORD`),
 in that order of precedence. Without a supplied password they prompt on an
-interactive terminal; `--nointeraction` disables prompting. Passwords are never
-persisted. An omitted login email comes from `VW_EMAIL` or an interactive prompt.
+interactive terminal; `--nointeraction` disables prompting. The CLI does not
+store master passwords. An omitted login email comes from `VW_EMAIL` or a prompt.
 `login --check` checks authentication; `unlock --check --session TOKEN` checks a
 local unlock token without prompting or changing it.
-For two-factor login, supply `--method 0 --code TOKEN` (TOTP), or another supported
-provider ID; `VW_2FA_TOKEN` can supply the code. On an interactive terminal, a
-server challenge offers TOTP, email, Duo, YubiKey OTP, WebAuthn, or recovery code
-when Vaultwarden reports that provider and required challenge data. With multiple
-supported methods, select one; `--method` can select it in advance. Selecting
-email requests a login code before prompting. `--nointeraction` requires an
-explicit method and code and never initiates an email request. Codes and recovery
-codes use hidden entry.
+For two-factor login, pass `--method 0 --code TOKEN` for TOTP, or use another
+provider ID. `VW_2FA_TOKEN` supplies the code. On an interactive terminal, the
+CLI offers methods that Vaultwarden reports with the required challenge data:
+TOTP, email, Duo, YubiKey OTP, WebAuthn, and recovery code. Choose one from the
+prompt or pass `--method` in advance. Email selection requests a login code
+before prompting. With `--nointeraction`, pass both the method and code; the CLI
+does not request an email code. Code entry is hidden.
 
 Use `login --sso [organization-identifier]` for an existing SSO account or a
 Vaultwarden JIT-provisioned account. The CLI opens the authorization URL and
@@ -106,21 +116,22 @@ Library callers can pass a fifth argument to `loginWithPassword(client, email,
 password, twoFactor, { onTwoFactor })`. The callback receives the server's provider
 IDs and an explicit `requestEmail()` operation, without receiving the password
 or password hash. Return `{ provider, token }` to retry once, or throw to cancel.
-Omitting the callback preserves the noninteractive API. TOTP challenge completion
-is live verified. Email challenges are also live verified with a capture-only
-SMTP receiver on Vaultwarden 1.36.0 and 1.37.4 under both PBKDF2 and Argon2id.
+Callers can omit the callback and handle two-factor interaction in their own code.
+TOTP challenge completion is live verified. Email challenges are also live
+verified with a capture-only SMTP receiver on Vaultwarden 1.36.0 and 1.37.4 under
+both PBKDF2 and Argon2id.
 The tests cover a separate verification address, delivered-code login through
 the library and compiled CLI, replay/wrong-code rejection, and noninteractive
 missing-code failure without a new email request.
 
 `vw sync --last` reads the last successful sync timestamp locally, including
 while locked. It requires a logged-in account and makes no server request.
-Ordinary `sync` checks the account revision and retains the cache when unchanged;
-`sync --force` (or `-f`) always downloads the full vault. Both work without an
-unlock token. Failed requests leave the previous successful timestamp intact.
-The saved timestamp records the start of synchronization so concurrent server
-changes remain visible to the next revision check. Mutations and login continue
-to request a full cache refresh.
+Ordinary `sync` checks the account revision and skips the cache write when the
+revisions match. `sync --force` (or `-f`) downloads the full vault. Both work
+without an unlock token. A failed request does not update the last successful timestamp.
+That timestamp marks the start of synchronization, so server changes made during
+the request appear in the next revision check. Mutations and login request a full
+cache refresh.
 
 `vw --version` reports this CLI package's version; `vw sdk-version` reports the
 independent TypeScript library's `SDK_VERSION`. These are separate from the
@@ -130,13 +141,14 @@ so it reports that no public update channel is configured and makes no network
 request. Update checks do not install software or change the vault.
 
 The reference `device-approval` command manages organization SSO trusted-device
-requests. Vaultwarden 1.36.0 and 1.37.4 do not implement that organization API.
-The `list`, `approve`, `deny`, `approve-all`, and `deny-all` subcommands accept
-their organization/request arguments and return an explicit unsupported-capability
-error. Personal `/auth-requests` are a different supported server protocol and
-are not substituted for organization approvals. The library exposes this
-verified disposition through `vaultwardenCapabilities.organizationDeviceApproval`
-and a typed `UnsupportedVaultwardenCapabilityError`.
+requests. On Bitwarden-compatible servers, the CLI lists pending requests and
+can approve or deny them after checking the signed-in organization's password
+management permission. Approval decrypts account-recovery material locally and
+encrypts the user key to the requesting device. Vaultwarden 1.36.0 and 1.37.4
+are identified by `/api/config` and rejected with a typed capability error
+because they do not implement these organization routes. Synthetic API and
+cryptographic tests cover the Bitwarden request flow; live Bitwarden Cloud
+verification has not been run. Personal `/auth-requests` are not substituted.
 
 For installations with separate services, configure their full endpoint URLs:
 
@@ -147,11 +159,12 @@ node apps/cli/dist/main.js config server https://vault.example.com \
   --web-vault https://web.example.com
 ```
 
-API and identity overrides replace the base URL plus `/api` or `/identity`;
-their paths are preserved. Prelogin's legacy API fallback uses the API override.
+API and identity overrides replace the base URL plus `/api` or `/identity`, and
+their configured paths are used as supplied. Prelogin's older API fallback uses
+the API override.
 `--web-vault` supplies the base for generated Send access links. The CLI also
-stores `--icons`, `--notifications`, `--events`, and `--key-connector` URLs;
-operations using those services remain subject to the implementation inventory.
+stores the `--icons`, `--notifications`, `--events`, and `--key-connector` URLs.
+See the implementation inventory for command coverage of those services.
 Read the base with `config server`. Each config update replaces the override
 set, so setting a base URL without flags clears prior overrides. Log out before
 changing any endpoint. All endpoints require HTTPS except HTTP on loopback.
@@ -176,7 +189,8 @@ node apps/cli/dist/main.js get password ITEM_ID
 ```
 
 API-key login uses `VW_CLIENTID` (`user.USER_UUID`) and `VW_CLIENTSECRET`.
-`--clientidenv NAME` and `--clientsecretenv NAME` select other named variables.
+`--clientidenv NAME` and `--clientsecretenv NAME` select other environment
+variables.
 Missing values prompt interactively, with the secret hidden. Only personal user
 API keys can access the vault; organization API keys use a separate server scope.
 The client resolves the email and KDF from authenticated server responses and
@@ -184,12 +198,12 @@ verifies that the profile ID matches the requested API principal. An API key
 retrieves encrypted data; the master password is still needed for unlock.
 
 Vaultwarden returns no refresh token for this grant. The private state file
-therefore retains the client ID and secret, along with the bearer token, so sync
+stores the client ID, client secret, and bearer token so sync
 and other online operations can renew via `client_credentials` while locked.
 The CLI retries sync once after HTTP 401. If renewal returns different wrapped
 key/KDF settings, it invalidates the local cache and unlock session and requires
-a fresh sync and unlock. Logout removes the stored API credentials; it does not
-revoke the API key on the server.
+a fresh sync and unlock. Logout deletes the local API credentials. The API key
+on the server stays active.
 
 ## Vault management
 
@@ -203,7 +217,7 @@ same command pattern applies to items and folders:
 node apps/cli/dist/main.js get template folder
 printf '%s' '{"name":"Work"}' | node apps/cli/dist/main.js encode | node apps/cli/dist/main.js create folder
 node apps/cli/dist/main.js get item ITEM_ID
-# Edit the returned JSON, keeping its revisionDate, then encode it:
+# Edit the returned JSON without changing its revisionDate, then encode it:
 node apps/cli/dist/main.js edit item ITEM_ID ENCODED_JSON
 node apps/cli/dist/main.js archive item ITEM_ID
 node apps/cli/dist/main.js list items --archived
@@ -215,7 +229,7 @@ node apps/cli/dist/main.js delete item ITEM_ID --permanent
 ```
 
 Item writes cover login, secure note, card, identity, and SSH-key data. Edits
-preserve per-item keys and send the caller's revision date to Vaultwarden for
+reuse each item's key and send the caller's revision date to Vaultwarden for
 conflict detection. Successful mutations refresh the encrypted local cache.
 If a server change succeeds but cache refresh fails, the command reports that
 specific outcome and invalidates the cache instead of retrying the write.
@@ -248,6 +262,8 @@ minimums. Without a logged-in cache, generation uses local defaults. Cached
 policies may be stale until the next sync.
 CLI and local API generation read both `policies` and `policiesNew`, with the
 same organization membership exemptions.
+To bound input-driven allocation, password output is limited to 65,536
+characters and passphrases to 8,192 words; larger requests return an error.
 
 Exports support CSV, JSON, account-encrypted JSON, password-encrypted JSON,
 and ZIP with decrypted attachments. Without an export password, encrypted JSON
@@ -284,10 +300,11 @@ SplashID (`splashidcsv`), RememBear (`remembearcsv`), UPM (`upmcsv`), LogMeOnce
 (`passwordagentcsv`), Dashlane (`dashlanecsv`), plaintext
 KeePass 2 XML (`keepass2xml`), encrypted
 KeePass databases (`keepasskdbx`), and
-1Password 8 archives or extracted `export.data` JSON (`1password1pux`), legacy
-1PIF (`1password1pif`), and Mac/Windows CSV (`1passwordmaccsv`, `1passwordwincsv`). Other
-reference adapters remain required work. Items receive fresh encryption keys
-and IDs, and folder/collection relationships are remapped. Imports add data;
+1Password 8 archives or extracted `export.data` JSON (`1password1pux`), 1PIF
+(`1password1pif`), and Mac/Windows CSV (`1passwordmaccsv`, `1passwordwincsv`).
+This CLI supports every import format listed by bw 2026.10.0 and also supports
+`bitwardenzip` for native ZIP backups. Items receive fresh encryption keys and
+IDs, and folder/collection relationships are remapped. Imports add data;
 they do not deduplicate existing items. Personal exports omit organization items
 and trash. Use `--organizationid ORG_ID` for organization imports and exports.
 Organization export uses the server's administrative export endpoint.
@@ -300,7 +317,7 @@ node apps/cli/dist/main.js import 1password1pux ./backup.1pux
 to Vaultwarden's supported item types. Bank accounts become cards with remaining
 values in custom fields; passports and licenses become identities. The first
 tag supplies the folder/collection path, including parent folders. The importer
-preserves favorites, archive state, OTPs, guarded custom fields, and the latest
+copies favorites, archive state, OTPs, guarded custom fields, and the latest
 five password-history records. Ed25519, RSA and NIST P-256/P-384/P-521 PKCS#8 SSH
 keys become OpenSSH keys with derived public keys and SHA256 fingerprints.
 
@@ -309,8 +326,8 @@ Each failed item appears in the import result's optional `errors` array, with
 its source UID and a reason; it creates no dangling folder relationship. ZIP
 input reads only the root `export.data` entry, bounded to 100 MiB, without
 extracting paths. Document binaries are not restored by this reference mapping.
-All accounts and vaults in the source are processed; the pinned reference client
-only reads its first account.
+The importer processes every source account and vault. The reference CLI reads
+only the first account.
 
 ```sh
 node apps/cli/dist/main.js import 1password1pif ./data.1pif
@@ -318,36 +335,36 @@ node apps/cli/dist/main.js import 1passwordmaccsv ./export.csv
 node apps/cli/dist/main.js import 1passwordwincsv ./export.csv
 ```
 
-Legacy 1PIF supports standard and Windows OPVault-shaped records, skips trash,
-and preserves notes, hidden custom fields, OTPs, and up to five password-history
-entries. The source markers and separate JSON records are parsed without
-interpreting the file as a single JSON document. Legacy tags do not create
-folders in these reference mappings. Mac and Windows CSV use their respective
+1PIF imports standard and Windows OPVault-shaped records, skips trash, and adds
+notes, hidden custom fields, OTPs, and up to five password-history entries.
+Source markers and separate JSON records are parsed as a stream, not as one JSON
+document. Tags do not create folders in these reference mappings. Mac and Windows CSV use their respective
 type detection, card expiration and identity headings, including multiline
 Windows addresses. CSV quote escaping uses backslashes for these two adapters;
-other CSV formats retain doubled-quote escaping. Singular `URL` columns are
-preserved, correcting the pinned reference client's unassigned-concatenation
-bug; plural `URLs` columns retain their multiple entries. Library previews are
+other CSV formats use doubled-quote escaping. Singular `URL` columns are
+read correctly, fixing the pinned reference client's unassigned-concatenation
+bug; plural `URLs` columns produce every entry. Library previews are
 available through `parseOnePassword1Pif(text, organization?)` and
 `parseOnePasswordCsv(format, text, organization?)`.
 
-External CSV formats use separate vendor mappings. Literal commas inside a URL
-are preserved. Chrome Android URLs become `androidapp://` URIs; Firefox entry
-names come from hostnames and its internal Firefox Accounts record is skipped.
+External CSV formats use separate vendor mappings. Commas in a URL are parsed
+as URL characters, not CSV separators. Chrome Android URLs become `androidapp://` URIs. Firefox
+entry names come from hostnames; its internal Firefox Accounts entry is skipped.
 Edge, Opera, Vivaldi, and Brave use the Chrome mapping, including notes and
 Android URL handling. Arc derives its entry name from the URL hostname and
-retains notes. Avira maps its `website` column, falls back to a secondary
-username when the primary is blank, and retains the secondary username in notes
+copies notes. Avira maps its `website` column, falls back to a secondary
+username when the primary is blank, and records the secondary username in notes
 when both exist. Passbolt uses the LastPass mapping, including structured notes.
-Safari OTP fields and notes are preserved. KeePassX groups remove the exported
+Safari OTP fields and notes are imported. KeePassX groups drop the exported
 `Root/` prefix and become folders, or collections for organization imports.
 LastPass supports sites, generic secure notes, structured credit-card/address
 notes, and form-fill profiles, including a card accompanying an identity.
 Folder paths, favorites, unknown structured-note fields, and note continuations
-are preserved. Malformed headers or record widths fail before server mutation.
+are imported. The importer rejects malformed headers and row widths before it
+contacts the server.
 
 NordPass CSV maps password, credit-card, identity, and note records, skipping
-unknown types. It retains additional URLs, secret whitespace, custom fields,
+unknown types. It copies additional URLs, secret whitespace, custom fields,
 card expiration, and address data. Hidden custom fields stay hidden unless long
 or multiline: those move into notes following the reference mapping. Folder
 paths become collections for organization imports. Invalid embedded JSON or
@@ -355,16 +372,15 @@ malformed URL/custom-field arrays fail before any upload, even after valid rows.
 
 Encryptr CSV maps password and credit-card records, joins its Notes and Text
 columns with a blank line, and converts other record types or empty passwords
-into secure notes like the reference importer. Card brands and `MM/YY` expiry
+into secure notes, matching the reference importer. Card brands and `MM/YY` expiry
 values are populated from the exported fields.
 
 `parseExternalCsv(format, text, organization?)` lets library callers inspect the
-native document before importing it. The normal import operation encrypts that
-document through the same bulk pipeline as Bitwarden JSON. LastPass HTML files
-extract and decode the CSV held in their `<pre>` block. Conversion into the
-newer dedicated bank/passport/license item types is opt-in in the reference
-client and remains a separate feature-flag parity case; default imports retain
-those secure-note records as complete text.
+native document before importing it. The import operation encrypts it through
+the same bulk pipeline as Bitwarden JSON. LastPass HTML files extract and decode
+the CSV from their `<pre>` block. The reference CLI gates conversion into bank,
+passport, and license item types behind a feature flag. This importer creates
+complete secure notes for those records by default.
 
 ```sh
 node apps/cli/dist/main.js import keepass2xml ./keepass-backup.xml
@@ -393,25 +409,26 @@ line; `VW_IMPORT_PASSWORD` is the default environment source. Library callers
 use `parseKdbx(bytes, { password, keyFile, organization })`, or pass `password`
 and `keyFile` bytes to `importVault`.
 
-KDBX has its own reference mappings: enabled recycle bins are excluded, long and
-multiline custom values remain fields, and protected values remain hidden.
+KDBX follows its own reference mappings: enabled recycle bins are omitted, long
+and multiline custom values import as fields, and protected values import as
+hidden fields.
 KeePassXC `otp` and KeePass `TimeOtp-*` secrets/settings become login OTP values.
 AES, Argon2d and Argon2id KDFs are supported, with AES and ChaCha20 payloads.
 History and binary attachments are outside the reference KDBX import mapping.
 Decoding runs in an isolated worker; input size, group depth, KDF work and runtime
-are bounded as documented in the compatibility notes. `bun install` applies the
-decoder patch that preserves tabs in unprotected text.
+are bounded as documented in the compatibility notes. `bun install` applies a
+decoder patch that prevents tabs in unprotected text from becoming spaces.
 
 ZIP backups use the Bitwarden `data.json` and sanitized attachment-path layout.
-Final attachment paths are unique, including collisions between generated suffixes
-and existing filenames. Export and import share the item-folder ambiguity checks:
-an export rejects conflicting sanitized names or duplicate names with incomplete
-attachment folders, rather than producing a backup that cannot be restored.
-Rename conflicting items before retrying. Import also accepts older vw manifests.
+Final attachment paths are unique, even when generated suffixes collide with
+existing filenames. Export and import apply the same item-folder ambiguity
+checks. Export rejects conflicting sanitized names and duplicate names paired
+with incomplete attachment folders. Rename conflicting items before retrying.
+Import also accepts older vw manifests.
 Backup downloads use exact item and attachment IDs, without filename searches.
-If any attachment cannot be downloaded or decrypted, export fails and writes no
-backup. To explicitly accept an incomplete backup, pass `--allow-partial`; the
-CLI reports each skipped attachment on stderr. SDK callers must provide both
+Any attachment download or decryption failure aborts the export before it writes
+a backup. To create a partial backup, pass `--allow-partial`; the CLI lists each
+skipped attachment on stderr. SDK callers must provide both
 `allowPartial: true` and `onAttachmentSkipped`. JSON and attachment export apply
 the same item-policy filter.
 Archives are read in memory without extracting their paths to the filesystem.
@@ -445,8 +462,8 @@ the search is ambiguous; for example, a note with the same name does not make a
 password query ambiguous. Multiple eligible results require an item ID.
 
 Folder, collection, and organization reads accept a UUID or a unique,
-case-insensitive name substring. These searches preserve accents and whitespace
-and match the entire substring, rather than splitting it into item search terms.
+case-insensitive name substring. These searches match accents and whitespace
+literally and compare the entire substring instead of splitting it into item search terms.
 An exact name remains ambiguous when another object's name contains it. A UUID
 is always an ID lookup and never falls back to an object named after that UUID.
 Library callers use `findFolder`, `findCollection`, and `findOrganization` on
@@ -479,14 +496,14 @@ filters accept `null` and `notnull` for unassigned/assigned items.
 
 New and edited login URIs receive an encrypted SHA-256 checksum. Reads of items
 with per-item keys discard URIs whose checksum is missing or invalid, matching
-the SDK's integrity check. Legacy owner-key items retain their compatibility
-behavior. The same write helper is used by item creation, editing, legacy-item
-moves, and bulk imports, so peer clients retain the URI after decryption.
+the SDK's integrity check. Legacy owner-key items use the older URI handling.
+The same write helper is used by item creation, editing, legacy-item moves, and
+bulk imports, so peer clients receive the URI after decryption.
 
 Sync includes Vaultwarden's equivalent-domain settings. The pinned bw CLI
 excludes those settings from its sync response because its platform does not
 support autofill, so equivalent-domain matching differs deliberately: vw honors
-the server's groups. Private suffixes keep unrelated tenants separate (for
+the server's groups. Private suffixes distinguish unrelated tenants (for
 example, `alice.github.io` and `bob.github.io`), Unicode/punycode domains compare
 equally, and the reference `script.google.com` domain exclusion also applies.
 Regexes run in an isolated worker with a 200 ms execution limit; a timeout fails
@@ -511,15 +528,24 @@ JSON `{ "password": "..." }` body. Unlock never reads a file or environment
 variable named by an HTTP request. The active token stays in the server process;
 `POST /lock` invalidates the persisted unlock session too. Sync works while locked.
 Local API access uses this process's logged-in account and unlock state, with
-no separate per-request bearer token, following bw's local API model.
+no per-request credential on loopback unless `VW_SERVE_TOKEN` is set.
+`POST /attachment` accepts exactly one multipart file part named `file`; duplicate
+or differently named file parts return HTTP 400 without uploading a file.
 
-The default bind is `localhost:8087`. `--hostname all` binds every interface;
-as in the [pinned `bw` implementation](https://github.com/bitwarden/clients/blob/ce5386b939062d9535cdf1a998101d25194908d0/apps/cli/src/commands/serve.command.ts),
+The default bind is `localhost:8087`. `--hostname all`, any non-loopback bind,
+and inherited network sockets require `VW_SERVE_TOKEN` with at least 32 printable
+ASCII characters. Each request then needs `Authorization: Bearer $VW_SERVE_TOKEN`.
+For example, generate a token with `openssl rand -hex 32`, set it in the server's
+environment, and send it in the Authorization header. The server never prints
+the token. If `VW_SERVE_TOKEN` is set for a loopback listener, requests there
+also require the token. Unix sockets are created with owner-only permissions.
+
 `--port 0` falls back to `8087`. Origin headers are rejected by default,
 including empty Origin values. Host headers must identify localhost, a loopback
 address, or the configured hostname with the listening port. The `all` binding
-accepts other Host values. `--disable-origin-protection` disables both guards,
-matching the reference switch. Responses include `Cache-Control: no-store`.
+accepts other Host values, after bearer authentication. `--disable-origin-protection`
+disables the Origin and Host checks; bearer authentication still applies.
+Responses include `Cache-Control: no-store`.
 
 Unix sockets and inherited descriptors use the reference hostname forms:
 
@@ -531,23 +557,28 @@ curl --unix-socket /absolute/path/vw.sock http://localhost:8087/status
 `fd+listening://3` accepts an inherited listening socket; `fd+connected://3`
 serves one inherited connected socket. The parent process must pass the named
 descriptor. Connected mode exits when that connection closes. Node listener
-tests exercise both descriptor modes and verify clean Unix socket removal.
+tests exercise both descriptor modes and verify Unix socket permissions and removal.
 
-| Method | Route                                    | Operation                                                             |
-| ------ | ---------------------------------------- | --------------------------------------------------------------------- |
-| GET    | `/status`, `/generate`                   | State and password/passphrase generation                              |
-| POST   | `/sync`, `/lock`, `/unlock`              | Cache and session lifecycle                                           |
-| GET    | `/list/object/:object`                   | Items, folders, collections, organizations, members, Sends            |
-| GET    | `/object/:object/:id`                    | Vault objects, secret fields, templates, fingerprints, attachments    |
-| POST   | `/object/:object`                        | Create an item, folder, organization collection, or text Send         |
-| PUT    | `/object/:object/:id`                    | Edit an object or item collection assignments                         |
-| DELETE | `/object/:object/:id`                    | Delete/trash an object; `?permanent=true` permanently deletes an item |
-| POST   | `/archive/item/:id`, `/restore/item/:id` | Archive and restore                                                   |
-| POST   | `/move/:id/:organizationId`              | Move with a JSON array of collection IDs                              |
-| POST   | `/confirm/org-member/:id`                | Confirm membership with `?organizationid=...`                         |
-| POST   | `/attachment?itemid=...`                 | Upload a multipart `file` field                                       |
-| GET    | `/send/list`                             | List Sends                                                            |
-| POST   | `/send/:id/remove-password`              | Remove a Send password                                                |
+| Method | Route                                                 | Operation                                                             |
+| ------ | ----------------------------------------------------- | --------------------------------------------------------------------- |
+| GET    | `/status`, `/generate`                                | State and password/passphrase generation                              |
+| POST   | `/sync`, `/lock`, `/unlock`                           | Cache and session lifecycle                                           |
+| GET    | `/list/object/:object`                                | Items, folders, collections, organizations, members, Sends            |
+| GET    | `/object/:object/:id`                                 | Vault objects, secret fields, templates, fingerprints, attachments    |
+| POST   | `/object/:object`                                     | Create an item, folder, organization collection, or text Send         |
+| PUT    | `/object/:object/:id`                                 | Edit an object or item collection assignments                         |
+| DELETE | `/object/:object/:id`                                 | Delete/trash an object; `?permanent=true` permanently deletes an item |
+| POST   | `/archive/item/:id`, `/restore/item/:id`              | Archive and restore                                                   |
+| POST   | `/move/:id/:organizationId`                           | Move with a JSON array of collection IDs                              |
+| POST   | `/confirm/org-member/:id`                             | Confirm membership with `?organizationid=...`                         |
+| POST   | `/attachment?itemid=...`                              | Upload a multipart `file` field                                       |
+| GET    | `/send/list`                                          | List Sends                                                            |
+| POST   | `/send/:id/remove-password`                           | Remove a Send password                                                |
+| GET    | `/device-approval/:organizationId`                    | List pending organization device approvals                            |
+| POST   | `/device-approval/:organizationId/approve/:requestId` | Approve one request                                                   |
+| POST   | `/device-approval/:organizationId/deny/:requestId`    | Deny one request                                                      |
+| POST   | `/device-approval/:organizationId/approve-all`        | Approve all pending requests                                          |
+| POST   | `/device-approval/:organizationId/deny-all`           | Deny all pending requests                                             |
 
 JSON requests use unencoded objects rather than the CLI's base64 input.
 Responses use `{ "success": true, "data": ... }`; lists and strings have
@@ -568,11 +599,14 @@ Send creation through REST requires an explicit future `deletionDate`. File Send
 creation through `serve` is rejected, matching the pinned reference CLI; use the
 ordinary CLI or library for file Sends. An HTTP file Send request never causes
 the server to read a named host file.
+Device-approval routes use the same organization permission and recovery-key
+checks as the CLI. On Vaultwarden 1.36.0 and 1.37.4, they return the explicit
+unsupported-capability error before sending an organization request.
 
 Library integrations can use `createLocalApiHandler(backend, options)` with
 standard Fetch requests and responses. The backend supplies state/session
 operations and a `run` callback that owns each `VaultService` and its key lifetime.
-Requests are serialized to preserve lock/unlock and mutation ordering. The
+Requests run one at a time so lock/unlock and mutations arrive in order. The
 compiled CLI's TCP lifecycle is live tested, and Unix and inherited-descriptor
 listeners have compiled Node integration tests. An optional independent bw local
 server compares response contracts using the same disposable vault. Remaining
@@ -609,11 +643,12 @@ printf '%s' '["COLLECTION_ID"]' | node apps/cli/dist/main.js encode | node apps/
 node apps/cli/dist/main.js edit item-collections ITEM_ID ENCODED_COLLECTION_IDS
 ```
 
-Collection edits retain existing group/user access assignments when those fields
-are omitted. Member confirmation requires an accepted invitation and wraps the
+When collection edits omit group/user access fields, the CLI sends the collection's
+current group and user assignments. Member confirmation requires an accepted
+invitation and wraps the
 organization key for the member's public key. Moving is supported for personal
 items into an organization; at least one target collection is required. `share`
-is the deprecated alias for `move`. Items with per-item keys retain them; legacy
+is the deprecated alias for `move`. Items with per-item keys use that key; legacy
 items receive a new item key. The personal account key is never shared.
 
 ## Password health and exposure
@@ -645,8 +680,8 @@ Duplicate passwords share one lookup within a report. `--hibp-url` explicitly
 selects a compatible mirror; HTTPS is required except on loopback.
 
 `get exposed ITEM_ID` prints the occurrence count for one login's password.
-It fails if the check fails. Reports retain successful rows when other lookups
-fail, with `exposedError` set on affected rows. An error, empty/malformed reply,
+It fails if the check fails. A lookup error affects only its row; successful
+lookups appear alongside rows with `exposedError`. An error, empty/malformed reply,
 or oversized reply is never treated as a successful negative exposure result.
 Counts are occurrences in the password corpus; they are not a list of breached
 accounts or a count of distinct breached websites. This password-only service
@@ -670,14 +705,18 @@ node apps/cli/dist/main.js receive 'https://vault.example.com/#/send/ACCESS_ID/K
 node apps/cli/dist/main.js receive 'https://vault.example.com/#/send/ACCESS_ID/KEY' --output ./received.pdf
 ```
 
+`VW_SEND_PASSWORD` (or `BW_SEND_PASSWORD`) supplies the default recipient or
+new-Send password. `--password` overrides that value; `--passwordenv NAME`
+selects another environment variable.
+
 The quick `send` command accepts text from stdin when its data argument is
 omitted and returns the decrypted Send object, including its access URL, like
 the pinned CLI response path. `--fullObject` remains accepted for command-line
 compatibility. Text Sends support `--hidden`; both types support `--deleteInDays` (default 7,
 maximum 31), `--maxAccessCount`, `--name`, `--notes`, and an optional password.
 JSON creation supports `expirationDate`, `disabled`, and `hideEmail` as well.
-Send edits preserve the key seed and existing password unless a new password is
-supplied. File contents are immutable; delete and recreate a file Send to replace
+Send edits use the same key seed and password unless a new password is supplied.
+File contents cannot be edited; delete and recreate a file Send to replace
 them. `send list/get` read the encrypted cache and work offline after sync.
 
 `receive` and `send receive` work without login. The URL fragment holds a
@@ -690,8 +729,8 @@ or send an account token. The Send URL grants access to its secret;
 quote it when passing it through a shell. Owner JSON also contains the seed and
 access URL, matching the information exposed by bw.
 
-Recipient passwords can come from `--password`, `--passwordenv`, or
-`--passwordfile`; an interactive terminal prompts when needed. `--obj` returns
+Recipient passwords can come from `VW_SEND_PASSWORD`, `--password`,
+`--passwordenv`, or `--passwordfile`; an interactive terminal prompts when needed. `--obj` returns
 metadata and decrypted text/filename without downloading a file. Text content
 is printed without an added newline. Files use private output and refuse
 overwrite, or can be streamed as binary stdout with `--raw`. Signed downloads
@@ -728,10 +767,11 @@ binary stdout with `--raw`; file output uses mode 0600, strips server-provided
 path components, and refuses to overwrite an existing file. Failed uploads try
 to remove incomplete metadata and report whether cleanup succeeded. Files are
 currently processed in memory, bounded by Vaultwarden's 525 MiB encrypted-file
-limit. A move retains readable attachments for items with per-item keys.
+limit. A move carries readable attachments for items with per-item keys.
 
 State defaults to `$XDG_CONFIG_HOME/vaultwarden-cli/state.json`, falling back to
-`~/.config/vaultwarden-cli/state.json`. `VW_APPDATA_DIR` selects an isolated profile.
+`~/.config/vaultwarden-cli/state.json`. `VW_APPDATA_DIR` selects an isolated profile;
+`BITWARDENCLI_APPDATA_DIR` is accepted for compatibility with `bw`.
 Directories use mode 0700 and files 0600. Locking removes the encrypted session
 wrapper; unlocking again replaces it, invalidating the previous token. A command
 lock prevents concurrent refresh/logout writes. Its local process owner is
@@ -792,5 +832,6 @@ available for password accounts and returns rotated refresh credentials. The CLI
 and retries an authenticated sync once after HTTP 401. The transport accepts an
 injected `fetch` and a stable `deviceId` for embedding and contract tests.
 
-See [the compatibility contract](compatibility.md) for exact coverage, source
-revisions, tests, and the remaining implementation work.
+See [implementation status](implementation-status.md) for current test coverage
+and outstanding work, and [Vaultwarden accommodations](vaultwarden-deviations.md)
+for server-specific behavior and its selection rules.

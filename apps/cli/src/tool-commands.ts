@@ -13,19 +13,21 @@ import { withStore } from '#store';
 import { writeAttachment, writeStdout } from '#files';
 import type { VaultRuntime } from '#vault-commands';
 
-async function password(
+export async function password(
 	value: string | undefined,
 	env: string | undefined,
 	file: string | undefined,
-	fallback: string,
+	fallbackValue: string | undefined,
+	requireEnvironment = true,
 ): Promise<string | undefined> {
-	if ([value !== undefined, env !== undefined, file !== undefined].filter(Boolean).length > 1) {
-		throw new Error('Choose one password source.');
+	if (value) return value;
+	if (file) return (await readFile(file, 'utf8')).split(/\r\n|\r|\n/, 1)[0] || undefined;
+	if (!env) return fallbackValue || undefined;
+	const secret = process.env[env];
+	if (!secret) {
+		if (requireEnvironment) throw new Error(`Environment variable ${env} is unset.`);
+		return undefined;
 	}
-	if (value !== undefined) return value;
-	if (file) return (await readFile(file, 'utf8')).split(/\r\n|\r|\n/, 1)[0] ?? '';
-	const secret = process.env[env ?? fallback];
-	if (env && secret === undefined) throw new Error('The selected password environment variable is unset.');
 	return secret;
 }
 export function resolvedExportFormat(
@@ -69,15 +71,22 @@ export function toolCommands(runtime: VaultRuntime, directory: string) {
 			'allow-partial',
 			flag.boolean().describe('Allow a ZIP with missing attachments and report every skipped file'),
 		)
-		.flag('organizationid', flag.string()).flag('session', flag.string().env('VW_SESSION'))
+		.flag('organizationid', flag.string()).flag('session', flag.string().sensitive().env('SESSION'))
 		.flag('output', flag.path())
-		.flag('password', flag.string()).flag('passwordenv', flag.string()).flag(
+		.flag('password', flag.string().sensitive().env('EXPORT_PASSWORD')).flag(
+			'passwordenv',
+			flag.string().describe(
+				'Read the export password from this variable. Without this option, export reads VW_EXPORT_PASSWORD.',
+			),
+		).flag(
 			'passwordfile',
 			flag.path({ mustExist: true }),
 		)
-		.action(async ({ args, flags, out }) => {
+		.action(async ({ args, flags, out, sources }) => {
 			if (flags['allow-partial'] && flags.format !== 'zip') throw new Error('--allow-partial requires --format zip.');
-			if (args.password !== undefined && flags.password !== undefined) {
+			const explicitPassword = sources.flags.password?.stage === 'env' ? undefined : flags.password;
+			const environmentPassword = sources.flags.password?.stage === 'env' ? flags.password : undefined;
+			if (args.password !== undefined && explicitPassword !== undefined) {
 				throw new Error('Choose one password source.');
 			}
 			const format = resolvedExportFormat(
@@ -85,7 +94,12 @@ export function toolCommands(runtime: VaultRuntime, directory: string) {
 				args.password !== undefined || flags.password !== undefined || !!flags.passwordenv || !!flags.passwordfile,
 			);
 			const secret = format === 'encrypted_json'
-				? await password(args.password ?? flags.password, flags.passwordenv, flags.passwordfile, 'VW_EXPORT_PASSWORD')
+				? await password(
+					args.password ?? explicitPassword,
+					flags.passwordenv,
+					flags.passwordfile,
+					flags.passwordenv ? undefined : environmentPassword,
+				)
 				: undefined;
 			const result = await runtime.run(
 				flags.session,
@@ -113,14 +127,20 @@ export function toolCommands(runtime: VaultRuntime, directory: string) {
 			}
 		});
 	const importCommand = command('import').description('Import vault JSON, CSV, XML, KDBX, or a ZIP backup')
-		.arg('format', arg.enum(importFormats).optional()).arg('input', arg.path({ mustExist: true }).optional())
+		.arg('format', arg.string().optional()).arg('input', arg.path().optional())
 		.flag('formats', flag.boolean()).flag('organizationid', flag.string()).flag(
 			'session',
-			flag.string().env('VW_SESSION'),
+			flag.string().sensitive().env('SESSION'),
 		)
-		.flag('passwordenv', flag.string()).flag('passwordfile', flag.path({ mustExist: true }))
+		.flag('password', flag.string().sensitive().env('IMPORT_PASSWORD'))
+		.flag(
+			'passwordenv',
+			flag.string().describe(
+				'Read the import-file password from this variable. Without this option, import reads VW_IMPORT_PASSWORD.',
+			),
+		).flag('passwordfile', flag.path())
 		.flag('keyfile', flag.path())
-		.action(async ({ args, flags, out }) => {
+		.action(async ({ args, flags, out, sources }) => {
 			if (flags.formats) {
 				await withStore(directory, async state => {
 					if (!state.account) throw new Error('You are not logged in.');
@@ -137,56 +157,71 @@ export function toolCommands(runtime: VaultRuntime, directory: string) {
 				} else out.log(flags.raw ? formats : `Supported input formats:\n${formats}`);
 				return;
 			}
-			if (!args.format || !args.input) {
-				throw new Error('An import format and file are required. Use vw import --formats.');
-			}
-			const format = resolveImportFormat(args.format as ImportFormat, args.input);
-			const source = await readFile(args.input);
-			let keyFile: Buffer | undefined;
-			try {
-				if (flags.keyfile) {
-					if (format !== 'keepasskdbx') throw new Error('--keyfile requires the keepasskdbx format.');
-					keyFile = await readFile(flags.keyfile);
+			const result = await runtime.run(flags.session, true, async vault => {
+				if (!args.format || !args.input) {
+					throw new Error('An import format and file are required. Use vw import --formats.');
 				}
-				let secret = await password(undefined, flags.passwordenv, flags.passwordfile, 'VW_IMPORT_PASSWORD');
-				if (
-					secret === undefined && format === 'keepasskdbx' && !keyFile && !flags.nointeraction
-					&& process.stdin.isTTY
-				) {
-					secret = await secretPrompt('KeePass database password:');
-				}
-				if (secret === undefined && format === 'keepasskdbx' && !keyFile && flags.nointeraction) {
-					throw new Error(
-						'Master password is required. Try again in interactive mode or provide a password file or environment variable.',
-					);
-				}
-				if (secret === undefined && format === 'bitwardenjson') {
-					let protectedFile = false;
-					try {
-						protectedFile = JSON.parse(source.toString('utf8')).passwordProtected === true;
-					} catch { /* The library reports malformed files without echoing their contents. */ }
-					if (protectedFile && flags.nointeraction) {
+				const format = resolveImportFormat(args.format as ImportFormat, args.input);
+				const source = await readFile(args.input);
+				let keyFile: Buffer | undefined;
+				try {
+					if (flags.keyfile) {
+						if (format !== 'keepasskdbx') throw new Error('--keyfile requires the keepasskdbx format.');
+						keyFile = await readFile(flags.keyfile);
+					}
+					const protectedBitwardenJson = (() => {
+						if (format !== 'bitwardenjson') return false;
+						try {
+							return JSON.parse(source.toString('utf8')).passwordProtected === true;
+						} catch {
+							return false;
+						}
+					})();
+					const requiresPassword = format === 'keepasskdbx' || protectedBitwardenJson;
+					const explicitPassword = sources.flags.password?.stage === 'env' ? undefined : flags.password;
+					const environmentPassword = sources.flags.password?.stage === 'env' ? flags.password : undefined;
+					let secret = requiresPassword
+						? await password(
+							explicitPassword,
+							flags.passwordenv,
+							flags.passwordfile,
+							flags.passwordenv ? undefined : environmentPassword,
+							false,
+						)
+						: undefined;
+					if (
+						secret === undefined && format === 'keepasskdbx' && !keyFile && !flags.nointeraction
+						&& process.stdin.isTTY
+					) {
+						secret = await secretPrompt('KeePass database password:');
+					}
+					if (secret === undefined && format === 'keepasskdbx' && !keyFile && flags.nointeraction) {
 						throw new Error(
-							'Import file password is required. Provide --passwordfile or --passwordenv, or run interactively.',
+							'KeePass database password required. Use --password, --passwordfile, --passwordenv, or run in a terminal.',
 						);
 					}
-					if (protectedFile && process.stdin.isTTY) {
-						secret = await secretPrompt('Import file password:');
+					if (secret === undefined && protectedBitwardenJson) {
+						if (flags.nointeraction) {
+							throw new Error(
+								'Import file password required. Use --password, --passwordfile, --passwordenv, or run in a terminal.',
+							);
+						}
+						if (process.stdin.isTTY) {
+							secret = await secretPrompt('Import file password:');
+						}
 					}
+					return await vault.importVault(format, source, {
+						organizationId: flags.organizationid,
+						password: secret,
+						keyFile,
+						fileName: args.input,
+					});
+				} finally {
+					source.fill(0);
+					keyFile?.fill(0);
 				}
-				out.json(
-					await runtime.run(flags.session, true, vault =>
-						vault.importVault(format, source, {
-							organizationId: flags.organizationid,
-							password: secret,
-							keyFile,
-							fileName: args.input,
-						})),
-				);
-			} finally {
-				source.fill(0);
-				keyFile?.fill(0);
-			}
+			});
+			out.json(result);
 		});
 	return { generate, exportCommand, importCommand };
 }

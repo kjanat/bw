@@ -14,6 +14,7 @@ for (
 		['VW_CLIENTSECRET', 'BW_CLIENTSECRET'],
 		['VW_IMPORT_PASSWORD', 'BW_IMPORT_PASSWORD'],
 		['VW_EXPORT_PASSWORD', 'BW_EXPORT_PASSWORD'],
+		['VW_SEND_PASSWORD', 'BW_SEND_PASSWORD'],
 		['VW_PRETTY', 'BW_PRETTY'],
 		['VW_QUIET', 'BW_QUIET'],
 		['VW_NOINTERACTION', 'BW_NOINTERACTION'],
@@ -29,7 +30,8 @@ for (
 
 function cleanExitArguments(argv: readonly string[]): { argv: string[]; enabled: boolean } {
 	const result: string[] = [];
-	let enabled = Boolean(process.env.VW_CLEANEXIT);
+	// Parse this as a boolean; Boolean('false') would enable clean-exit mode.
+	let enabled = process.env.VW_CLEANEXIT === 'true';
 	let afterSeparator = false;
 	for (const token of argv) {
 		if (token === '--') afterSeparator = true;
@@ -174,7 +176,7 @@ function normalizeObjectArguments(argv: readonly string[]): string[] {
 	return result;
 }
 
-let cleanExit = Boolean(process.env.VW_CLEANEXIT);
+let cleanExit = process.env.VW_CLEANEXIT === 'true';
 try {
 	const adapter = createAdapter();
 	const app = createApp();
@@ -187,6 +189,7 @@ try {
 	if (noInteraction.enabled) process.env.VW_NOINTERACTION = 'true';
 	const cliAdapter = {
 		...adapter,
+		env: process.env,
 		argv: [
 			...adapter.argv.slice(0, 2),
 			...normalizeNegativeGeneratorValues(

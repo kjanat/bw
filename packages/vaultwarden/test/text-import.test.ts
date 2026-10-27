@@ -4,7 +4,7 @@ import type { JsonObject } from '#client';
 
 const items = (document: JsonObject) => document.items as JsonObject[];
 
-test('Kaspersky TXT maps website, application, and note sections while preserving multiline text', () => {
+test('Kaspersky TXT maps website, application, and note sections with multiline values', () => {
 	const source = [
 		'Websites',
 		'',

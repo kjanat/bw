@@ -81,7 +81,7 @@ export function parseKeePassXml(source: string, organization = false): JsonObjec
 			if (!item.notes?.trim()) item.notes = null;
 			items.push(item);
 		}
-		// Reverse only the stack insertion order, retaining the source's depth-first grouping order.
+		// Reverse only the stack insertion order to match the source's depth-first grouping order.
 		for (const node of children(current.node, 'Group').reverse()) stack.push({ node, root: false, prefix: name });
 	}
 	return { encrypted: false, items, [organization ? 'collections' : 'folders']: groups };

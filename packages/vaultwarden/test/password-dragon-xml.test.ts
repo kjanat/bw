@@ -57,7 +57,7 @@ test('Password Dragon XML imports direct records from every PasswordManager node
 	expect(result.map(item => item.name)).toEqual(['First', 'Nested', 'Third', 'Second manager']);
 });
 
-test('Password Dragon XML keeps duplicate attributes and maps missing or blank URLs to null', () => {
+test('Password Dragon XML reads duplicate attributes and maps missing or blank URLs to null', () => {
 	const result = items(parsePasswordDragonXml(
 		'<PasswordManager><record><Account-Name>Duplicate fields</Account-Name>'
 			+ '<Attribute-1>first</Attribute-1><Attribute-2>second</Attribute-2>'

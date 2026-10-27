@@ -579,6 +579,85 @@ export class VaultwardenClient {
 			body,
 		});
 	}
+	/** Upload encrypted bytes to Bitwarden's signed Azure URL without account headers or redirects. */
+	async uploadAzureFile(url: string, contents: Uint8Array, renew?: () => Promise<string>): Promise<void> {
+		const MAX_SINGLE_BLOB_BYTES = 256 * 1024 * 1024;
+		let target = this.azureUploadUrl(url);
+		const expires = () => Date.parse(target.searchParams.get('se') ?? '');
+		const ensureFreshUrl = async () => {
+			if (renew && Number.isFinite(expires()) && expires() < Date.now() + 120_000) {
+				target = this.azureUploadUrl(await renew());
+			}
+		};
+		const version = target.searchParams.get('sv');
+		if (!version) throw new Error('Azure upload URL is missing its storage version.');
+		const headers = () =>
+			new Headers({
+				'x-ms-date': new Date().toUTCString(),
+				'x-ms-version': version,
+			});
+		const put = async (destination: URL, body: Uint8Array, extra: Record<string, string> = {}) => {
+			let response: Response;
+			try {
+				const payload = Buffer.from(body.buffer as ArrayBuffer, body.byteOffset, body.byteLength);
+				response = await this.transport(destination.toString(), {
+					method: 'PUT',
+					body: payload,
+					headers: new Headers({ ...Object.fromEntries(headers()), ...extra }),
+					cache: 'no-store',
+					redirect: 'error',
+					signal: AbortSignal.timeout(120_000),
+				});
+			} catch {
+				throw new Error('Azure file upload failed.');
+			}
+			if (response.status !== 201) throw new Error(`Azure file upload failed (HTTP ${response.status}).`);
+		};
+		if (contents.byteLength <= MAX_SINGLE_BLOB_BYTES) {
+			await ensureFreshUrl();
+			await put(target, contents, { 'x-ms-blob-type': 'BlockBlob' });
+			return;
+		}
+		await ensureFreshUrl();
+		const blockSize = version >= '2019-12-12'
+			? 4000 * 1024 * 1024
+			: version >= '2016-05-31'
+			? 100 * 1024 * 1024
+			: 4 * 1024 * 1024;
+		const blockCount = Math.ceil(contents.byteLength / blockSize);
+		if (blockCount > 50_000) throw new Error('Azure file exceeds the maximum block count.');
+		const blockIds: string[] = [];
+		for (let index = 0; index < blockCount; index++) {
+			await ensureFreshUrl();
+			const blockId = Buffer.from(String(index).padStart(48, '0')).toString('base64');
+			blockIds.push(blockId);
+			const block = new URL(target);
+			block.searchParams.set('comp', 'block');
+			block.searchParams.set('blockid', blockId);
+			const start = index * blockSize;
+			const end = Math.min(start + blockSize, contents.byteLength);
+			await put(block, new Uint8Array(contents.buffer, contents.byteOffset + start, end - start));
+		}
+		await ensureFreshUrl();
+		const commit = new URL(target);
+		commit.searchParams.set('comp', 'blocklist');
+		const blockList = `<?xml version="1.0" encoding="utf-8"?><BlockList>${
+			blockIds.map(id => `<Latest>${id}</Latest>`).join('')
+		}</BlockList>`;
+		await put(commit, new TextEncoder().encode(blockList), { 'Content-Type': 'application/xml' });
+	}
+	private azureUploadUrl(value: string): URL {
+		let url: URL;
+		try {
+			url = new URL(value);
+		} catch {
+			throw new Error('Invalid Azure upload URL.');
+		}
+		if (url.protocol !== 'https:' || url.username || url.password || url.hash) {
+			throw new Error('Invalid Azure upload URL.');
+		}
+		return url;
+	}
 	async uploadAttachment(accessToken: string, itemId: string, attachmentId: string, body: FormData): Promise<void> {
 		await this.requestRaw(`/api/ciphers/${encodeURIComponent(itemId)}/attachment/${encodeURIComponent(attachmentId)}`, {
 			method: 'POST',

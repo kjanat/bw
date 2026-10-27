@@ -76,9 +76,12 @@ function subtitle(item: VaultItem): string {
 	}
 	return '';
 }
-/** Basic CLI search uses AND across terms and OR across non-secret display fields. */
+/** Library search ANDs terms across its broader display-field set. */
 export function searchItems(items: readonly VaultItem[], query: string): VaultItem[] {
-	const terms = normalizeSearch(query.trim()).split(/\s+/).filter(Boolean);
+	const trimmed = query.trim();
+	if (!trimmed) return [...items];
+	const terms = normalizeSearch(trimmed).split(/\s+/).filter(Boolean);
+	if (!terms.length) return [];
 	return items.filter(item => {
 		const hosts = item.type === 1 && Array.isArray(item.login?.uris)
 			? item.login.uris.flatMap(value => {
@@ -95,6 +98,35 @@ export function searchItems(items: readonly VaultItem[], query: string): VaultIt
 		return terms.every(term =>
 			targets.some(target => target.includes(term)) || (term.length >= 8 && item.id?.toLowerCase().startsWith(term))
 		);
+	});
+}
+
+/** Match the pinned CLI's basic item search across display text, URI hosts, and notes. */
+export function searchItemsBasic(items: readonly VaultItem[], query: string): VaultItem[] {
+	const trimmed = query.trim();
+	if (!trimmed) return [...items];
+	const terms = normalizeSearch(trimmed).split(/\s+/).filter(Boolean);
+	if (!terms.length) return [];
+	return items.filter(item => {
+		return terms.every(term => {
+			const includes = (value: string): boolean => normalizeSearch(value.toLowerCase()).includes(term);
+			if (typeof item.name === 'string' && includes(item.name)) return true;
+			if (term.length >= 8 && typeof item.id === 'string' && item.id.toLowerCase().startsWith(term)) return true;
+			const itemSubtitle = subtitle(item);
+			if (itemSubtitle && includes(itemSubtitle)) return true;
+			if (
+				item.type === 1 && Array.isArray(item.login?.uris) && item.login.uris.some(uri => {
+					if (!uri || typeof uri !== 'object' || typeof uri.uri !== 'string' || uri.match === 4) {
+						return false;
+					}
+					const source = uri.uri.trim();
+					if (!source || /^(data|about|file):/i.test(source)) return false;
+					const hostname = getHostname(source, { validHosts: ['localhost'] });
+					return typeof hostname === 'string' && includes(hostname);
+				})
+			) return true;
+			return typeof item.notes === 'string' && includes(item.notes);
+		});
 	});
 }
 

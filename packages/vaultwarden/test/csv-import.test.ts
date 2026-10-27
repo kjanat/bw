@@ -482,7 +482,7 @@ test('BlackBerry skips list rows, maps favorites, and converts note-only rows', 
 	expect(parsed[0]).toMatchObject({ favorite: true, name: 'BlackBerry login', login: { username: 'alice' } });
 	expect(parsed[1]).toMatchObject({ type: 2, name: 'BlackBerry note', notes: 'note body', secureNote: { type: 0 } });
 });
-test('Blur preserves alternate usernames and falls back to a domain-derived name', () => {
+test('Blur imports alternate usernames and falls back to a domain-derived name', () => {
 	const parsed = items(parseExternalCsv(
 		'blurcsv',
 		writeCsv([
@@ -1515,7 +1515,7 @@ test('NordPass invalid JSON and typed array entries fail without including secre
 		notes: 'hello',
 	});
 });
-test('browser CSV preserves literal URI commas and secret whitespace and normalizes Android apps', () => {
+test('browser CSV reads literal URI commas and secret whitespace and normalizes Android apps', () => {
 	const chrome = items(parseExternalCsv(
 		'chromecsv',
 		writeCsv([
@@ -1546,7 +1546,7 @@ test('browser CSV preserves literal URI commas and secret whitespace and normali
 	expect(items(parseExternalCsv('firefoxcsv', 'hostname,username,password\nexample.org,alice,secret'))[0])
 		.toMatchObject({ name: 'example.org', login: { uris: [{ uri: 'http://example.org' }] } });
 });
-test('Chromium aliases preserve notes and Android normalization while Arc derives names from URLs', () => {
+test('Chromium aliases import notes and normalize Android entries while Arc derives names from URLs', () => {
 	const source = writeCsv([
 		['name', 'url', 'username', 'password', 'note'],
 		['Display name', 'https://www.example.com/a,b', ' alice ', '  secret  ', 'line1\nline2'],
@@ -1622,7 +1622,7 @@ test('Safari OTP/notes and KeePassX groups are translated into native import doc
 		login: { totp: 'ABC', uris: [{ uri: 'http://example.com/a,b' }] },
 	});
 });
-test('LastPass site, secure note, structured card and identity preserve groups and unrecognized fields', () => {
+test('LastPass site, secure note, structured card and identity import groups and unrecognized fields', () => {
 	const document = parseExternalCsv(
 		'lastpasscsv',
 		writeCsv([
@@ -1632,7 +1632,7 @@ test('LastPass site, secure note, structured card and identity preserve groups a
 				'http://sn',
 				'',
 				'',
-				'NoteType:Credit Card\nNumber:4111111111111111\nName on Card:Alice\nSecurity Code:123\nExpiration Date:June,2030\nIssuer:Example\nNotes:note\ncontinuation:kept',
+				'NoteType:Credit Card\nNumber:4111111111111111\nName on Card:Alice\nSecurity Code:123\nExpiration Date:June,2030\nIssuer:Example\nNotes:note\ncontinuation:marker',
 				'Card',
 				'Work\\Web',
 				'0',
@@ -1642,7 +1642,7 @@ test('LastPass site, secure note, structured card and identity preserve groups a
 				'http://sn',
 				'',
 				'',
-				'NoteType:Address\nFirst Name:Alice\nLast Name:Example\nAddress 1:Street\nUnknown:preserved',
+				'NoteType:Address\nFirst Name:Alice\nLast Name:Example\nAddress 1:Street\nUnknown:marker',
 				'Identity',
 				'(none)',
 				'0',
@@ -1670,17 +1670,17 @@ test('LastPass site, secure note, structured card and identity preserve groups a
 		type: 3,
 		card: { number: '4111111111111111', cardholderName: 'Alice', code: '123', expMonth: '6', expYear: '2030' },
 		fields: [{ name: 'Issuer', value: 'Example' }],
-		notes: 'note\ncontinuation:kept',
+		notes: 'note\ncontinuation:marker',
 	});
 	expect(parsed[2]).toMatchObject({
 		type: 4,
 		identity: { firstName: 'Alice', lastName: 'Example' },
-		fields: [{ name: 'Unknown', value: 'preserved' }],
+		fields: [{ name: 'Unknown', value: 'marker' }],
 		folderId: null,
 	});
 	expect(parsed[3]).toMatchObject({ type: 2, notes: 'NoteType:Bank Account\nAccount Number:123\nNotes:entire record' });
 });
-test('LastPass form-fill identities can retain an accompanying card', () => {
+test('LastPass form-fill identities import an accompanying card', () => {
 	const document = parseExternalCsv(
 		'lastpasscsv',
 		writeCsv([

@@ -56,7 +56,7 @@ test('Enpass CSV handles headers, notes, quoted values, and login classification
 	expect(items(result)[3]).toMatchObject({ type: 2, name: 'MyNote', notes: 'Some note text', secureNote: { type: 0 } });
 });
 
-test('Enpass CSV maps cards and card expiration, retaining invalid expiry as custom data', () => {
+test('Enpass CSV maps cards and card expiration, storing invalid expiry as custom data', () => {
 	const result = parseExternalCsv(
 		'enpasscsv',
 		[

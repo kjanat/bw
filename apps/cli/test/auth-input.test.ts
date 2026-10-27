@@ -22,6 +22,19 @@ test('master-password sources follow bw precedence and read only a file first li
 		expect(await masterPassword({ positional: 'positional-value', file, envName, noInteraction: true })).toBe(
 			'positional-value',
 		);
+		expect(
+			await masterPassword({
+				positional: 'environment-value',
+				positionalSource: 'env',
+				file,
+				envName,
+				noInteraction: true,
+			}),
+		).toBe('file-value');
+		expect(await masterPassword({ positional: 'environment-value', positionalSource: 'env', noInteraction: true }))
+			.toBe(
+				'environment-value',
+			);
 		expect(await masterPassword({ file, envName, noInteraction: true })).toBe('file-value');
 		await writeFile(file, 'classic-mac-password\rignored-line\r', { mode: 0o600 });
 		expect(await masterPassword({ file, envName, noInteraction: true })).toBe('classic-mac-password');
@@ -42,6 +55,57 @@ test('noninteractive login inputs fail without prompting or echoing a credential
 	await expect(apiCredentials('VW_TEST_MISSING_CLIENT_ID', 'VW_TEST_MISSING_CLIENT_SECRET', true)).rejects.toThrow(
 		'credentials',
 	);
+	expect(await apiCredentials(undefined, undefined, true, 'synthetic-client-id', 'synthetic-client-secret')).toEqual({
+		clientId: 'synthetic-client-id',
+		clientSecret: 'synthetic-client-secret',
+	});
+});
+test('named API credential variables override defaults, while explicit CLI values win', async () => {
+	const idName = 'VW_TEST_NAMED_CLIENT_ID';
+	const secretName = 'VW_TEST_NAMED_CLIENT_SECRET';
+	const previousId = process.env[idName], previousSecret = process.env[secretName];
+	try {
+		process.env[idName] = 'named-client-id';
+		process.env[secretName] = 'named-client-secret';
+		expect(
+			await apiCredentials(
+				idName,
+				secretName,
+				true,
+				'default-client-id',
+				'default-client-secret',
+				'env',
+				'env',
+			),
+		).toEqual({ clientId: 'named-client-id', clientSecret: 'named-client-secret' });
+		expect(
+			await apiCredentials(
+				idName,
+				secretName,
+				true,
+				'cli-client-id',
+				'cli-client-secret',
+				'cli',
+				'cli',
+			),
+		).toEqual({ clientId: 'cli-client-id', clientSecret: 'cli-client-secret' });
+		delete process.env[idName];
+		delete process.env[secretName];
+		await expect(apiCredentials(
+			idName,
+			secretName,
+			true,
+			'default-client-id',
+			'default-client-secret',
+			'env',
+			'env',
+		)).rejects.toThrow('credentials');
+	} finally {
+		if (previousId === undefined) delete process.env[idName];
+		else process.env[idName] = previousId;
+		if (previousSecret === undefined) delete process.env[secretName];
+		else process.env[secretName] = previousSecret;
+	}
 });
 test('noninteractive challenges never send email or prompt for a code', async () => {
 	let requests = 0;

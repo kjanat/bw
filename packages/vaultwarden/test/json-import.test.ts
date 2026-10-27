@@ -165,7 +165,7 @@ test('F-Secure FSK card brands match bw Discover BIN recognition', () => {
 	expect(items(result)[0]!.card).toMatchObject({ number: '6221260000000000', brand: 'Discover' });
 });
 
-test('Proton Pass JSON preserves supported Vaultwarden item types, fields, favorites, and vault folders', () => {
+test('Proton Pass JSON imports supported Vaultwarden item types, fields, favorites, and vault folders', () => {
 	const extra = (fieldName: string, content: string, type = 'text') => ({ fieldName, type, data: { content } });
 	const result = parseExternalJson(
 		'protonpass',
@@ -686,7 +686,7 @@ test('legacy Password Boss card expiry uses local calendar fields like bw', () =
 	}
 });
 
-test('legacy Password Boss preserves bw malformed expiry behavior', () => {
+test('legacy Password Boss matches bw malformed expiry behavior', () => {
 	const result = parseExternalJson(
 		'passwordbossjson',
 		JSON.stringify({
@@ -697,7 +697,7 @@ test('legacy Password Boss preserves bw malformed expiry behavior', () => {
 	expect(items(result)[0]!.card).toMatchObject({ expMonth: 'NaN', expYear: 'NaN' });
 });
 
-test('legacy Password Boss preserves a folder whose source ID matches its name', () => {
+test('legacy Password Boss imports a folder whose source ID matches its name', () => {
 	const result = parseExternalJson(
 		'passwordbossjson',
 		JSON.stringify({
@@ -714,7 +714,7 @@ test('legacy Password Boss preserves a folder whose source ID matches its name',
 	expect(items(result)[0]!.folderId).toBe(folder.id);
 });
 
-test('legacy Password Boss preserves duplicate folder names and source ID relationships', () => {
+test('legacy Password Boss imports duplicate folder names and source ID relationships', () => {
 	const result = parseExternalJson(
 		'passwordbossjson',
 		JSON.stringify({
@@ -770,7 +770,7 @@ test('legacy Password Boss matches case-sensitive URI field names from bw', () =
 	});
 });
 
-test('legacy Password Boss retains custom field order from the source identifiers object', () => {
+test('legacy Password Boss follows custom field order from the source identifiers object', () => {
 	const result = parseExternalJson(
 		'passwordbossjson',
 		JSON.stringify({
@@ -828,7 +828,7 @@ test('Enpass JSON maps nested folders, login data, secure notes, and cards', () 
 					title: 'Enpass note',
 					template_type: 'note.default',
 					favorite: 0,
-					fields: [{ type: 'text', label: 'Reference', value: '  preserve  ' }],
+					fields: [{ type: 'text', label: 'Reference', value: '  sample  ' }],
 				},
 				{
 					title: 'Enpass card',
@@ -871,7 +871,7 @@ test('Enpass JSON maps nested folders, login data, secure notes, and cards', () 
 	expect(items(result)[1]).toMatchObject({
 		type: 2,
 		secureNote: { type: 0 },
-		fields: [{ value: '  preserve  ', type: 0 }],
+		fields: [{ value: '  sample  ', type: 0 }],
 	});
 	expect(items(result)[2]).toMatchObject({
 		type: 3,

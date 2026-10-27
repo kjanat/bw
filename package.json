@@ -15,7 +15,7 @@
 		"test:compat": "turbo run test:compat"
 	},
 	"devDependencies": {
-		"turbo": "^2.11.9",
+		"turbo": "^2.11.10",
 		"typescript": "catalog:"
 	},
 	"engines": {
@@ -28,15 +28,15 @@
 		}
 	},
 	"catalog": {
-		"@babel/eslint-parser": "8.0.1",
-		"@babel/preset-typescript": "8.0.1",
+		"@babel/eslint-parser": "8.0.7",
+		"@babel/preset-typescript": "8.0.7",
 		"@eslint/js": "10.0.1",
-		"@kjanat/dreamcli": "4.2.0",
-		"@types/bun": "latest",
+		"@kjanat/dreamcli": "5.0.0",
+		"@types/bun": "^1.4.4",
 		"@types/lunr": "2.3.7",
 		"@types/zxcvbn": "4.4.5",
 		"@xmldom/xmldom": "0.9.12",
-		"eslint": "10.9.1",
+		"eslint": "10.13.0",
 		"fflate": "0.8.3",
 		"kdbxweb": "2.1.1",
 		"lunr": "2.3.9",

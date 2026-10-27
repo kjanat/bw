@@ -139,6 +139,26 @@ function selectFields(item: JsonObject, encrypted = false): JsonObject {
 		]
 	) if (item[key] !== undefined) result[key] = structuredClone(item[key]);
 	result.collectionIds = item.organizationId ? item.collectionIds ?? [] : null;
+	if (item.viewPassword === false) {
+		// A `viewPassword` restriction also protects passkey private keys. The
+		// official CLI's response/export projections currently omit this field
+		// from their redaction and expose the decrypted keyValue.
+		if (result.login && typeof result.login === 'object' && !Array.isArray(result.login)) {
+			const login = result.login as JsonObject;
+			login.password = null;
+			login.totp = null;
+			if (Array.isArray(login.fido2Credentials)) {
+				for (const credential of login.fido2Credentials) object(credential).keyValue = null;
+			}
+		}
+		delete result.passwordHistory;
+		if (Array.isArray(result.fields)) {
+			result.fields = result.fields.map(value => {
+				const field = object(value);
+				return field.type === 1 ? { ...field, value: null } : field;
+			});
+		}
+	}
 	return result;
 }
 export { parseCsv, writeCsv } from '#csv';

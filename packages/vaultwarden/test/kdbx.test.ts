@@ -52,7 +52,7 @@ for (
 		'password',
 	]] as const
 ) {
-	test(`KDBX ${kind} decodes ${mode} credentials in a worker and preserves protected fields`, async () => {
+	test(`KDBX ${kind} decodes ${mode} credentials in a worker and imports protected fields`, async () => {
 		const keyFile = mode === 'combined'
 			? await Credentials.createRandomKeyFile(2)
 			: mode === 'keyfile'
@@ -116,7 +116,7 @@ test('KDBX 4 also decodes ChaCha20 database payloads', async () => {
 		notes: 'exact\tnotes\nsecond line',
 	});
 });
-test('KDBX retains the recycle group when disabled and maps groups to organization collections', () => {
+test('KDBX imports the recycle group when disabled and maps groups to organization collections', () => {
 	const { db } = database();
 	db.meta.recycleBinEnabled = false;
 	const document = mapKdbx(db, true), collections = document.collections as JsonObject[];

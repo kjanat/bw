@@ -43,9 +43,11 @@ import { toolCommands } from '#tool-commands';
 import { vaultCommands } from '#vault-commands';
 import { dataDirectory, openSession, sealSession, withStore, type State } from '#store';
 
-const sessionFlag = () => flag.string().sensitive().env('VW_SESSION').describe('Unlock session (or VW_SESSION)');
+const sessionFlag = () => flag.string().sensitive().env('SESSION').describe('Unlock session (or VW_SESSION)');
 const passwordEnvFlag = () =>
-	flag.string().describe('Environment variable containing the master password (default VW_PASSWORD)');
+	flag.string().describe(
+		'Read the master password from the variable named here. Without this option, login reads VW_PASSWORD.',
+	);
 const isGuid = (value: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 function client(state: State): VaultwardenClient {
 	if (!state.server) {
@@ -206,9 +208,26 @@ export function createApp(directory = dataDirectory()) {
 			})
 		);
 	const login = command('login').description('Log in with a master password, SSO, or a personal API key')
-		.arg('email', arg.string().env('VW_EMAIL').optional()).arg('password', arg.string().sensitive().optional())
+		.arg('email', arg.string().env('EMAIL').optional()).arg(
+			'password',
+			arg.string().sensitive().env('PASSWORD').optional(),
+		)
 		.flag('passwordenv', passwordEnvFlag()).flag('passwordfile', flag.path())
-		.flag('apikey', flag.boolean()).flag('clientidenv', flag.string()).flag('clientsecretenv', flag.string())
+		.flag('apikey', flag.boolean())
+		.flag('clientid', flag.string().sensitive().env('CLIENTID'))
+		.flag('clientsecret', flag.string().sensitive().env('CLIENTSECRET'))
+		.flag(
+			'clientidenv',
+			flag.string().describe(
+				'Read the API client ID from this variable. Without this option, login reads VW_CLIENTID.',
+			),
+		)
+		.flag(
+			'clientsecretenv',
+			flag.string().describe(
+				'Read the API client secret from this variable. Without this option, login reads VW_CLIENTSECRET.',
+			),
+		)
 		.flag('sso', flag.boolean().describe('Authenticate through Vaultwarden SSO')).flag(
 			'identifier',
 			flag.string().describe('Optional SSO organization identifier'),
@@ -220,8 +239,8 @@ export function createApp(directory = dataDirectory()) {
 				'Two-factor provider: 0=TOTP, 1=email, 2=Duo, 3=YubiKey, 7=WebAuthn, 8=recovery code',
 			),
 		)
-		.flag('code', flag.string().sensitive().env('VW_2FA_TOKEN'))
-		.action(async ({ args, flags, out }) =>
+		.flag('code', flag.string().sensitive().env('2FA_TOKEN'))
+		.action(async ({ args, flags, out, sources }) =>
 			withStore(directory, async (state, save) => {
 				if (flags.check) {
 					if (!state.account) throw new Error('You are not logged in.');
@@ -232,12 +251,23 @@ export function createApp(directory = dataDirectory()) {
 				if (flags.sso && flags.apikey) throw new Error('Choose either SSO or API-key login.');
 				if (flags.identifier && !flags.sso) throw new Error('--identifier requires --sso.');
 				if (flags.apikey) {
-					if (args.password !== undefined || flags.method !== undefined || flags.code !== undefined) {
+					if (
+						sources.args.password?.stage !== 'env' && args.password !== undefined
+						|| flags.method !== undefined || flags.code !== undefined
+					) {
 						throw new Error('API-key login does not accept a master password or two-factor options.');
 					}
 					state.account = await loginWithApiKey(
 						client(state),
-						await apiCredentials(flags.clientidenv, flags.clientsecretenv, flags.nointeraction),
+						await apiCredentials(
+							flags.clientidenv,
+							flags.clientsecretenv,
+							flags.nointeraction,
+							flags.clientid,
+							flags.clientsecret,
+							sources.flags.clientid?.stage,
+							sources.flags.clientsecret?.stage,
+						),
 					);
 					delete state.session;
 					delete state.vault;
@@ -265,6 +295,7 @@ export function createApp(directory = dataDirectory()) {
 				}
 				const passwordSource = {
 					positional: args.password,
+					positionalSource: sources.args.password?.stage,
 					envName: flags.passwordenv,
 					file: flags.passwordfile,
 					noInteraction: flags.nointeraction,
@@ -328,10 +359,13 @@ export function createApp(directory = dataDirectory()) {
 			})
 		);
 	const unlock = command('unlock').description('Unlock the cached user key and issue a session')
-		.arg('password', arg.string().sensitive().optional()).flag('passwordenv', passwordEnvFlag())
+		.arg('password', arg.string().sensitive().env('PASSWORD').optional()).flag(
+			'passwordenv',
+			passwordEnvFlag(),
+		)
 		.flag('passwordfile', flag.path()).flag('check', flag.boolean())
 		.flag('session', sessionFlag())
-		.action(async ({ args, flags, out }) =>
+		.action(async ({ args, flags, out, sources }) =>
 			withStore(directory, async (state, save) => {
 				if (!state.account) throw new Error('Log in first.');
 				if (flags.check) {
@@ -344,6 +378,7 @@ export function createApp(directory = dataDirectory()) {
 					state.account,
 					await masterPassword({
 						positional: args.password,
+						positionalSource: sources.args.password?.stage,
 						envName: flags.passwordenv,
 						file: flags.passwordfile,
 						noInteraction: flags.nointeraction,
@@ -465,12 +500,14 @@ export function createApp(directory = dataDirectory()) {
 			) {
 				throw new Error('Unknown object.');
 			}
-			if (objectType === 'org-collections' || objectType === 'org-members') {
-				if (!flags.organizationid) throw new Error('`organizationid` option is required.');
-				if (!isGuid(flags.organizationid)) throw new Error(`\`${flags.organizationid}\` is not a GUID.`);
-			}
 			out.json(
 				await runVault(flags.session, false, async vault => {
+					if (objectType === 'org-collections' || objectType === 'org-members') {
+						if (!flags.organizationid) throw new Error('`organizationid` option is required.');
+						if (!isGuid(flags.organizationid)) {
+							throw new Error(`\`${flags.organizationid}\` is not a GUID.`);
+						}
+					}
 					if (objectType === 'items') {
 						const filter = {
 							search: flags.search,
@@ -532,13 +569,15 @@ export function createApp(directory = dataDirectory()) {
 				].includes(objectType)
 			) throw new Error('Unknown object.');
 			if (objectType === 'attachment') {
-				if (!flags.itemid) throw new Error('--itemid <itemid> required.');
 				let attachment: { fileName: string; contents: Buffer };
 				try {
 					attachment = await runVault(
 						flags.session,
 						false,
-						vault => vault.getAttachment(flags.itemid!, id),
+						vault => {
+							if (!flags.itemid) throw new Error('--itemid <itemid> required.');
+							return vault.getAttachment(flags.itemid, id);
+						},
 						true,
 					);
 				} catch (error) {
@@ -559,14 +598,16 @@ export function createApp(directory = dataDirectory()) {
 				out.json(result);
 				return;
 			}
-			if (objectType === 'org-collection') {
-				if (!flags.organizationid) throw new Error('`organizationid` option is required.');
-				if (!isGuid(id)) throw new Error(`\`${id}\` is not a GUID.`);
-				if (!isGuid(flags.organizationid)) throw new Error(`\`${flags.organizationid}\` is not a GUID.`);
-			}
 			let result: unknown;
 			try {
 				result = await runVault(flags.session, false, async vault => {
+					if (objectType === 'org-collection') {
+						if (!flags.organizationid) throw new Error('`organizationid` option is required.');
+						if (!isGuid(id)) throw new Error(`\`${id}\` is not a GUID.`);
+						if (!isGuid(flags.organizationid)) {
+							throw new Error(`\`${flags.organizationid}\` is not a GUID.`);
+						}
+					}
 					if (objectType === 'send') return vault.sends.get(id);
 					if (objectType === 'fingerprint') return vault.fingerprint(id);
 					if (objectType === 'org-collection') return vault.getOrganizationCollection(flags.organizationid!, id);
@@ -579,8 +620,10 @@ export function createApp(directory = dataDirectory()) {
 						if (objectType === 'notes') return hasText(item.notes);
 						if (item.type !== 1 || !item.login) return false;
 						if (objectType === 'uri') {
-							return Array.isArray(item.login.uris) && item.login.uris.length > 0
-								&& object(item.login.uris[0]).uri !== '';
+							const firstUri = Array.isArray(item.login.uris) && item.login.uris.length > 0
+								? object(item.login.uris[0]).uri
+								: undefined;
+							return typeof firstUri === 'string' && firstUri !== '';
 						}
 						return hasText(item.login[objectType === 'exposed' ? 'password' : objectType]);
 					});
@@ -649,6 +692,7 @@ export function createApp(directory = dataDirectory()) {
 		});
 	const versions = versionCommands();
 	const app = cli('vw')
+		.envPrefix('VW_')
 		.plugin(outputPolicyPlugin())
 		.plugin(accountAccessPlugin(directory))
 		.default(
@@ -670,7 +714,7 @@ export function createApp(directory = dataDirectory()) {
 			return target
 				? output.replace(/^Usage: vw [^\n]+/, `Usage: vw device-approval ${target} [flags]`)
 				: output;
-		}))
+		}, { run: runVault }))
 		.command(versions.sdkVersion)
 		.command(versions.update)
 		.command(serveCommand({ run: runVault }, directory, sync))

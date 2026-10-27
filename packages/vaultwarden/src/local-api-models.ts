@@ -97,6 +97,9 @@ export function vaultItemResponse(value: JsonObject): JsonObject {
 			if (value.viewPassword === false) {
 				login.password = null;
 				login.totp = null;
+				for (const credential of login.fido2Credentials as JsonObject[] ?? []) {
+					credential.keyValue = null;
+				}
 			}
 			result.login = login;
 		} else if (section === 'secureNote') {
@@ -213,7 +216,9 @@ export function vaultItemResponse(value: JsonObject): JsonObject {
 /** Project collection details into the CLI and bw Serve response model. */
 export function organizationCollectionResponse(source: JsonObject): JsonObject {
 	const selections = (values: unknown) =>
-		Array.isArray(values)
+		values == null
+			? null
+			: Array.isArray(values)
 			? values.map(selection => {
 				const fields = selection && typeof selection === 'object' && !Array.isArray(selection)
 					? selection as JsonObject

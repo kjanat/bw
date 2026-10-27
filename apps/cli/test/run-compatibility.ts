@@ -20,16 +20,22 @@ const version = process.env.VW_TEST_VERSION ?? '1.37.4';
 if (process.platform === 'win32') throw new Error('The managed compatibility runner requires POSIX process groups.');
 const { image } = resolveCompatibilityTarget({ servers: compatibilityTargets }, version, process.env.VW_TEST_IMAGE);
 const reference = process.env.VW_TEST_BW;
+const requestedReferenceVersion = process.env.VW_TEST_BW_VERSION;
+const expectedReferenceVersion = requestedReferenceVersion ?? referenceCliVersion;
+if (!/^\d+\.\d+\.\d+$/.test(expectedReferenceVersion)) {
+	throw new Error('VW_TEST_BW_VERSION must be a semantic version such as 2026.1.0.');
+}
 const protocolOnly = process.env.VW_TEST_PROTOCOL_ONLY === '1';
 const smtpEnabled = process.env.VW_TEST_SMTP === '1';
 const ssoEnabled = process.env.VW_TEST_SSO === '1';
-if (ssoEnabled && (smtpEnabled || process.platform !== 'linux')) {
-	throw new Error('The SSO fixture requires Linux and runs separately from SMTP mode.');
+if (ssoEnabled && process.platform !== 'linux') {
+	throw new Error('The SSO fixture requires Linux.');
 }
 if (process.env.VW_TEST_PROTOCOL_ONLY && !protocolOnly) {
 	throw new Error('VW_TEST_PROTOCOL_ONLY must be 1 when enabled.');
 }
-const compareReference = !protocolOnly && !smtpEnabled && !ssoEnabled && !referenceUnsupportedServers.includes(version);
+const compareReference = !protocolOnly && !smtpEnabled && !ssoEnabled
+	&& (!referenceUnsupportedServers.includes(version) || requestedReferenceVersion !== undefined);
 if (process.env.VW_TEST_SMTP && !smtpEnabled) throw new Error('VW_TEST_SMTP must be 1 when enabled.');
 if (!/^axllent\/mailpit@sha256:[a-f0-9]{64}$/.test(mailpitImage)) throw new Error('Mailpit must use a pinned digest.');
 if (compareReference && (!reference || !isAbsolute(reference) || !(await stat(reference)).isFile())) {
@@ -43,16 +49,19 @@ const directory = await mkdtemp(join(tmpdir(), 'vw-compat-run-'));
 const name = `vw-compat-${randomUUID()}`;
 const mailName = `${name}-mail`, network = `${name}-network`;
 let mailApi: string | undefined;
+let mailSmtpPort: number | undefined;
 let oidc: ReturnType<typeof Bun.spawn> | undefined;
 let oidcUrl: string | undefined, ssoServer: string | undefined;
 const oidcControl = randomUUID();
 let interrupted = false;
-let running: ChildProcess | undefined;
+const running = new Set<ChildProcess>();
 const stopTests = () => {
-	if (running?.pid) {
-		try {
-			process.kill(-running.pid, 'SIGTERM');
-		} catch { /* The owned process group has already exited. */ }
+	for (const child of running) {
+		if (child.pid) {
+			try {
+				process.kill(-child.pid, 'SIGTERM');
+			} catch { /* The owned process group has already exited. */ }
+		}
 	}
 };
 const interrupt = () => {
@@ -103,8 +112,8 @@ try {
 			new Response(referenceVersion.stdout).text(),
 			new Response(referenceVersion.stderr).text(),
 		]);
-		if (code !== 0 || stdout.trim() !== referenceCliVersion) {
-			throw new Error(`Reference executable must be bw ${referenceCliVersion}.`);
+		if (code !== 0 || stdout.trim() !== expectedReferenceVersion) {
+			throw new Error(`Reference executable must be bw ${expectedReferenceVersion}.`);
 		}
 	}
 	const node = Bun.spawn(['node', '--version'], { env: { PATH: process.env.PATH }, stdout: 'pipe', stderr: 'pipe' });
@@ -124,7 +133,7 @@ try {
 			: smtpEnabled
 			? 'SMTP suite: library and compiled CLI login; no reference CLI required.'
 			: compareReference
-			? `Reference: ${reference} (${referenceCliVersion})`
+			? `Reference: ${reference} (${expectedReferenceVersion})`
 			: protocolOnly
 			? 'Protocol-only suite: compiled CLI against Vaultwarden; independent bw comparison disabled.'
 			: `Reference comparison unavailable: bw ${referenceCliVersion} cannot parse Vaultwarden ${version}'s prelogin response. Running our protocol checks.`,
@@ -143,6 +152,8 @@ try {
 			'mail',
 			'-p',
 			'127.0.0.1::8025',
+			'-p',
+			'127.0.0.1::1025',
 			mailpitImage,
 		]);
 		if (mail.code !== 0) throw new Error(`Could not start SMTP receiver: ${mail.output}`);
@@ -151,6 +162,13 @@ try {
 			throw new Error('Could not discover Mailpit loopback port.');
 		}
 		mailApi = `http://${port.output.trim()}`;
+		if (ssoEnabled) {
+			const smtp = await docker(['port', mailName, '1025/tcp']);
+			const address = smtp.output.trim();
+			const match = /^127\.0\.0\.1:(\d+)$/.exec(address);
+			if (smtp.code !== 0 || !match) throw new Error('Could not discover Mailpit SMTP loopback port.');
+			mailSmtpPort = Number(match[1]);
+		}
 		console.log(`SMTP receiver: ${mailName}; capture-only, with no relay configured.`);
 	}
 	if (ssoEnabled) {
@@ -210,12 +228,11 @@ try {
 		'UNAUTHENTICATED_RATELIMIT_MAX_BURST=10000',
 		...(smtpEnabled
 			? [
-				'--network',
-				network,
+				...(!ssoEnabled ? ['--network', network] : []),
 				'-e',
-				'SMTP_HOST=mail',
+				`SMTP_HOST=${ssoEnabled ? '127.0.0.1' : 'mail'}`,
 				'-e',
-				'SMTP_PORT=1025',
+				`SMTP_PORT=${ssoEnabled ? mailSmtpPort : 1025}`,
 				'-e',
 				'SMTP_SECURITY=off',
 				'-e',
@@ -256,22 +273,23 @@ try {
 	const cwd = new URL('..', import.meta.url).pathname;
 	const env = {
 		PATH: process.env.PATH,
+		VOLTA_HOME: process.env.VOLTA_HOME,
 		VW_TEST_SERVER: server,
 		VW_TEST_VERSION: version,
 		VW_TEST_BW: compareReference ? reference : undefined,
 		VW_TEST_IMPORT_FORMAT: process.env.VW_TEST_IMPORT_FORMAT,
 		VW_TEST_IMPORT_SHARD: undefined as string | undefined,
 		VW_TEST_SKIP_IMPORTS: undefined as string | undefined,
+		VW_TEST_LIST_FILTERS_ONLY: process.env.VW_TEST_LIST_FILTERS_ONLY,
+		VW_TEST_POLICY_REDACTION_ONLY: process.env.VW_TEST_POLICY_REDACTION_ONLY,
 		VW_TEST_FOCUSED_IMPORT: process.env.VW_TEST_FOCUSED_IMPORT,
 		VW_TEST_MAILPIT: mailApi,
 		VW_TEST_OIDC: oidcUrl,
 		VW_OIDC_CONTROL: ssoEnabled ? oidcControl : undefined,
 	};
-	const testArgs = (files: string[], overrides: { shard?: string; skipImports?: boolean } = {}) => {
+	const testArgs = (files: string[]) => {
 		const args = ['bun', 'test', ...files];
 		if (process.env.VW_TEST_CASE) args.push('--test-name-pattern', process.env.VW_TEST_CASE);
-		env.VW_TEST_IMPORT_SHARD = overrides.shard ?? process.env.VW_TEST_IMPORT_SHARD;
-		env.VW_TEST_SKIP_IMPORTS = overrides.skipImports ? '1' : process.env.VW_TEST_SKIP_IMPORTS;
 		return args;
 	};
 	const shardImportMatrix = compareReference && !process.env.VW_TEST_FOCUSED_IMPORT && !ssoEnabled && !smtpEnabled
@@ -296,7 +314,7 @@ try {
 				? ['test/email-live.test.ts']
 				: ['test/live.test.ts', 'test/challenge-live.test.ts', 'test/backup-integrity-live.test.ts'],
 		}];
-	for (const run of runs) {
+	const runOne = async (run: { files: string[]; shard?: string; skipImports?: boolean }): Promise<number> => {
 		if (runs.length > 1) {
 			console.log(
 				run.shard ? `Compatibility import shard ${run.shard}` : run.skipImports
@@ -304,19 +322,57 @@ try {
 					: 'Compatibility KDF and vault checks',
 			);
 		}
-		const args = testArgs(run.files, { shard: run.shard, skipImports: run.skipImports });
-		running = spawn(args[0]!, args.slice(1), { detached: true, cwd, env, stdio: 'inherit' });
-		exitCode = await new Promise<number>((resolve, reject) => {
-			running!.once('error', reject);
-			running!.once('exit', code => resolve(code ?? 130));
+		const args = testArgs(run.files);
+		const childEnv = {
+			...env,
+			VW_TEST_IMPORT_SHARD: run.shard ?? process.env.VW_TEST_IMPORT_SHARD,
+			VW_TEST_SKIP_IMPORTS: run.skipImports ? '1' : process.env.VW_TEST_SKIP_IMPORTS,
+		};
+		const child = spawn(args[0]!, args.slice(1), { detached: true, cwd, env: childEnv, stdio: 'inherit' });
+		running.add(child);
+		return await new Promise<number>(resolve => {
+			child.once('error', error => {
+				console.error(`Could not start compatibility test process: ${error.message}`);
+				resolve(1);
+			});
+			child.once('exit', code => resolve(code ?? 130));
+		}).finally(() => {
+			running.delete(child);
 		});
-		running = undefined;
-		if (exitCode !== 0) {
-			if (!interrupted) {
-				const logs = await docker(['logs', '--tail', '80', name]);
-				console.error(logs.output);
+	};
+	const reportFailure = async () => {
+		if (!interrupted) {
+			const logs = await docker(['logs', '--tail', '80', name]);
+			console.error(logs.output);
+		}
+	};
+	if (shardImportMatrix) {
+		exitCode = await runOne(runs[0]!);
+		if (exitCode === 0 && !interrupted) {
+			let nextShard = 1;
+			let failed = false;
+			const workers = Array.from({ length: Math.min(4, runs.length - 2) }, async () => {
+				while (!failed && !interrupted && nextShard < runs.length - 1) {
+					const run = runs[nextShard++]!;
+					const code = await runOne(run);
+					if (code !== 0 && !failed) {
+						failed = true;
+						exitCode = code;
+						stopTests();
+					}
+				}
+			});
+			await Promise.all(workers);
+			if (!failed && !interrupted) exitCode = await runOne(runs.at(-1)!);
+		}
+		if (exitCode !== 0) await reportFailure();
+	} else {
+		for (const run of runs) {
+			exitCode = await runOne(run);
+			if (exitCode !== 0) {
+				await reportFailure();
+				break;
 			}
-			break;
 		}
 	}
 } finally {

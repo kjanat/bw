@@ -66,6 +66,15 @@ function routeMethods(parts: string[]): string[] {
 	if (parts.length === 3 && parts[0] === 'list' && parts[1] === 'object') return ['HEAD', 'GET'];
 	if (parts.length === 2 && parts[0] === 'send' && parts[1] === 'list') return ['HEAD', 'GET'];
 	if (parts.length === 3 && parts[0] === 'send' && parts[2] === 'remove-password') return ['POST'];
+	if (parts.length === 2 && parts[0] === 'device-approval') return ['HEAD', 'GET'];
+	if (
+		parts.length === 3 && parts[0] === 'device-approval'
+		&& ['approve-all', 'deny-all'].includes(parts[2]!)
+	) return ['POST'];
+	if (
+		parts.length === 4 && parts[0] === 'device-approval'
+		&& ['approve', 'deny'].includes(parts[2]!)
+	) return ['POST'];
 	if (parts[0] === 'object' && parts.length === 2) return ['POST'];
 	if (parts[0] === 'object' && parts.length === 3) return ['HEAD', 'GET', 'PUT', 'DELETE'];
 	if (parts.length === 3 && ['move', 'restore', 'archive', 'confirm'].includes(parts[0]!)) return ['POST'];
@@ -152,7 +161,7 @@ function formSegments(key: string): string[] | undefined {
 	const match = /^([^\x5B\x5D]+)((?:\x5B[^\x5B\x5D]*\x5D)*)$/.exec(key);
 	if (!match) return undefined;
 	const brackets = [...match[2]!.matchAll(/\x5B([^\x5B\x5D]*)\x5D/g)].map(bracket => bracket[1]!);
-	// koa-bodyparser's qs parser defaults to depth 5. It keeps deeper brackets
+	// koa-bodyparser's qs parser defaults to depth 5. It treats deeper brackets
 	// as a literal final key instead of discarding the parameter.
 	const segments = [match[1]!, ...brackets.slice(0, 5)];
 	if (brackets.length > 5) segments.push(brackets.slice(5).map(segment => `[${segment}]`).join(''));
@@ -474,7 +483,7 @@ export function createLocalApiHandler(
 		if (!localApiRequestAllowed(request, options)) {
 			return new Response('Forbidden', { status: 403, headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
 		}
-		// Lock, unlock and mutations share the host application's session. Keep their ordering deterministic.
+		// Lock, unlock and mutations share the host application's session. Run them in arrival order.
 		const previous = tail;
 		let release!: () => void;
 		tail = new Promise(resolve => {
@@ -526,6 +535,9 @@ export function createLocalApiHandler(
 				result = messageResult('Your vault is locked.');
 			} else if (route.length === 1 && method === 'POST' && route[0] === 'unlock') {
 				const body = object(await parsedBody(request));
+				if (body.password != null && typeof body.password !== 'string') {
+					throw new Error('Invalid request.');
+				}
 				const password = typeof body.password === 'string' && body.password.length ? body.password : null;
 				const session = await backend.unlock(password);
 				result = {
@@ -533,14 +545,50 @@ export function createLocalApiHandler(
 					raw: session,
 				};
 			} else if (route[0] === 'list' && route[1] === 'object' && route.length === 3 && method === 'GET') {
-				const kind = parts[2]!.toLowerCase();
+				const objectName = parts[2]!;
+				const kind = objectName.toLowerCase();
 				result = listResult(
-					await backend.run(false, vault => list(vault, kind, query), kind.startsWith('org-')),
+					await backend.run(false, vault => {
+						// The pinned Serve router special-cases the exact lowercase `send`
+						// before ListCommand lowercases its own object names. `SEND` is unknown.
+						if (kind === 'send' && objectName !== 'send') throw new Error('Unknown object.');
+						return list(vault, kind, query);
+					}, kind.startsWith('org-')),
 				);
 			} else if (route[0] === 'send' && route[1] === 'list' && route.length === 2 && method === 'GET') {
 				result = listResult(await backend.run(false, vault => list(vault, 'send', query)));
 			} else if (route[0] === 'send' && route[2] === 'remove-password' && route.length === 3 && method === 'POST') {
 				result = await backend.run(true, vault => vault.sends.removePassword(parts[1]!));
+			} else if (route[0] === 'device-approval' && route.length === 2 && method === 'GET') {
+				result = listResult(await backend.run(false, vault => vault.deviceApprovals.list(parts[1]!), true));
+			} else if (
+				route[0] === 'device-approval' && route.length === 3 && method === 'POST'
+				&& (route[2] === 'approve-all' || route[2] === 'deny-all')
+			) {
+				const approve = route[2] === 'approve-all';
+				const changed = await backend.run(
+					false,
+					vault =>
+						approve
+							? vault.deviceApprovals.approveAll(parts[1]!)
+							: vault.deviceApprovals.denyAll(parts[1]!),
+					true,
+				);
+				if (!changed) {
+					result = messageResult(`No pending device authorization requests to ${approve ? 'approve' : 'deny'}.`);
+				}
+			} else if (
+				route[0] === 'device-approval' && route.length === 4 && method === 'POST'
+				&& (route[2] === 'approve' || route[2] === 'deny')
+			) {
+				await backend.run(
+					false,
+					vault =>
+						route[2] === 'approve'
+							? vault.deviceApprovals.approve(parts[1]!, parts[3]!)
+							: vault.deviceApprovals.deny(parts[1]!, parts[3]!),
+					true,
+				);
 			} else if (route[0] === 'attachment' && route.length === 1 && method === 'POST') {
 				const bytes = await bodyBytes(request, options.maxUploadBytes ?? 526 * 1024 * 1024);
 				try {
@@ -550,8 +598,11 @@ export function createLocalApiHandler(
 						body: new Uint8Array(bytes),
 					})
 						.formData();
-					const file = form.get('file');
-					if (!file || typeof file === 'string') throw new Error('A multipart file field is required.');
+					const uploads = ([...form.entries()] as [string, unknown][]).filter(([, value]) => value instanceof Blob);
+					if (uploads.length !== 1 || uploads[0]![0] !== 'file') {
+						throw new Error('Exactly one multipart file field named `file` is required.');
+					}
+					const file = uploads[0]![1] as File;
 					const contents = new Uint8Array(await file.arrayBuffer());
 					try {
 						result = await backend.run(
@@ -574,14 +625,22 @@ export function createLocalApiHandler(
 				const kind = parts[1]!.toLowerCase(), id = parts[2]!.toLowerCase();
 				result = await backend.run(
 					false,
-					vault => get(vault, kind, id, query, parts[2]!),
+					vault => {
+						// Serve routes Send requests only for the exact lowercase object name.
+						if (kind === 'send' && parts[1] !== 'send') throw new Error('Unknown object.');
+						return get(vault, kind, id, query, parts[2]!);
+					},
 					kind === 'attachment' || kind === 'org-collection' || kind === 'fingerprint',
 				);
 			} else if (
 				route[0] === 'object' && ((route.length === 2 && method === 'POST') || (route.length === 3 && method === 'PUT'))
 			) {
-				const body = await parsedBody(request), kind = parts[1]!.toLowerCase(), id = parts[2]?.toLowerCase();
+				const body = await parsedBody(request),
+					objectName = parts[1]!,
+					kind = objectName.toLowerCase(),
+					id = parts[2]?.toLowerCase();
 				result = await backend.run<unknown>(true, vault => {
+					if (kind === 'send' && objectName !== 'send') throw new Error('Unknown object.');
 					if (kind === 'item-collections' && id) return vault.editItemCollections(id, stringArray(body));
 					const data = object(body);
 					if (kind === 'item') {
@@ -619,7 +678,8 @@ export function createLocalApiHandler(
 				if (result && typeof result === 'object') result = apiObject(kind, object(result));
 			} else if (route[0] === 'object' && route.length === 3 && method === 'DELETE') {
 				await backend.run(true, async vault => {
-					const kind = parts[1]!.toLowerCase(), id = parts[2]!.toLowerCase();
+					const objectName = parts[1]!, kind = objectName.toLowerCase(), id = parts[2]!.toLowerCase();
+					if (kind === 'send' && objectName !== 'send') throw new Error('Unknown object.');
 					if (kind === 'item') await vault.deleteItem(id, boolean(query, 'permanent'));
 					else if (kind === 'folder') await vault.deleteFolder(id);
 					else if (kind === 'org-collection') {

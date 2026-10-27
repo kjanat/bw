@@ -49,8 +49,9 @@ and removes it afterward. CI's planner combines the pinned baseline servers with
 the latest stable Vaultwarden release, deduplicates versions, resolves any new
 release to an image digest, and emits the JSON matrix for Node 24/26.
 
-See the [usage guide](docs/README.md) and [compatibility contract](docs/compatibility.md)
-for supported commands, real-server tests, and remaining work. The implementation is in progress against the full CLI scope;
-[implementation status](docs/implementation-status.md) records completed behavior and outstanding work.
+See the [usage guide](docs/README.md), [implementation status](docs/implementation-status.md),
+and [Vaultwarden accommodations](docs/vaultwarden-deviations.md) for supported
+commands, compatibility behavior, real-server tests, and outstanding work.
+The implementation is in progress against the full CLI scope.
 The [Vaultwarden accommodations inventory](docs/vaultwarden-deviations.md) explains
 intentional differences from Bitwarden and the production rules that select them.

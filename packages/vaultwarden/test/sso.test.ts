@@ -71,7 +71,7 @@ test('callback state, issuer, destination, duplicate parameters and OAuth errors
 	);
 	await expect(createSsoAuthorization(client, 'http://localhost:9000')).rejects.toThrow('8065');
 });
-test('disabled SSO has an actionable error while rate limits retain their status without retries', async () => {
+test('disabled SSO has an actionable error while rate limits return their status without retries', async () => {
 	for (const status of [400, 429]) {
 		let requests = 0;
 		const client = new VaultwardenClient('https://vault.example', {
@@ -93,7 +93,7 @@ test('disabled SSO has an actionable error while rate limits retain their status
 		expect(requests).toBe(1);
 	}
 });
-test('SSO login resolves email/KDF from authenticated data, retains no grant parameters and refreshes without a password grant', async () => {
+test('SSO login resolves email/KDF from authenticated data, omits grant parameters and refreshes without a password grant', async () => {
 	const grants: URLSearchParams[] = [];
 	const client = new VaultwardenClient('https://vault.example', {
 		deviceId: 'fixture-device',

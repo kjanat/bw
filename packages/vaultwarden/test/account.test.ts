@@ -250,7 +250,7 @@ test('API-key login rejects organization keys, mismatched principals and invalid
 		expect(String(error).includes(credentials.clientSecret)).toBe(false);
 	}
 });
-test('password accounts retain refresh-token renewal semantics', async () => {
+test('password accounts follow refresh-token renewal semantics', async () => {
 	const account: PasswordAccount = {
 		accessToken: 'old',
 		refreshToken: 'refresh',

@@ -103,7 +103,7 @@ export async function answerLoginChallenge(
 	// Recovery is an explicit choice (--method 8); Vaultwarden does not advertise it in challenges.
 	if (provider === undefined || (provider !== 8 && !supported.includes(provider))) {
 		throw new Error(
-			'No supported two-factor method selected. Supported methods: TOTP, email, Duo, YubiKey OTP, WebAuthn, and recovery code.',
+			'Choose a two-factor method: TOTP, email, Duo, YubiKey OTP, WebAuthn, or recovery code.',
 		);
 	}
 	if (provider === 1) await challenge.requestEmail();
@@ -133,20 +133,24 @@ export async function answerLoginChallenge(
 
 export interface PasswordSource {
 	positional?: string;
+	positionalSource?: 'cli' | 'stdin' | 'env' | 'config' | 'prompt' | 'default';
 	envName?: string;
 	file?: string;
 	noInteraction?: boolean;
 }
-/** bw precedence: a positional value, then the file's first line, then a named environment variable. */
+/** bw precedence: a CLI positional value, then the file's first line, then an environment value. */
 export async function masterPassword(source: PasswordSource): Promise<string> {
-	let value = source.positional;
+	let value = source.positionalSource !== 'env' ? source.positional : undefined;
 	if (!value && source.file) value = (await readFile(source.file, 'utf8')).split(/\r\n|\n|\r/, 1)[0];
-	else if (!value && !source.file) value = process.env[source.envName ?? 'VW_PASSWORD'];
+	else if (!value && source.envName) value = process.env[source.envName];
+	else if (!value) value = source.positional;
 	if (value === undefined && !source.noInteraction && process.stdin.isTTY) {
 		value = await secretPrompt('Master password:');
 	}
 	if (!value) {
-		throw new Error('A master password is required. Use --passwordenv, --passwordfile, or an interactive terminal.');
+		throw new Error(
+			'Master password required. Set VW_PASSWORD, use --passwordenv or --passwordfile, or run in a terminal.',
+		);
 	}
 	return value;
 }
@@ -158,12 +162,24 @@ export async function loginEmail(value?: string, noInteraction = false): Promise
 	return value.trim();
 }
 export async function apiCredentials(
-	clientIdEnv = 'VW_CLIENTID',
-	clientSecretEnv = 'VW_CLIENTSECRET',
+	clientIdEnv?: string,
+	clientSecretEnv?: string,
 	noInteraction = false,
+	clientIdValue?: string,
+	clientSecretValue?: string,
+	clientIdSource?: string,
+	clientSecretSource?: string,
 ) {
-	let clientId = process.env[clientIdEnv];
-	let clientSecret = process.env[clientSecretEnv];
+	let clientId = clientIdSource === 'cli'
+		? clientIdValue
+		: clientIdEnv !== undefined
+		? process.env[clientIdEnv]
+		: clientIdValue;
+	let clientSecret = clientSecretSource === 'cli'
+		? clientSecretValue
+		: clientSecretEnv !== undefined
+		? process.env[clientSecretEnv]
+		: clientSecretValue;
 	if (!clientId && !noInteraction && process.stdin.isTTY) {
 		clientId = await inputPrompt('client_id');
 	}
@@ -172,7 +188,7 @@ export async function apiCredentials(
 	}
 	if (!clientId || !clientSecret) {
 		throw new Error(
-			'API credentials are required. Set VW_CLIENTID and VW_CLIENTSECRET or select named environment variables.',
+			'API credentials required. Set VW_CLIENTID and VW_CLIENTSECRET, use --clientidenv and --clientsecretenv, or run in a terminal.',
 		);
 	}
 	return { clientId: clientId.trim(), clientSecret };

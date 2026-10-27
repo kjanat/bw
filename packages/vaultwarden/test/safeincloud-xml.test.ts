@@ -53,7 +53,7 @@ test('SafeInCloud XML rejects malformed, missing-database, and entity-bearing do
 		.toThrow('XML entity declarations are not supported.');
 });
 
-test('SafeInCloud XML preserves note text and appends the reference newline', () => {
+test('SafeInCloud XML imports exact note text and appends the reference newline', () => {
 	const result = items(
 		parseSafeInCloudXml('<database><card title="Trailing"><notes>note&#10;</notes></card></database>'),
 	);
@@ -80,7 +80,7 @@ test('SafeInCloud XML selects the first hidden field with any pinned password al
 	expect(result[0]?.fields).toEqual([{ name: 'Other', value: 'first hidden value', type: 1 }]);
 });
 
-test('SafeInCloud XML retains the fallback hidden field when it becomes the password', () => {
+test('SafeInCloud XML maps the fallback hidden field to the password', () => {
 	const result = items(parseSafeInCloudXml(
 		'<database><card title="Fallback"><field name="Secret value" type="secret">first hidden value</field></card></database>',
 	));

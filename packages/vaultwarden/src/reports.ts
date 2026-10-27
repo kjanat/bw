@@ -193,7 +193,7 @@ export async function passwordHealth(
 					row.exposedCount = found > 0 ? found : null;
 				} catch (error) {
 					// PasswordExposureClient maps transport and response failures to bounded,
-					// non-body-bearing messages. Preserve them like bw's SDK response does.
+					// non-body-bearing messages. Return the same message as bw's SDK.
 					row.exposedError = error instanceof Error ? error.message : 'Password exposure check failed.';
 				}
 			}

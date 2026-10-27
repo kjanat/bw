@@ -239,7 +239,7 @@ const addressFields: Record<string, string> = {
 	'Email Address': 'email',
 	Username: 'username',
 };
-/** Structured notes retain unknown fields and every continuation after Notes:. */
+/** Structured notes include unknown fields and every continuation after Notes:. */
 function structuredNote(item: VaultItem, extra: string): void {
 	const lines = extra.split(/\r\n|\r|\n/), type = lines[0]?.slice('NoteType:'.length);
 	if (!lines[0]?.startsWith('NoteType:') || !['Credit Card', 'Address'].includes(type!)) {

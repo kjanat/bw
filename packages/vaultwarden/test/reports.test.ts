@@ -72,7 +72,7 @@ test('range requests send only five SHA1 characters, ask for padding, and never 
 	expect(await client.count('password')).toBe(123);
 	expect(calls).toBe(1);
 });
-test('reports coalesce repeated-password lookups and keep exposure failures distinct from zero matches', async () => {
+test('reports coalesce repeated-password lookups and distinguish failures from zero matches', async () => {
 	const requested: string[] = [];
 	const client = new PasswordExposureClient({
 		fetch: (async (url: unknown) => {

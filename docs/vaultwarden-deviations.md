@@ -1,7 +1,7 @@
 # Intentional accommodations for Vaultwarden
 
 This document records where this library and CLI deliberately depart from the
-pinned Bitwarden CLI, or retain an older protocol path, to work with Vaultwarden.
+pinned Bitwarden CLI, or support an older protocol path, to work with Vaultwarden.
 It describes production behavior in `packages/vaultwarden/src` and `apps/cli/src`;
 the compatibility runner does not supply these adaptations to the application.
 
@@ -11,8 +11,7 @@ Bitwarden CLI **2026.10.0** and
 The verified server targets are
 [Vaultwarden 1.36.0](https://github.com/dani-garcia/vaultwarden/tree/1.36.0) and
 [Vaultwarden 1.37.4](https://github.com/dani-garcia/vaultwarden/tree/1.37.4).
-Tests and older live results are indexed in the
-[compatibility contract](compatibility.md) and
+Test coverage and outstanding work are tracked in
 [implementation status](implementation-status.md).
 
 An accommodation can be a different user-visible rule, an additional fallback,
@@ -22,39 +21,39 @@ are identified explicitly below.
 
 ## Inventory
 
-| ID    | Accommodation                                                                   | How it is selected                                               |
-| ----- | ------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| VW-01 | Require an explicitly configured server; no default cloud login                 | All account operations                                           |
-| VW-02 | Discover Vaultwarden identity and version before applying its rules             | `/api/config`, then `/api/version` where needed                  |
-| VW-03 | Retain legacy prelogin routes and KDF response shapes                           | Endpoint status and response fields                              |
-| VW-04 | Retain legacy wrapped-user-key response shapes                                  | Response fields                                                  |
-| VW-05 | Accept recovery codes even when the provider is not advertised                  | Explicit provider `8`                                            |
-| VW-06 | Use Vaultwarden SSO prevalidation and initial account setup                     | Explicit SSO login                                               |
-| VW-07 | Deliver SSO email codes through the pending device                              | Explicit email-factor selection during SSO                       |
-| VW-08 | Support Vaultwarden Duo OIDC from the terminal                                  | Provider `2` with `AuthUrl` metadata                             |
-| VW-09 | Support WebAuthn and legacy U2F through system helpers                          | Provider `7` with challenge metadata                             |
-| VW-10 | Include saved equivalent domains in sync and URL matching                       | Every full sync                                                  |
-| VW-11 | Authorize attachments through Vaultwarden access, without a hosted premium gate | Detected Vaultwarden                                             |
-| VW-12 | Allow file Send creation and editing without hosted premium status              | Detected Vaultwarden                                             |
-| VW-13 | Allow archive operations and archived edits without hosted premium status       | Detected Vaultwarden                                             |
-| VW-14 | Use Vaultwarden's encrypted upload limit                                        | Vaultwarden file Sends; attachment limit currently unconditional |
-| VW-15 | Retain anonymous Send access before the `send_access` grant                     | Explicit unsupported-grant response                              |
-| VW-16 | Reject email-verification Sends                                                 | Currently unconditional                                          |
-| VW-17 | Serialize collection membership lists as arrays                                 | Collection writes and organization imports                       |
-| VW-18 | Honor collection-manager rights despite restrictive cipher flags                | Detected Vaultwarden and a synced `manage` grant                 |
-| VW-19 | Honor Vaultwarden owner/admin collection access                                 | Detected Vaultwarden                                             |
-| VW-20 | Support collectionless organization writes with version-specific checks         | Detected Vaultwarden; rules change at 1.37.4                     |
-| VW-21 | Preflight organization-import collection permissions                            | Detected Vaultwarden 1.37.4 or newer                             |
-| VW-22 | Gate newer item types against the actual Vaultwarden version                    | Detected Vaultwarden; types 6–8 require 1.37.4                   |
-| VW-23 | Fall back to synced attachment metadata on a missing metadata endpoint          | Metadata HTTP 404 only                                           |
-| VW-24 | Reject organization SSO device approvals explicitly                             | Currently unconditional; absent on both pinned targets           |
+| ID    | Accommodation                                                                   | How it is selected                                              |
+| ----- | ------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| VW-01 | Require an explicitly configured server; no default cloud login                 | All account operations                                          |
+| VW-02 | Discover Vaultwarden identity and version before applying its rules             | `/api/config`, then `/api/version` where needed                 |
+| VW-03 | Use legacy prelogin routes and KDF response shapes                              | Endpoint status and response fields                             |
+| VW-04 | Read legacy wrapped-user-key response shapes                                    | Response fields                                                 |
+| VW-05 | Accept recovery codes even when the provider is not advertised                  | Explicit provider `8`                                           |
+| VW-06 | Use Vaultwarden SSO prevalidation and initial account setup                     | Explicit SSO login                                              |
+| VW-07 | Deliver SSO email codes through the pending device                              | Explicit email-factor selection during SSO                      |
+| VW-08 | Support Vaultwarden Duo OIDC from the terminal                                  | Provider `2` with `AuthUrl` metadata                            |
+| VW-09 | Support WebAuthn and legacy U2F through system helpers                          | Provider `7` with challenge metadata                            |
+| VW-10 | Include saved equivalent domains in sync and URL matching                       | Every full sync                                                 |
+| VW-11 | Authorize attachments through Vaultwarden access, without a hosted premium gate | Detected Vaultwarden                                            |
+| VW-12 | Allow file Send creation and editing without hosted premium status              | Detected Vaultwarden                                            |
+| VW-13 | Allow archive operations and archived edits without hosted premium status       | Detected Vaultwarden                                            |
+| VW-14 | Use Vaultwarden's encrypted upload limit                                        | Detected Vaultwarden for file Sends and attachments             |
+| VW-15 | Handle anonymous Send access before the `send_access` grant                     | Explicit unsupported-grant response                             |
+| VW-16 | Reject email-verification Sends on Vaultwarden                                  | Detected Vaultwarden; Bitwarden Cloud uses recipient allowlists |
+| VW-17 | Serialize collection membership lists as arrays                                 | Collection writes and organization imports                      |
+| VW-18 | Honor collection-manager rights despite restrictive cipher flags                | Detected Vaultwarden and a synced `manage` grant                |
+| VW-19 | Honor Vaultwarden owner/admin collection access                                 | Detected Vaultwarden                                            |
+| VW-20 | Support collectionless organization writes with version-specific checks         | Detected Vaultwarden; rules change at 1.37.4                    |
+| VW-21 | Preflight organization-import collection permissions                            | Detected Vaultwarden 1.37.4 or newer                            |
+| VW-22 | Gate newer item types against the actual Vaultwarden version                    | Detected Vaultwarden; types 6–8 require 1.37.4                  |
+| VW-23 | Fall back to synced attachment metadata on a missing metadata endpoint          | Metadata HTTP 404 only                                          |
+| VW-24 | Reject organization SSO device approvals on verified unsupported releases       | Vaultwarden 1.36.0 and 1.37.4 only                              |
 
 ## Server selection and protocol compatibility
 
 ### VW-01: Explicit server configuration
 
 The official CLI has Bitwarden service defaults. This CLI requires `config
-server` before creating an account client. It preserves a configured path prefix
+server` before creating an account client. It honors a configured path prefix
 and custom API/identity service URLs, and does not redirect a failed Vaultwarden
 login to a Bitwarden cloud endpoint.
 
@@ -93,7 +92,7 @@ rate limits, and connection errors do not trigger that fallback.
 
 The parser accepts both flat `kdf`/`kdfIterations`/`kdfMemory`/`kdfParallelism`
 fields and nested `kdfSettings` fields. It also handles the server's upper- or
-lower-initial response field names. This retains interoperability with older
+lower-initial response field names. This supports interoperability with older
 Vaultwarden responses: the pinned official CLI cannot parse 1.36.0's prelogin
 response, as recorded in the existing compatibility results. It does not imply
 that every accepted response variant is unsupported by Bitwarden.
@@ -105,7 +104,7 @@ Server contract: [1.36.0 accounts.rs](https://github.com/dani-garcia/vaultwarden
 
 ### VW-04: Older wrapped-user-key responses
 
-Password, API-key, and SSO login retain the legacy `Key`/`key` response path
+Password, API-key, and SSO login read the legacy `Key`/`key` response fields
 alongside `userDecryptionOptions.masterPasswordUnlock` and its
 `masterKeyWrappedUserKey` or `masterKeyEncryptedUserKey` fields. API-key and SSO
 login resolve the authenticated profile before constructing the account.
@@ -245,7 +244,7 @@ The reference CLI checks premium status for personal-vault attachments.
 Vaultwarden checks access to the cipher and attachment instead. On detected
 Vaultwarden, our create, download, and delete paths therefore allow the server
 to authorize the operation without requiring premium profile fields.
-Non-Vaultwarden connections retain the premium/organization access checks.
+The premium and organization access checks also run for non-Vaultwarden servers.
 This does not bypass server quotas or server authorization.
 
 Implementation: `canAccessAttachment` in
@@ -258,8 +257,8 @@ Server contract: [ciphers.rs](https://github.com/dani-garcia/vaultwarden/blob/1.
 
 The reference Send create/edit commands require premium for file Sends. Our
 `SendService` also accepts detected Vaultwarden, allowing its Send policy,
-storage quota, and upload handlers to decide. Bitwarden connections retain the
-premium requirement. Text Sends use their ordinary flow.
+storage quota, and upload handlers to decide. Bitwarden connections require
+premium. Text Sends use their ordinary flow.
 
 Implementation: `canAccessFileSend` in [sends.ts](../packages/vaultwarden/src/sends.ts).
 Coverage: explicit Bitwarden-versus-Vaultwarden cases in
@@ -272,11 +271,11 @@ The reference archive command requires premium, and its non-premium archived
 edit flow moves the item back to the active vault. For detected Vaultwarden,
 our archive mutation is allowed without that entitlement, and an archived edit
 does not require unarchiving solely because premium profile fields are false.
-Non-Vaultwarden connections keep the hosted checks.
+Hosted-service checks run for every non-Vaultwarden server.
 
 Archived listing uses the same Vaultwarden entitlement decision, so
 `listItems({ archived: true })` includes archived items even when all synced
-premium fields are false. Non-Vaultwarden listing retains the hosted behavior.
+premium fields are false. Non-Vaultwarden listing follows the hosted behavior.
 
 Implementation: `archiveItem`, `listItems` and `shouldUnarchiveBeforeEdit` in
 [vault-service.ts](../packages/vaultwarden/src/vault-service.ts), plus
@@ -291,13 +290,13 @@ The reference Send SDK sets a 500 MiB file-content ceiling. Vaultwarden's pinned
 handlers use an encrypted-file ceiling of **550,502,400 bytes (525 MiB)**.
 For a file Send exceeding 500 MiB of plaintext, our library checks server identity
 and, on Vaultwarden, applies that encrypted-size ceiling. Bitwarden file Sends
-retain the 500 MiB plaintext limit.
+use the 500 MiB plaintext limit.
 
 Cipher attachments use the same capability constant. The check includes the
 binary type byte, IV, MAC, and padded ciphertext; 525 MiB of plaintext therefore
-does not fit. The attachment limit currently applies regardless of server
-identity. Boundary tests use size calculations, not half-gigabyte live uploads;
-configured server quotas may be smaller.
+does not fit. Bitwarden attachments use the 500 MiB plaintext limit.
+Boundary tests use size calculations, not half-gigabyte live uploads; configured
+server quotas may be smaller.
 
 Implementation: `assertSendFileSize` in [sends.ts](../packages/vaultwarden/src/sends.ts),
 `saveAttachment` in [vault-service.ts](../packages/vaultwarden/src/vault-service.ts),
@@ -328,26 +327,23 @@ the response rather than by a version guess.
 Implementation: `receiveSend` in [sends.ts](../packages/vaultwarden/src/sends.ts)
 and the Send access/error methods in [client.ts](../packages/vaultwarden/src/client.ts).
 Coverage: [recipient/fallback tests](../packages/vaultwarden/test/sends.test.ts)
-and the historical 1.36.0 live fixture documented in [compatibility.md](compatibility.md).
+and the pinned-server compatibility test runner.
 Server contract: [1.36.0 sends.rs](https://github.com/dani-garcia/vaultwarden/blob/1.36.0/src/api/core/sends.rs).
 
-### VW-16: No email-verification Sends
+### VW-16: No email-verification Sends on Vaultwarden
 
-The reference CLI supports `--emails` and email-restricted Send access.
-Vaultwarden rejects a non-null `emails` request field. Our library rejects
-nonempty recipient lists and malformed email values before mutation; the CLI
-also rejects the `--emails` option. Omitted, null, or empty-array values in
-application input remain valid and produce no `emails` field on the wire.
-Accepting `[]` preserves the round-trip from the public Send response back into
-create/edit; it does not request email verification from Vaultwarden.
+The reference CLI supports email-restricted Sends on Bitwarden Cloud. This
+client serializes recipient addresses as a comma-separated `emails` field and
+omits password authentication when recipients are configured. It detects
+Vaultwarden before sending that field and rejects the unsupported feature. The
+request omits an empty recipient list, so a response can be sent back without
+adding an `emails` field.
 
-This is currently a product-wide restriction, not a server-detected one:
-connecting this client to Bitwarden does not enable email-verification Sends.
-
-Implementation: validation in [sends.ts](../packages/vaultwarden/src/sends.ts)
-and [send-commands.ts](../apps/cli/src/send-commands.ts).
-Coverage: public-response round-trip, empty-list omission, and recipient-list rejection in
-[sends.test.ts](../packages/vaultwarden/test/sends.test.ts).
+Implementation: server-aware validation and wire serialization in
+[sends.ts](../packages/vaultwarden/src/sends.ts), plus `--emails` parsing in
+[send-commands.ts](../apps/cli/src/send-commands.ts).
+Coverage: Cloud request serialization, Vaultwarden rejection, malformed input,
+and empty-list round-trip in [sends.test.ts](../packages/vaultwarden/test/sends.test.ts).
 Server contract: [sends.rs](https://github.com/dani-garcia/vaultwarden/blob/1.37.4/src/api/core/sends.rs).
 
 ## Organization writes
@@ -356,8 +352,8 @@ Server contract: [sends.rs](https://github.com/dani-garcia/vaultwarden/blob/1.37
 
 The pinned CLI can send `groups: null` when creating an organization collection.
 Vaultwarden 1.36.0's `FullCollectionData` requires a sequence. Our collection
-writer sends arrays for groups/users and preserves existing memberships when
-an edit omits them. Organization bulk-import collection records also include
+writer sends arrays for groups/users. If an edit omits those fields, the request
+uses the collection's current membership arrays. Organization bulk-import collection records also include
 `groups: []`, `users: []`, and an explicit nullable `externalId`, satisfying the
 older full request shape. These serializations are used on both server versions
 and on non-Vaultwarden connections.
@@ -369,7 +365,7 @@ Vaultwarden deviation.
 Implementation: `saveCollection` in
 [vault-service.ts](../packages/vaultwarden/src/vault-service.ts) and collection
 serialization in [transfer.ts](../packages/vaultwarden/src/transfer.ts).
-Coverage: collection preservation/default tests in
+Coverage: collection edit/default tests in
 [vault-service.test.ts](../packages/vaultwarden/test/vault-service.test.ts)
 and older import-shape tests in [transfer.test.ts](../packages/vaultwarden/test/transfer.test.ts).
 References: [1.36.0 FullCollectionData](https://github.com/dani-garcia/vaultwarden/blob/1.36.0/src/api/core/organizations.rs)
@@ -385,7 +381,7 @@ delete, restore, and collection-assignment paths account for that grant.
 This is not a blanket permission bypass: the collection must belong to the
 cipher's organization, and target/removed collection assignments still undergo
 writability checks. The server authorizes the actual mutation. Non-Vaultwarden
-connections keep the original cipher-flag checks.
+connections still apply the original cipher-flag checks.
 
 Implementation: `hasVaultwardenManagedCipherWriteAccess` and callers in
 [vault-service.ts](../packages/vaultwarden/src/vault-service.ts).
@@ -401,13 +397,14 @@ that is not fully represented by those checks. After detecting Vaultwarden,
 our collection-writability checks recognize owner/admin access when moving
 items or changing collection assignments.
 
-Custom-role `permissions.editAnyCollection` handling remains separate; this does
-not make ordinary members administrators. Non-Vaultwarden connections retain
-their `allowAdminAccessToAllCollectionItems` behavior.
+Custom roles use their explicit `permissions.editAnyCollection` grant for
+collection assignment checks. This grant does not change the member's role or
+grant unrelated operations. Other servers still use their
+`allowAdminAccessToAllCollectionItems` behavior.
 
 Implementation: `canWriteAnyCollection` in
 [vault-service.ts](../packages/vaultwarden/src/vault-service.ts).
-Coverage: owner/admin move and reassignment cases in
+Coverage: owner/admin and custom-role move/reassignment cases in
 [vault-service.test.ts](../packages/vaultwarden/test/vault-service.test.ts).
 
 ### VW-20: Collectionless organization writes and imports
@@ -416,15 +413,15 @@ The reference-style move/assignment path requires a collection. Vaultwarden
 can accept collectionless organization ciphers, so this implementation consults
 the connected version instead of rejecting all empty collection lists.
 
-- **1.36.0:** retain the older create/move/import behavior without the newer
+- **1.36.0:** use the older create/move/import behavior without the newer
   full-access preflight.
 - **1.37.4 and newer:** require a confirmed membership with the locally resolved
   full-access grant before collectionless create, move, or import.
 
 For bulk imports this also prevents a success response after Vaultwarden has
 silently skipped collectionless ciphers the member cannot import.
-Non-Vaultwarden collectionless create/move checks retain the collection
-requirement; the Vaultwarden import preflight is not applied to them.
+Other servers still require a collection for collectionless create/move; the
+Vaultwarden import preflight does not apply to them.
 
 Implementation: `assertCollectionlessOrganizationWriteAllowed` and
 `assertOrganizationCollectionlessImportAllowed` in
@@ -480,13 +477,13 @@ Coverage: [client](../packages/vaultwarden/test/client.test.ts),
 
 Attachment downloads normally request fresh metadata from
 `/api/ciphers/{itemId}/attachment/{attachmentId}`. On HTTP 404 only, the library
-can use the attachment metadata and URL already present in sync. It retains the
+can use the attachment metadata and URL already present in sync. It uses the
 cached filename/key where a fresh response supplies only a URL. HTTP 401, 403,
 429, server errors, and transport errors are propagated instead of selecting
 the fallback.
 
-This retains an older-server path; it is not selected by a Vaultwarden version
-check. Signed downloads still omit account credentials and reject redirects.
+This fallback supports older servers; a Vaultwarden version check does not select it.
+Signed downloads still omit account credentials and reject redirects.
 The fallback is transport-tested; the documented older-server attachment live
 run does not establish that the fallback itself was exercised live.
 
@@ -496,23 +493,26 @@ Implementation: `downloadAttachment` in
 Coverage: metadata-fallback cases in
 [vault-service.test.ts](../packages/vaultwarden/test/vault-service.test.ts).
 
-### VW-24: Organization SSO device approvals are explicitly unsupported
+### VW-24: Organization SSO device approvals are release-gated
 
 The reference `device-approval` family uses organization routes beneath
-`/organizations/{id}/auth-requests`. Neither pinned Vaultwarden target exposes
-those routes. The five operational commands return
+`/organizations/{id}/auth-requests`. Vaultwarden 1.36.0 and 1.37.4 are detected
+through `/api/config` and `/api/version`; those versions return
 `UnsupportedVaultwardenCapabilityError` with code
-`UNSUPPORTED_VAULTWARDEN_CAPABILITY`; they do not substitute the personal
-`/auth-requests` API or report an empty result as success.
+`UNSUPPORTED_VAULTWARDEN_CAPABILITY`. Other servers use the organization API.
+Approval checks the current organization permission, obtains the user's account
+recovery material, decrypts it locally, and encrypts the user key to the pending
+device's public key. Batch approval prepares every key before sending a write.
+Personal `/auth-requests` are never substituted.
 
-This is currently an unconditional CLI disposition, even when configured
-against Bitwarden. It is a verified limitation of the pinned Vaultwarden targets,
-not a runtime probe for future server implementations.
+The endpoint sequence and local key transformation have synthetic tests. A live
+Bitwarden Cloud run has not yet confirmed the full flow.
 
-Implementation: [device-approval-command.ts](../apps/cli/src/device-approval-command.ts)
-and [capabilities.ts](../packages/vaultwarden/src/capabilities.ts).
-Evidence: source and valid-organization 404 checks recorded in
-[compatibility.md](compatibility.md).
+Implementation: [device-approval-command.ts](../apps/cli/src/device-approval-command.ts),
+[device-approval.ts](../packages/vaultwarden/src/device-approval.ts), and
+[capabilities.ts](../packages/vaultwarden/src/capabilities.ts).
+Coverage: [device-approval.test.ts](../packages/vaultwarden/test/device-approval.test.ts)
+and [crypto.test.ts](../packages/vaultwarden/test/crypto.test.ts).
 Reference: [Bitwarden organization auth-request service](https://github.com/bitwarden/clients/blob/ce5386b939062d9535cdf1a998101d25194908d0/bitwarden_license/bit-common/src/admin-console/auth-requests/organization-auth-request-api.service.ts).
 
 ## Backup and import safety beyond reference behavior
@@ -535,7 +535,7 @@ not server-version accommodations:
 - Legacy 1Password CSV import distinguishes a card number from its verification
   number, including blank PAN fields and reordered columns.
 - Explicit attachment output filenames override unusable remote names while
-  preserving private file permissions and overwrite protection.
+  with private file permissions and overwrite protection.
 - Malformed local state fails closed without resetting the original file.
   Interrupted lock acquisition, recovery, and release have separate regression
   coverage.
@@ -571,18 +571,18 @@ These should not be counted as additional implemented deviations:
   server-required protocol changes.
 - **Unfinished features:** live Duo, physical WebAuthn, live SSO recovery, broader
   transfer conformance, remaining local API parity, and full hosted matrix
-  verification retain their individual evidence limits. An unfinished path is
+  verification each have their own evidence limits. An unfinished path is
   not an intentional incompatibility merely because it differs from `bw`.
 
 ## Evidence and maintenance
 
 The source links and tests above establish where each accommodation is
-implemented. Historical full live results remain in [compatibility.md](compatibility.md);
-they should not be read as a fresh pass for every edit. The recovery case was
-run separately on both pinned servers on 2026-10-24. Compiled Node PTY coverage
-checks the prompt host; it does not substitute for a live SSO or hardware test.
+implemented. See [implementation status](implementation-status.md) for the
+current verification limits; previous live runs do not count as a fresh pass
+for each edit. Compiled Node PTY coverage checks the prompt host; it does not
+substitute for a live SSO or hardware test.
 
 When adding an accommodation, record its Bitwarden comparison, Vaultwarden
 handler/version, production selection rule, effect on non-Vaultwarden servers,
-and regression evidence here. Keep protocol adjustments in production code;
-fixtures should exercise those decisions rather than replace them.
+and regression evidence here. Production code implements protocol adjustments;
+fixtures should test those decisions rather than stand in for them.

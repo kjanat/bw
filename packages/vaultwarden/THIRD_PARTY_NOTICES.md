@@ -6,7 +6,7 @@ Copyright Electronic Frontier Foundation. Licensed under [Creative Commons Attri
 
 Source: [EFF Dice-Generated Passphrases](https://www.eff.org/dice), [original word list](https://www.eff.org/files/2016/07/18/eff_large_wordlist.txt).
 
-The bundled TypeScript representation removes the dice indices and retains all 7,776 words in order. No endorsement by EFF is implied.
+The bundled TypeScript representation removes the dice indices and includes all 7,776 words in order. No endorsement by EFF is implied.
 
 Original file SHA256: `addd35536511597a02fa0a9ff1e5284677b8883b83e986e43f15a3db996b903e`.
 
@@ -22,7 +22,7 @@ login-specific context and bounds the scored input to 100 Unicode characters.
 
 URI domain and hostname parsing uses the npm dependency
 [`tldts` 7.4.19](https://github.com/remusao/tldts), licensed under MIT.
-Its package retains its license notice and Public Suffix List data attribution.
+Its package includes its license notice and Public Suffix List data attribution.
 
 ## @xmldom/xmldom
 
@@ -41,5 +41,5 @@ XML parser and `micro509/kdf` Argon2 implementation. micro509 uses native
 WebCrypto where available and its own portable TypeScript implementation for
 unsupported runtime/version combinations, including Bun and Argon2 version
 `0x10`. No separate Argon2 dependency is required. The Bun patch
-`patches/kdbxweb@2.1.1.patch` preserves XML-valid horizontal tabs that the
+`patches/kdbxweb@2.1.1.patch` allows XML-valid horizontal tabs that the
 dependency otherwise strips from unprotected values; `bun install` applies it.

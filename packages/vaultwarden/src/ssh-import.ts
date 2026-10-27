@@ -12,7 +12,7 @@ export class SshImportError extends Error {
 export async function importSshPkcs8(pem: string): Promise<JsonObject> {
 	if (!pem.includes('-----BEGIN PRIVATE KEY-----')) throw new SshImportError('sshKeyParseFailed');
 	try {
-		// Keep the reference importer's unsupported-algorithm classification before WebCrypto import.
+		// Match the reference importer's unsupported-algorithm classification before WebCrypto import.
 		const source = createPrivateKey(pem);
 		if (
 			!['rsa', 'ed25519', 'ec'].includes(source.asymmetricKeyType ?? '')
