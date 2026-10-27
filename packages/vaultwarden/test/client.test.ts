@@ -7,10 +7,215 @@ function transport(
 	return ((url: string | URL | Request, init: RequestInit) => handler(String(url), init)) as typeof fetch;
 }
 const json = (data: unknown, status = 200) => Response.json(data, { status });
-test('requires TLS except loopback and preserves path prefixes', () => {
+test('Azure file uploads send only encrypted bytes to the signed URL without account credentials', async () => {
+	let uploaded = false;
+	const api = new VaultwardenClient('https://vault.example', {
+		fetch: transport((url, init) => {
+			uploaded = true;
+			expect(url).toBe('https://storage.example/blob?sv=2023-11-03&sig=synthetic');
+			expect(init.method).toBe('PUT');
+			expect(init.redirect).toBe('error');
+			expect(new Headers(init.headers).get('Authorization')).toBeNull();
+			expect(new Headers(init.headers).get('x-ms-blob-type')).toBe('BlockBlob');
+			expect(Buffer.from(init.body as ArrayBuffer).toString()).toBe('synthetic-ciphertext');
+			return new Response(null, { status: 201 });
+		}),
+	});
+	await api.uploadAzureFile(
+		'https://storage.example/blob?sv=2023-11-03&sig=synthetic',
+		Buffer.from('synthetic-ciphertext'),
+	);
+	expect(uploaded).toBe(true);
+});
+test('Azure single-blob uploads send only the supplied typed-array view', async () => {
+	const backing = Buffer.alloc(4096, 0x53);
+	const ciphertext = Buffer.from('synthetic-ciphertext');
+	ciphertext.copy(backing, 1024);
+	const view = backing.subarray(1024, 1024 + ciphertext.byteLength);
+	expect(view.byteOffset).toBeGreaterThan(0);
+	expect(view.buffer.byteLength).toBeGreaterThan(view.byteLength);
+	const api = new VaultwardenClient('https://vault.example', {
+		fetch: transport((_url, init) => {
+			const body = Buffer.from(init.body as ArrayBuffer);
+			expect(body).toEqual(ciphertext);
+			expect(body).toHaveLength(ciphertext.byteLength);
+			return new Response(null, { status: 201 });
+		}),
+	});
+	await api.uploadAzureFile(
+		'https://storage.example/blob?sv=2023-11-03&sig=synthetic',
+		view,
+	);
+});
+test('parallel Azure uploads do not mix signed URLs or ciphertext bodies', async () => {
+	const payloads = new Map([
+		['https://storage.example/blob-a?sv=2023-11-03&sig=synthetic-a', Buffer.from('ciphertext-a')],
+		['https://storage.example/blob-b?sv=2023-11-03&sig=synthetic-b', Buffer.from('ciphertext-b')],
+	]);
+	const observed = new Set<string>();
+	const api = new VaultwardenClient('https://vault.example', {
+		fetch: transport(async (url, init) => {
+			await new Promise(resolve => setTimeout(resolve, 5));
+			const expected = payloads.get(url);
+			if (!expected) throw new Error(`Unexpected Azure upload target: ${url}`);
+			expect(Buffer.from(init.body as ArrayBuffer)).toEqual(expected);
+			expect(new Headers(init.headers).get('Authorization')).toBeNull();
+			expect(init.redirect).toBe('error');
+			observed.add(url);
+			return new Response(null, { status: 201 });
+		}),
+	});
+	await Promise.all([...payloads].map(([url, contents]) => api.uploadAzureFile(url, contents)));
+	expect(observed).toEqual(new Set(payloads.keys()));
+});
+test('Azure file uploads stage ordered blocks and commit them with a renewed credential-free URL', async () => {
+	const requests: Array<{ url: URL; init: RequestInit }> = [];
+	const api = new VaultwardenClient('https://vault.example', {
+		fetch: transport((url, init) => {
+			requests.push({ url: new URL(url), init });
+			return new Response(null, { status: 201 });
+		}),
+	});
+	let renewals = 0;
+	const contents = Buffer.allocUnsafe(256 * 1024 * 1024 + 1);
+	await api.uploadAzureFile(
+		'https://storage.example/blob?sv=2016-05-31&se=2000-01-01T00%3A00%3A00Z&sig=expired',
+		contents,
+		async () => {
+			renewals++;
+			return 'https://storage.example/blob?sv=2016-05-31&se=2099-01-01T00%3A00%3A00Z&sig=renewed';
+		},
+	);
+	expect(renewals).toBe(1);
+	expect(requests).toHaveLength(4);
+	const blockRequests = requests.slice(0, 3);
+	const blockIds = blockRequests.map(({ url, init }, index) => {
+		expect(url.searchParams.get('comp')).toBe('block');
+		expect(url.searchParams.get('sv')).toBe('2016-05-31');
+		expect(url.searchParams.get('sig')).toBe('renewed');
+		expect(url.searchParams.get('blockid')).toBeTruthy();
+		expect(init.method).toBe('PUT');
+		expect(init.redirect).toBe('error');
+		expect(new Headers(init.headers).get('Authorization')).toBeNull();
+		expect(new Headers(init.headers).get('x-ms-version')).toBe('2016-05-31');
+		expect((init.body as Buffer).byteLength).toBe(index < 2 ? 100 * 1024 * 1024 : 56 * 1024 * 1024 + 1);
+		return url.searchParams.get('blockid')!;
+	});
+	expect(new Set(blockIds).size).toBe(3);
+	const commit = requests[3]!;
+	expect(commit.url.searchParams.get('comp')).toBe('blocklist');
+	expect(commit.url.searchParams.get('sig')).toBe('renewed');
+	expect(new Headers(commit.init.headers).get('Authorization')).toBeNull();
+	const xml = Buffer.from(commit.init.body as Buffer).toString();
+	expect(xml).toBe(
+		`<?xml version="1.0" encoding="utf-8"?><BlockList>${
+			blockIds.map(id => `<Latest>${id}</Latest>`).join('')
+		}</BlockList>`,
+	);
+	contents.fill(0);
+});
+test('Azure file uploads reject unsafe signed URLs before making a request', async () => {
+	let requests = 0;
+	const api = new VaultwardenClient('https://vault.example', {
+		fetch: transport(() => {
+			requests++;
+			return new Response(null, { status: 201 });
+		}),
+	});
+	for (
+		const url of [
+			'http://storage.example/blob?sv=2023-11-03',
+			'https://user:pass@storage.example/blob?sv=2023-11-03',
+			'https://storage.example/blob?sv=2023-11-03#fragment',
+		]
+	) await expect(api.uploadAzureFile(url, Buffer.from('data'))).rejects.toThrow('Invalid Azure upload URL.');
+	expect(requests).toBe(0);
+});
+test('account revisions accept integer timestamps and deletion signals with service routing and auth intact', async () => {
+	for (const revision of [0, 1780000000000, -1, '1780000000000', null, {}, 1.5, 8640000000000001]) {
+		const api = new VaultwardenClient('https://vault.example', {
+			services: { api: 'https://api.example/prefix' },
+			fetch: transport((url, init) => {
+				expect(url).toBe('https://api.example/prefix/accounts/revision-date');
+				expect(new Headers(init.headers).get('Authorization')).toBe('Bearer synthetic-token');
+				return json(revision);
+			}),
+		});
+		if (typeof revision === 'number' && Number.isSafeInteger(revision) && Math.abs(revision) <= 8640000000000000) {
+			expect(await api.accountRevisionDate('synthetic-token')).toBe(revision);
+		} else await expect(api.accountRevisionDate('synthetic-token')).rejects.toThrow('Invalid account revision');
+	}
+});
+test('cipher-type writes use and cache the Vaultwarden release version', async () => {
+	for (const [version, supported] of [['1.36.0', false], ['1.37.4-rc', false], ['1.37.4', true]] as const) {
+		let requests = 0;
+		const api = new VaultwardenClient('https://vault.example/base', {
+			services: { api: 'https://api.example/prefix' },
+			fetch: transport(url => {
+				requests++;
+				if (url.endsWith('/config')) return json({ server: { name: 'Vaultwarden' } });
+				expect(url).toBe('https://api.example/prefix/version');
+				return json(version);
+			}),
+		});
+		for (const [type, name] of [[6, 'bank account'], [7, "driver's license"], [8, 'passport']] as const) {
+			if (supported) await api.assertCipherTypeSupported(type);
+			else {
+				await expect(api.assertCipherTypeSupported(type)).rejects.toThrow(
+					`${name} requires Vaultwarden 1.37.4 or newer; this server reports ${version}`,
+				);
+			}
+		}
+		expect(requests).toBe(2);
+	}
+});
+test('server capability discovery retries failed config and version requests on the same client', async () => {
+	let configRequests = 0, versionRequests = 0;
+	const api = new VaultwardenClient('https://vault.example', {
+		fetch: transport(url => {
+			if (url.endsWith('/config')) {
+				configRequests++;
+				return configRequests === 1 ? json({}, 503) : json({ server: { name: 'Vaultwarden' } });
+			}
+			if (url.endsWith('/version')) {
+				versionRequests++;
+				return versionRequests === 1 ? json({}, 503) : json('1.37.4');
+			}
+			throw new Error(`Unexpected request: ${url}`);
+		}),
+	});
+	await expect(api.assertCipherTypeSupported(6)).rejects.toThrow('HTTP 503');
+	await expect(api.assertCipherTypeSupported(6)).rejects.toThrow('HTTP 503');
+	await api.assertCipherTypeSupported(6);
+	expect(configRequests).toBe(2);
+	expect(versionRequests).toBe(2);
+});
+test('server version discovery rejects malformed SemVer before capability gating', async () => {
+	for (const version of ['1.37.4-', '1.37.4+build..7', '01.37.4']) {
+		const api = new VaultwardenClient('https://vault.example', {
+			fetch: transport(url => url.endsWith('/config') ? json({ server: { name: 'Vaultwarden' } }) : json(version)),
+		});
+		await expect(api.assertCipherTypeSupported(6)).rejects.toThrow('Vaultwarden returned an invalid server version.');
+	}
+});
+test('cipher-type compatibility checks do not apply Vaultwarden release limits to Bitwarden', async () => {
+	const requests: string[] = [];
+	const api = new VaultwardenClient('https://vault.example', {
+		fetch: transport(url => {
+			requests.push(url);
+			return json({ server: { name: 'Bitwarden' } });
+		}),
+	});
+	await api.assertCipherTypeSupported(6);
+	await api.assertCipherTypeSupported(8);
+	expect(requests).toEqual(['https://vault.example/api/config']);
+});
+test('requires TLS except loopback and honors path prefixes', () => {
 	expect(serverUrl('https://example.com/vault/')).toBe(
 		'https://example.com/vault',
 	);
+	expect(serverUrl('vault.example/path/')).toBe('https://vault.example/path');
+	expect(serverUrl('bitwarden.com')).toBe('https://bitwarden.com');
 	expect(serverUrl('http://127.0.0.1:1234')).toBe('http://127.0.0.1:1234');
 	for (
 		const value of [
@@ -53,6 +258,31 @@ test('prelogin never retries rate limiting or auth failures', async () => {
 	});
 	await expect(api.prelogin('test@example.com')).rejects.toThrow('HTTP 429');
 	expect(calls).toBe(1);
+});
+test('split identity and API endpoints carry service prefixes through prelogin fallback and API calls', async () => {
+	const paths: string[] = [];
+	const api = new VaultwardenClient('https://vault.example.com/base', {
+		services: { api: 'https://api.example.com/custom/api/', identity: 'https://auth.example.com/custom/identity/' },
+		fetch: transport((url, init) => {
+			paths.push(url);
+			if (url.includes('/custom/identity/')) return json({}, 404);
+			if (url.endsWith('/accounts/prelogin')) return json({ kdf: 0, kdfIterations: 600000 });
+			expect(new Headers(init.headers).get('Authorization')).toBe('Bearer synthetic-token');
+			return json({ data: [] });
+		}),
+	});
+	expect(await api.prelogin('fixture@example.com')).toEqual({ type: 0, iterations: 600000 });
+	await api.api('synthetic-token', 'GET', '/folders', undefined, { search: 'a b' });
+	expect(paths).toEqual([
+		'https://auth.example.com/custom/identity/accounts/prelogin',
+		'https://api.example.com/custom/api/accounts/prelogin',
+		'https://api.example.com/custom/api/folders?search=a+b',
+	]);
+	expect(() =>
+		new VaultwardenClient('https://vault.example.com', {
+			services: { identity: 'http://auth.example.com' },
+		})
+	).toThrow();
 });
 test('supports nested KDF settings and modern wrapped user key responses', async () => {
 	const api = new VaultwardenClient('https://example.com', {
@@ -100,7 +330,14 @@ test('2FA errors expose provider IDs without echoing server error bodies', async
 	const api = new VaultwardenClient('https://example.com', {
 		fetch: transport(() =>
 			json(
-				{ TwoFactorProviders: [0, 1], error_description: 'sensitive response' },
+				{
+					TwoFactorProviders: [0, 1, 2, 7],
+					TwoFactorProviders2: {
+						'2': { AuthUrl: 'https://api-test.duosecurity.com/oauth/v1/authorize?request=token' },
+						'7': { challenge: 'cG93ZXJmdWw', rpId: 'example.com', allowCredentials: [] },
+					},
+					error_description: 'sensitive response',
+				},
 				400,
 			)
 		),
@@ -110,8 +347,49 @@ test('2FA errors expose provider IDs without echoing server error bodies', async
 		throw new Error('expected failure');
 	} catch (error) {
 		expect(error).toBeInstanceOf(ApiError);
-		expect((error as ApiError).twoFactorProviders).toEqual([0, 1]);
+		expect((error as ApiError).twoFactorProviders).toEqual([0, 1, 2, 7]);
+		expect((error as ApiError).twoFactorProviderData[2]).toEqual({
+			AuthUrl: 'https://api-test.duosecurity.com/oauth/v1/authorize?request=token',
+		});
+		expect((error as ApiError).twoFactorProviderData[7]).toEqual({
+			challenge: 'cG93ZXJmdWw',
+			rpId: 'example.com',
+			allowCredentials: [],
+		});
 		expect(String(error)).not.toContain('sensitive');
+	}
+});
+
+test('2FA challenges accept Vaultwarden string IDs and numeric IDs without accepting malformed providers', async () => {
+	for (const providers of [['0', '1', '3'], [0, 1, 3]]) {
+		const api = new VaultwardenClient('https://vault.example', {
+			fetch: transport(() =>
+				json({
+					TwoFactorProviders: [
+						...providers,
+						'0',
+						-1,
+						1.5,
+						true,
+						null,
+						{},
+						'',
+						' ',
+						'1.5',
+						'-1',
+						'1e2',
+						'9007199254740992',
+					],
+				}, 400)
+			),
+		});
+		try {
+			await api.login('fixture@example.com', 'synthetic-hash');
+			throw new Error('Expected challenge');
+		} catch (error) {
+			expect(error).toBeInstanceOf(ApiError);
+			expect((error as ApiError).twoFactorProviders).toEqual([0, 1, 3]);
+		}
 	}
 });
 

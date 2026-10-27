@@ -1,0 +1,3 @@
+# Match the original line endings in CSV import fixtures, including quoted fields.
+apps/cli/test/fixtures/onepassword/mac.csv -text
+apps/cli/test/fixtures/onepassword/windows.csv -text

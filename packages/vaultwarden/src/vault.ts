@@ -1,7 +1,7 @@
 import { decrypt } from '#crypto';
 import { field, object, text, type JsonObject } from '#client';
 
-import { transformItem } from '#item-codec';
+import { transformItem, validUriChecksum } from '#item-codec';
 
 /** Decrypt an item with its owner key, unwrapping a per-item key when present. */
 export function decryptItem(input: JsonObject, ownerKey: Uint8Array): JsonObject {
@@ -17,6 +17,12 @@ export function decryptOwnedItem(input: JsonObject, ownerKey: Uint8Array): JsonO
 			key = unwrapped;
 		}
 		const item = transformItem(input, key, 'decrypt');
+		// Modern per-item-key ciphers require authenticated URI hashes. Legacy owner-key ciphers use the older format.
+		if (input.key && item.login != null) {
+			const login = object(item.login);
+			if (Array.isArray(login.uris)) login.uris = login.uris.filter(value => validUriChecksum(object(value)));
+		}
+
 		delete item.key;
 		return item;
 	} finally {

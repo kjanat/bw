@@ -1,4 +1,6 @@
 [tools]
+bun = "latest"
+crane = "latest"
 "github:kjanat/dprint" = "latest"
-"github:tombi-toml/tombi" = "latest"
 node = "26"
+tombi = "latest"

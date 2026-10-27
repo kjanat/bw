@@ -4,6 +4,8 @@
 	"private": true,
 	"type": "module",
 	"imports": {
+		"#test/*": "./test/*.ts",
+		"#fixtures/*.json": "./test/fixtures/*.json",
 		"#*": {
 			"bun": "./src/*.ts",
 			"types": "./src/*.ts",
@@ -21,20 +23,25 @@
 		"check-types": "tsc --noEmit",
 		"dev": "bun src/main.ts",
 		"lint": "eslint src test",
-		"test": "bun test"
+		"test": "bun test",
+		"test:compat": "bun test/run-compatibility.ts"
 	},
 	"dependencies": {
-		"@inquirer/password": "5.2.4",
-		"@kjanat/dreamcli": "4.1.0",
+		"@kjanat/dreamcli": "catalog:",
 		"@kjanat/vaultwarden": "workspace:*"
 	},
 	"devDependencies": {
-		"@babel/eslint-parser": "8.0.1",
-		"@babel/preset-typescript": "8.0.1",
-		"@eslint/js": "10.0.1",
-		"@types/bun": "latest",
+		"@babel/eslint-parser": "catalog:",
+		"@babel/preset-typescript": "catalog:",
+		"@eslint/js": "catalog:",
+		"@types/bun": "catalog:",
 		"@vw/typescript-config": "workspace:*",
-		"eslint": "10.9.1",
-		"typescript": "7.0.2"
+		"eslint": "catalog:",
+		"fflate": "catalog:",
+		"micro509": "catalog:",
+		"typescript": "catalog:"
+	},
+	"engines": {
+		"node": ">=24.8.0"
 	}
 }

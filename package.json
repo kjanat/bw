@@ -11,19 +11,42 @@
 		"dev": "turbo run dev",
 		"format": "dprint fmt",
 		"lint": "turbo run lint",
-		"test": "turbo run test"
+		"test": "turbo run test",
+		"test:compat": "turbo run test:compat"
 	},
 	"devDependencies": {
-		"turbo": "^2.11.9",
-		"typescript": "7.0.2"
+		"turbo": "^2.11.10",
+		"typescript": "catalog:"
 	},
 	"engines": {
-		"node": ">=24"
+		"node": ">=24.8.0"
 	},
 	"devEngines": {
 		"packageManager": {
 			"name": "bun",
 			"version": "1.4.3"
 		}
+	},
+	"catalog": {
+		"@babel/eslint-parser": "8.0.7",
+		"@babel/preset-typescript": "8.0.7",
+		"@eslint/js": "10.0.1",
+		"@kjanat/dreamcli": "5.0.0",
+		"@types/bun": "^1.4.4",
+		"@types/lunr": "2.3.7",
+		"@types/zxcvbn": "4.4.5",
+		"@xmldom/xmldom": "0.9.12",
+		"eslint": "10.13.0",
+		"fflate": "0.8.3",
+		"kdbxweb": "2.1.1",
+		"lunr": "2.3.9",
+		"micro509": "0.17.1",
+		"parse5": "8.0.1",
+		"tldts": "7.4.19",
+		"typescript": "7.0.2",
+		"zxcvbn": "4.4.2"
+	},
+	"patchedDependencies": {
+		"kdbxweb@2.1.1": "patches/kdbxweb@2.1.1.patch"
 	}
 }

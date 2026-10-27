@@ -1,0 +1,5 @@
+"Title","Username","Password","URLs","Notes","card 1: number","card 1: verification number","card 1: cardholder name","card 1: expiry date","name 1: first name","name 1: last name","internet 1: email","address 1: address","Custom key"
+"Legacy CSV compatibility Windows login","bob","synthetic-password","example.com","","","","","","","","","","hidden-value"
+"Legacy CSV compatibility Windows card","","","","","5555555555554444","987","Bob Example","01/01/2031 00:00:00","","","","",""
+"Legacy CSV compatibility Windows identity","","","","","","","","","Bob","Example","bob@example.com","Test street 1
+Test city",""

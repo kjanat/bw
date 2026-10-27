@@ -1,9 +1,4 @@
 import {
-	constants,
-	createPrivateKey,
-	privateDecrypt,
-	publicEncrypt,
-	createPublicKey,
 	createCipheriv,
 	createDecipheriv,
 	createHash,
@@ -13,7 +8,14 @@ import {
 	timingSafeEqual,
 } from 'node:crypto';
 import { promisify } from 'node:util';
-import { argon2idAsync } from '@noble/hashes/argon2.js';
+import { deriveArgon2Key } from '#argon2';
+import {
+	generateKeyPair,
+	importPkcs8DerOrThrow,
+	importSpkiDerOrThrow,
+	decryptRsaOaepOrThrow,
+	encryptRsaOaepOrThrow,
+} from 'micro509/keys';
 
 const derive = promisify(pbkdf2);
 export type Kdf =
@@ -48,12 +50,15 @@ export async function deriveKdfKey(password: string, salt: string, kdf: Kdf): Pr
 	integer(kdf.memory, 8, 256);
 	integer(kdf.parallelism, 1, 16);
 	return Buffer.from(
-		await argon2idAsync(password, createHash('sha256').update(salt).digest(), {
-			t: kdf.iterations,
-			m: kdf.memory * 1024,
-			p: kdf.parallelism,
-			dkLen: 32,
-			maxmem: 272 * 1024 * 1024,
+		await deriveArgon2Key({
+			algorithm: 'argon2id',
+			version: 0x13,
+			password: Buffer.from(password),
+			salt: createHash('sha256').update(salt).digest(),
+			passes: kdf.iterations,
+			memoryKiB: kdf.memory * 1024,
+			parallelism: kdf.parallelism,
+			outputBytes: 32,
 		}),
 	);
 }
@@ -125,33 +130,90 @@ export function encrypt(value: Uint8Array, key: Uint8Array): string {
 	return `2.${iv.toString('base64')}|${ciphertext.toString('base64')}|${mac.toString('base64')}`;
 }
 
+/** Create the locally generated material needed to initialize a new account. */
+export async function createAccountKeyMaterial(password: string, email: string, kdf: Kdf): Promise<{
+	userKey: Buffer;
+	encryptedUserKey: string;
+	masterPasswordHash: string;
+	publicKey: string;
+	encryptedPrivateKey: string;
+}> {
+	const pair = await generateKeyPair({ kind: 'rsa', modulusLength: 2048, scheme: 'oaep', hash: 'SHA-256' });
+	const publicKey = Buffer.from(await pair.exportSpkiDer());
+	const privateKey = await pair.exportPkcs8Der();
+	const userKey = randomBytes(64);
+	let master: Buffer | undefined;
+	try {
+		master = await deriveMasterKey(password, email, kdf);
+		const stretched = stretchKey(master);
+		try {
+			return {
+				userKey,
+				encryptedUserKey: encrypt(userKey, stretched),
+				masterPasswordHash: await masterPasswordHash(master, password),
+				publicKey: publicKey.toString('base64'),
+				encryptedPrivateKey: encrypt(privateKey, userKey),
+			};
+		} finally {
+			stretched.fill(0);
+		}
+	} catch (error) {
+		userKey.fill(0);
+		throw error;
+	} finally {
+		master?.fill(0);
+		privateKey.fill(0);
+	}
+}
+
 /** Vaultwarden organization keys use RSA OAEP EncString types 3 (SHA256) or 4 (SHA1). */
-export function decryptSharedKey(value: string, privateKey: Uint8Array): Buffer {
+export async function decryptSharedKey(value: string, privateKey: Uint8Array): Promise<Buffer> {
 	const match = /^([34])\.([A-Za-z0-9+/]+={0,2})$/.exec(value);
 	if (!match) throw new Error('Unsupported organization key envelope.');
 	try {
-		return privateDecrypt({
-			key: createPrivateKey({ key: Buffer.from(privateKey), format: 'der', type: 'pkcs8' }),
-			padding: constants.RSA_PKCS1_OAEP_PADDING,
-			oaepHash: match[1] === '3' ? 'sha256' : 'sha1',
-		}, b64(match[2]!));
+		const material = await importPkcs8DerOrThrow(privateKey, {
+			kind: 'rsa',
+			scheme: 'oaep',
+			hash: match[1] === '3' ? 'SHA-256' : 'SHA-1',
+		});
+		const decrypted = await decryptRsaOaepOrThrow(material, b64(match[2]!));
+		return Buffer.from(decrypted.buffer, decrypted.byteOffset, decrypted.byteLength);
 	} catch {
 		throw new Error('Organization key authentication failed.');
 	}
 }
 
 /** Wrap an organization key for a member without exposing it to the server. */
-export function encryptSharedKey(key: Uint8Array, publicKey: string): string {
+export async function encryptSharedKey(key: Uint8Array, publicKey: string): Promise<string> {
 	if (key.length !== 64) throw new Error('Expected a 512-bit organization key.');
 	try {
-		const material = createPublicKey({ key: b64(publicKey), format: 'der', type: 'spki' });
-		return `3.${
-			publicEncrypt({ key: material, padding: constants.RSA_PKCS1_OAEP_PADDING, oaepHash: 'sha256' }, key).toString(
-				'base64',
-			)
-		}`;
+		const material = await importSpkiDerOrThrow(b64(publicKey), { kind: 'rsa', scheme: 'oaep', hash: 'SHA-256' });
+		return `3.${Buffer.from(await encryptRsaOaepOrThrow(material, key)).toString('base64')}`;
 	} catch {
 		throw new Error('Invalid member public key.');
+	}
+}
+
+/** Re-encrypt a recovery-wrapped user key for a trusted device during organization approval. */
+export async function encryptApprovedUserKey(
+	resetPasswordKey: string,
+	encryptedOrganizationPrivateKey: string,
+	organizationKey: Uint8Array,
+	devicePublicKey: string,
+): Promise<string> {
+	if (organizationKey.length !== 64) throw new Error('Expected a 512-bit organization key.');
+	let organizationPrivateKey: Buffer | undefined;
+	let userKey: Buffer | undefined;
+	try {
+		organizationPrivateKey = decrypt(encryptedOrganizationPrivateKey, organizationKey);
+		userKey = await decryptSharedKey(resetPasswordKey, organizationPrivateKey);
+		if (userKey.length !== 64) throw new Error('Unsupported recovered user key length.');
+		return await encryptSharedKey(userKey, devicePublicKey);
+	} catch {
+		throw new Error('Could not prepare the trusted-device approval key.');
+	} finally {
+		organizationPrivateKey?.fill(0);
+		userKey?.fill(0);
 	}
 }
 
@@ -164,6 +226,11 @@ export function encryptAttachment(value: Uint8Array, key: Uint8Array): Buffer {
 		Buffer.from(parts[2]!, 'base64'),
 		Buffer.from(parts[1]!, 'base64'),
 	]);
+}
+/** Type-2 attachment wire size, including its type byte, IV, MAC, and PKCS#7 padding. */
+export function encryptedAttachmentSize(plaintextSize: number): number {
+	if (!Number.isSafeInteger(plaintextSize) || plaintextSize < 0) throw new Error('Invalid attachment size.');
+	return 49 + (Math.floor(plaintextSize / 16) + 1) * 16;
 }
 export function decryptAttachment(value: Uint8Array, key: Uint8Array): Buffer {
 	if (value.length < 65 || value[0] !== 2 || (value.length - 49) % 16 !== 0) {
