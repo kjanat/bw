@@ -31,7 +31,7 @@ function custom(item: VaultItem, name: unknown, raw: unknown, type = 0): void {
 	if (typeof raw !== 'string') throw new Error('Invalid 1PUX field.');
 	const key = value(name) ?? '';
 	if (raw.length > 200 || /\r\n|\r|\n/.test(raw.trim())) {
-		item.notes = `${item.notes ?? ''}${key}: ${raw.replace(/\r\n|\r/g, '\n')}\n`;
+		item.notes = `${item.notes ? `${item.notes}\n` : ''}${key}: ${raw.replace(/\r\n|\r/g, '\n')}\n`;
 	} else item.fields!.push({ name: key, value: raw, type });
 }
 function fullName(identity: JsonObject, name: string): void {
@@ -167,6 +167,7 @@ async function parseItem(source: JsonObject): Promise<{ item: VaultItem; tag: st
 			uris: uris(array(overview.urls).map(v => String(record(v).url ?? ''))),
 		},
 	};
+	if (!blank(details.notesPlain)) item.notes = String(details.notesPlain).replace(/\r\n|\r/g, '\n').trimEnd();
 	if (type === 2) item.secureNote = { type: 0 };
 	if (type === 3) item.card = {};
 	if (type === 4) item.identity = {};
@@ -220,7 +221,6 @@ async function parseItem(source: JsonObject): Promise<{ item: VaultItem; tag: st
 			custom(item, name, raw, key === 'concealed' ? 1 : 0);
 		}
 	}
-	if (!blank(details.notesPlain)) item.notes = String(details.notesPlain).replace(/\r\n|\r/g, '\n').trimEnd();
 	if (
 		item.type === 1 && blank(item.login!.username) && blank(item.login!.password)
 		&& !(item.login!.uris as unknown[]).length

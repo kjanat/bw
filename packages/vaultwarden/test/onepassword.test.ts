@@ -96,6 +96,18 @@ test('1PUX archive reads only export.data and returns organization collection re
 		expect(item.collectionIds).toEqual([groups[0]!.id]);
 	}
 });
+test('1PUX imports combine source notes with long and multiline custom fields', async () => {
+	const recovery = `first-line\n${'x'.repeat(220)}\nlast-line`;
+	const parsed = await parseOnePassword1Pux(
+		document('005', [fields('recovery', 'Recovery codes', { string: recovery })], {
+			password: 'synthetic-password',
+			notesPlain: 'Existing note',
+		}),
+	);
+	const item = (parsed.items as JsonObject[])[0]!;
+	expect(item.notes).toBe(`Existing note\nRecovery codes: ${recovery}\n`);
+	expect(item.fields).toEqual([]);
+});
 test('1PUX remaining category mappings and login-to-note conversion follow field semantics', async () => {
 	const cases: [string, unknown[], string, JsonObject][] = [
 		[
