@@ -39,9 +39,12 @@ Vaultwarden evidence for server mutations, a documented disposition for every
 reference command, and removal of partial-reader restrictions. A green subset
 of tests does not establish full completion.
 
-Surface audit against the pinned 2026.10.0 command inventory: all 30 root
-command names are available locally (`help` is DreamCLI's built-in route and is
-integration-tested); every non-help long-option name is present across all 29
+Surface audit against the pinned 2026.10.0 command inventory: 29 reference root
+command names are available locally under the same spelling (`help` is
+DreamCLI's built-in route and is integration-tested). DreamCLI's built-in
+`completions` subcommand generates the shell scripts; its spelling and
+positional shell argument differ from the reference CLI's `completion
+--shell` form. Every non-help long-option name is present across all 29
 command-specific help records. The local CLI also has wrapper and
 Vaultwarden-specific options. These are command-surface measurements, not a
 behavioral-completion percentage.

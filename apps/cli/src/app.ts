@@ -1,4 +1,3 @@
-import { generateCompletion, SHELLS } from '@kjanat/dreamcli/completion';
 import { masterPassword, loginEmail, apiCredentials, answerLoginChallenge } from '#auth-input';
 import { reportCommand } from '#report-commands';
 import { deviceApprovalCommand } from '#device-approval-command';
@@ -59,7 +58,7 @@ function client(state: State): VaultwardenClient {
 }
 function accountAccessPlugin(directory: string) {
 	const publicCommands = new Set([
-		'completion',
+		'completions',
 		'config',
 		'encode',
 		'generate',
@@ -683,13 +682,7 @@ export function createApp(directory = dataDirectory()) {
 				out.log('You have logged out.');
 			})
 		);
-	let completionSchema: ReturnType<typeof cli>['schema'];
 	let helpApp: ReturnType<typeof cli>;
-	const completion = command('completion').description('Generate shell completions from the command definitions')
-		.flag('shell', flag.enum(SHELLS)).action(({ flags, out }) => {
-			if (!flags.shell) throw new Error('--shell is required.');
-			out.log(generateCompletion(completionSchema, flags.shell));
-		});
 	const versions = versionCommands();
 	const app = cli('vw')
 		.envPrefix('VW_')
@@ -703,7 +696,6 @@ export function createApp(directory = dataDirectory()) {
 		)
 		.version(CLI_PACKAGE.version)
 		.description('A Vaultwarden-first client')
-		.command(completion)
 		.command(deviceApprovalCommand(async commandName => {
 			const target = ['list', 'approve', 'approve-all', 'deny', 'deny-all'].includes(commandName ?? '')
 				? commandName
@@ -741,8 +733,8 @@ export function createApp(directory = dataDirectory()) {
 		.command(list)
 		.command(get)
 		.command(lock)
-		.command(logout);
+		.command(logout)
+		.completions();
 	helpApp = app;
-	completionSchema = app.schema;
 	return app;
 }

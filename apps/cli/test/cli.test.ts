@@ -2412,7 +2412,7 @@ for (const shell of ['zsh', 'bash', 'fish', 'powershell']) {
 		async () => {
 			const dir = await mkdtemp(join(tmpdir(), `vw-completion-${shell}-`));
 			try {
-				const generated = await run(dir, ['completion', '--shell', shell]);
+				const generated = await run(dir, ['completions', shell]);
 				expect(generated.code).toBe(0);
 				expect(generated.stdout).toContain('login');
 				expect(generated.stdout).toContain('send');
@@ -2458,11 +2458,11 @@ for (const shell of ['zsh', 'bash', 'fish', 'powershell']) {
 	);
 }
 
-test('completion rejects missing and unsupported shells', async () => {
+test('completions rejects missing and unsupported shells', async () => {
 	const dir = await mkdtemp(join(tmpdir(), 'vw-completion-invalid-'));
 	try {
-		expect((await run(dir, ['completion'])).code).toBe(1);
-		expect((await run(dir, ['completion', '--shell', 'unknown'])).code).not.toBe(0);
+		expect((await run(dir, ['completions'])).code).not.toBe(0);
+		expect((await run(dir, ['completions', 'unknown'])).code).not.toBe(0);
 	} finally {
 		await rm(dir, { recursive: true, force: true });
 	}

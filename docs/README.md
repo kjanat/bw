@@ -615,10 +615,10 @@ exact-field and error-message parity is tracked in the implementation inventory.
 ## Shell completion
 
 ```sh
-node apps/cli/dist/main.js completion --shell zsh > ./_vw
-node apps/cli/dist/main.js completion --shell bash > ./vw.bash
-node apps/cli/dist/main.js completion --shell fish > ./vw.fish
-node apps/cli/dist/main.js completion --shell powershell > ./vw.ps1
+node apps/cli/dist/main.js completions zsh > ./_vw
+node apps/cli/dist/main.js completions bash > ./vw.bash
+node apps/cli/dist/main.js completions fish > ./vw.fish
+node apps/cli/dist/main.js completions powershell > ./vw.ps1
 ```
 
 Completion scripts target the `vw` executable. Install or source the generated
