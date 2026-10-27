@@ -12,7 +12,7 @@ export function reportProgressMessage(count: number, checkExposed: boolean): str
 export function reportCommand(runtime: VaultRuntime) {
 	return command('report').description('Report login password strength, reuse, and exposure')
 		.arg('object', arg.enum(['password-health']))
-		.flag('session', flag.string().sensitive().env('SESSION'))
+		.flag('session', flag.string().sensitive().env())
 		.flag(
 			'no-check-exposed',
 			flag.boolean().describe(

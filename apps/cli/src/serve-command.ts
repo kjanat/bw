@@ -88,7 +88,7 @@ export function serveCommand(
 		.flag('port', flag.number({ int: true, min: 0, max: 65535 }).default(8087))
 		.flag('disable-origin-protection', flag.boolean())
 		.flag('token', flag.string().sensitive().env('SERVE_TOKEN'))
-		.flag('session', flag.string().sensitive().env('SESSION'))
+		.flag('session', flag.string().sensitive().env())
 		.action(async ({ flags, out }) => {
 			let session = flags.session;
 			await withStore(directory, async state => {

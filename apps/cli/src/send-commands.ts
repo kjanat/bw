@@ -18,7 +18,7 @@ import {
 import type { VaultRuntime } from '#vault-commands';
 import { writeAttachment, writeStdout } from '#files';
 
-const session = () => flag.string().sensitive().env('SESSION');
+const session = () => flag.string().sensitive().env();
 const input = () => arg.string().sensitive().stdin({ trim: true }).optional();
 function decodeSendJson(value: string): JsonObject {
 	try {

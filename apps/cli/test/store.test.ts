@@ -13,19 +13,15 @@ const runtime = Bun.spawnSync(['node', '-p', 'process.execPath'], {
 if (runtime.exitCode !== 0) throw new Error('Could not resolve the Node executable for interruption tests.');
 const nodeExecutable = runtime.stdout.toString().trim();
 
-test('profile directory supports the Bitwarden app-data variable with explicit VW override', () => {
-	const names = ['VW_APPDATA_DIR', 'BITWARDENCLI_APPDATA_DIR', 'XDG_CONFIG_HOME'] as const;
+test('profile directory uses its VW override or the XDG config directory', () => {
+	const names = ['VW_APPDATA_DIR', 'XDG_CONFIG_HOME'] as const;
 	const previous = Object.fromEntries(names.map(name => [name, process.env[name]]));
 	try {
 		process.env.XDG_CONFIG_HOME = '/synthetic/xdg';
 		delete process.env.VW_APPDATA_DIR;
-		process.env.BITWARDENCLI_APPDATA_DIR = '/synthetic/bw-profile';
-		expect(dataDirectory()).toBe('/synthetic/bw-profile');
-
 		process.env.VW_APPDATA_DIR = '/synthetic/vw-profile';
 		expect(dataDirectory()).toBe('/synthetic/vw-profile');
 
-		delete process.env.BITWARDENCLI_APPDATA_DIR;
 		delete process.env.VW_APPDATA_DIR;
 		expect(dataDirectory()).toBe(join('/synthetic/xdg', 'vaultwarden-cli'));
 	} finally {

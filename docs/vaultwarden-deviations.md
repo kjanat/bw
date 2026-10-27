@@ -565,8 +565,8 @@ These should not be counted as additional implemented deviations:
 - **Collection creator membership:** granting the creator manage access by
   default is already reference behavior. The array serialization in VW-17 is
   the older-server accommodation.
-- **Local product choices:** the executable/package names, `VW_*` variables
-  with `BW_*` fallbacks, independent local storage/session format, DreamCLI
+- **Local product choices:** the executable/package names, `VW_*` variables,
+  independent local storage/session format, DreamCLI
   prompts, and update/version handling are product architecture choices, not
   server-required protocol changes.
 - **Unfinished features:** live Duo, physical WebAuthn, live SSO recovery, broader

@@ -10,7 +10,7 @@ export function deviceApprovalCommand(
 	const organization = () =>
 		flag.string({ pattern: /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i })
 			.required().describe('Organization ID');
-	const session = () => flag.string().sensitive().env('SESSION');
+	const session = () => flag.string().sensitive().env();
 	const list = command('list').description('List pending organization SSO device approvals')
 		.flag('organizationid', organization()).flag('session', session()).action(async ({ flags, out }) => {
 			const data = await runtime.run(

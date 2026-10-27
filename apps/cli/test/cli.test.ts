@@ -89,7 +89,7 @@ test('built Node CLI validates noninteractive input and authenticated object nam
 		for (
 			const [args, environment] of [
 				[['import', 'bitwardenjson', protectedImport, '--nointeraction'], {}],
-				[['import', 'bitwardenjson', protectedImport], { BW_NOINTERACTION: 'true' }],
+				[['import', 'bitwardenjson', protectedImport], { VW_NOINTERACTION: 'true' }],
 			] as const
 		) {
 			const result = await run(dir, [...args], environment);
@@ -335,9 +335,7 @@ test('built Node CLI persists server configuration and applies clean-exit flags'
 		expect((await run(dir, ['list', 'items', '--cleanexit'])).code).toBe(0);
 		expect((await run(dir, ['--cleanexit', 'list', 'items'])).code).toBe(0);
 		expect((await run(dir, ['list', 'items', '--cleanexit=false'])).code).toBe(1);
-		expect((await run(dir, ['list', 'items'], { BW_CLEANEXIT: 'true' })).code).toBe(0);
 		expect((await run(dir, ['list', 'items'], { VW_CLEANEXIT: 'false' })).code).toBe(1);
-		expect((await run(dir, ['list', 'items'], { BW_CLEANEXIT: 'false' })).code).toBe(1);
 		expect((await run(dir, ['list', 'items', '--cleanexit'], { VW_CLEANEXIT: 'false' })).code).toBe(0);
 		expect(
 			(await run(dir, ['config', 'server', 'http://example.com'])).code,
@@ -634,7 +632,6 @@ test('quiet suppresses JSON, text, and command errors while allowing operations,
 		expect(parseError.code).not.toBe(0);
 		expect(parseError.stderr).toContain('unknown-fixture-flag');
 		expect(await run(dir, ['status'], { VW_QUIET: 'true' })).toEqual({ code: 0, stdout: '', stderr: '' });
-		expect(await run(dir, ['status'], { BW_QUIET: 'true' })).toEqual({ code: 0, stdout: '', stderr: '' });
 		expect((await run(dir, ['status', '--quiet=false'], { VW_QUIET: 'true' })).stdout).toContain('unauthenticated');
 		expect((await run(dir, ['--quiet', '--help'])).stdout).toContain('Vaultwarden-first');
 		expect((await run(dir, ['--quiet', '--version'])).stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
@@ -1545,7 +1542,6 @@ test(
 				expect(await run(dir, args)).toEqual({ code: 0, stdout: expected, stderr: '' });
 			}
 			expect((await run(dir, ['get', 'template', 'item'], { VW_PRETTY: 'true' })).stdout).toBe(expected);
-			expect((await run(dir, ['get', 'template', 'item'], { BW_PRETTY: 'true' })).stdout).toBe(expected);
 			expect((await run(dir, ['get', 'template', 'item', '--pretty=false'], { VW_PRETTY: 'true' })).stdout).toBe(
 				compact.stdout,
 			);
@@ -1557,7 +1553,6 @@ test(
 			expect((await run(dir, ['encode', '--', '--pretty'])).stdout.trim()).toBe(
 				Buffer.from('--pretty').toString('base64'),
 			);
-			expect((await run(dir, ['--help'])).stdout).toContain('--pretty');
 			expect((await run(dir, ['get', '--help'])).stdout).toContain('--pretty');
 			expect((await run(dir, [])).stdout).toContain('Vaultwarden-first');
 		} finally {
@@ -1566,8 +1561,8 @@ test(
 	},
 );
 
-test('bw-named session environment unlocks status when no vw-named value is set', async () => {
-	const dir = await mkdtemp(join(tmpdir(), 'vw-bw-env-'));
+test('the CLI-name-prefixed session environment unlocks status', async () => {
+	const dir = await mkdtemp(join(tmpdir(), 'vw-session-env-'));
 	const key = Buffer.alloc(64, 29);
 	try {
 		let session = '';
@@ -1584,17 +1579,16 @@ test('bw-named session environment unlocks status when no vw-named value is set'
 			session = sealSession(state, key);
 			await save();
 		});
-		expect(JSON.parse((await run(dir, ['status'], { BW_SESSION: session })).stdout).status).toBe('unlocked');
+		expect(JSON.parse((await run(dir, ['status'], { VW_SESSION: session })).stdout).status).toBe('unlocked');
 		expect(JSON.parse((await run(dir, ['--session', session, 'status'])).stdout).status).toBe('unlocked');
 		expect(JSON.parse((await run(dir, [`--session=${session}`, 'status'])).stdout).status).toBe('unlocked');
 		expect((await run(dir, ['generate', '--length', '5', '--session', session])).stdout.trim()).toHaveLength(5);
-		expect(JSON.parse((await run(dir, ['status'], { BW_SESSION: session, VW_SESSION: 'invalid' })).stdout).status)
-			.toBe('locked');
+		expect(JSON.parse((await run(dir, ['status'], { VW_SESSION: 'invalid' })).stdout).status).toBe('locked');
 		expect(JSON.parse((await run(dir, ['--response', 'login', '--check'])).stdout)).toEqual({
 			success: true,
 			data: { object: 'message', title: 'You are logged in!', message: null, noColor: false },
 		});
-		expect(JSON.parse((await run(dir, ['--response', 'unlock', '--check'], { BW_SESSION: session })).stdout))
+		expect(JSON.parse((await run(dir, ['--response', 'unlock', '--check'], { VW_SESSION: session })).stdout))
 			.toEqual({
 				success: true,
 				data: { object: 'message', title: 'Vault is unlocked!', message: null, noColor: false },
@@ -1670,9 +1664,9 @@ test(
 			expect(failure.code).toBe(1);
 			expect(JSON.parse(failure.stdout)).toEqual({ success: false, message: 'You are not logged in.' });
 			expect(failure.stderr).toBe('');
-			const fromEnvironment = await run(dir, ['status'], { BW_RESPONSE: 'true' });
+			const fromEnvironment = await run(dir, ['status'], { VW_RESPONSE: 'true' });
 			expect(JSON.parse(fromEnvironment.stdout)).toMatchObject({ success: true, data: { object: 'template' } });
-			expect(JSON.parse((await run(dir, ['status'], { BW_RESPONSE: 'true', VW_RESPONSE: 'false' })).stdout))
+			expect(JSON.parse((await run(dir, ['status'], { VW_RESPONSE: 'false' })).stdout))
 				.toMatchObject({ serverUrl: 'https://vault.example.test', status: 'unauthenticated' });
 		} finally {
 			await rm(dir, { recursive: true, force: true });
@@ -1757,21 +1751,21 @@ test('unlock prints session guidance by default and exposes the token only throu
 		const normal = await run(dir, ['unlock', password]);
 		expect(normal.code).toBe(0);
 		expect(normal.stdout).toContain('Your vault is now unlocked!');
-		expect(normal.stdout).toContain('BW_SESSION');
-		expect(normal.stdout).toContain('$ bw list items --session ');
+		expect(normal.stdout).toContain('VW_SESSION');
+		expect(normal.stdout).toContain('$ vw list items --session ');
 		const raw = await run(dir, ['unlock', password, '--raw']);
 		expect(raw.code).toBe(0);
 		expect(raw.stdout.trim()).toMatch(/^[A-Za-z0-9+/]+=*$/);
-		const rawFromBitwardenEnv = await run(dir, ['unlock', password], { BW_RAW: 'true' });
-		expect(rawFromBitwardenEnv.code).toBe(0);
-		expect(rawFromBitwardenEnv.stdout.trim()).toMatch(/^[A-Za-z0-9+/]+=*$/);
+		const rawFromEnvironment = await run(dir, ['unlock', password], { VW_RAW: 'true' });
+		expect(rawFromEnvironment.code).toBe(0);
+		expect(rawFromEnvironment.stdout.trim()).toMatch(/^[A-Za-z0-9+/]+=*$/);
 		const response = await run(dir, ['--response', 'unlock', password]);
 		expect(JSON.parse(response.stdout)).toMatchObject({
 			success: true,
 			data: {
 				object: 'message',
 				title: 'Your vault is now unlocked!',
-				message: expect.stringContaining('BW_SESSION'),
+				message: expect.stringContaining('VW_SESSION'),
 				raw: expect.any(String),
 			},
 		});

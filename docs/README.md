@@ -53,22 +53,19 @@ The flag works before or after a command, including nested commands.
 `--response` emits success/data and failure/message JSON envelopes. Response
 payloads for some commands still need parity checks. `--cleanexit` makes command
 errors return status 0; `--cleanexit=false`
-restores the normal failure status. `VW_CLEANEXIT` and `BW_CLEANEXIT` accept
-`true` or `false` as the default.
-Equivalent `BW_*` variables are accepted as fallbacks for the corresponding
-`VW_*` session, password, email, 2FA, API-key, import/export/Send-password, pretty,
-quiet, no-interaction, clean-exit, and response settings; an explicitly set `VW_*` value takes
-precedence.
+restores the normal failure status. `VW_CLEANEXIT` accepts `true` or `false` as
+the default. Environment variables use the `VW_` prefix derived from the CLI
+name.
 
 Environment reads have five roles:
 
-| Values                                                                                                                                                                                                                 | Read path                                                                                                                 | Purpose                                                                                                                 |
-| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `VW_SESSION`, `VW_PASSWORD`, `VW_EMAIL`, `VW_2FA_TOKEN`, `VW_CLIENTID`, `VW_CLIENTSECRET`, `VW_IMPORT_PASSWORD`, `VW_EXPORT_PASSWORD`, `VW_SEND_PASSWORD`, `VW_SERVE_TOKEN`, `VW_PRETTY`, `VW_RAW`, `VW_NOINTERACTION` | DreamCLI `.env()` bindings on command inputs; `cli('vw').envPrefix('VW_')` maps `.env('SERVE_TOKEN')` to `VW_SERVE_TOKEN` | Resolve fixed-name command inputs. Credential values also use `.sensitive()` so parser diagnostics omit them.           |
-| `VW_CLEANEXIT`, `VW_RESPONSE`, `VW_NOINTERACTION`, `VW_QUIET` and their `BW_*` aliases                                                                                                                                 | `apps/cli/src/main.ts`                                                                                                    | Apply process-wide exit, response, prompt, and output behavior before command execution.                                |
-| Names supplied to `--passwordenv`, `--clientidenv`, and `--clientsecretenv`                                                                                                                                            | `apps/cli/src/auth-input.ts`, `tool-commands.ts`, and `send-commands.ts`                                                  | Read a variable chosen at runtime; `.env()` takes a fixed name declared in the command schema.                          |
-| `VW_APPDATA_DIR`, `BITWARDENCLI_APPDATA_DIR`, `XDG_CONFIG_HOME`                                                                                                                                                        | `apps/cli/src/store.ts`                                                                                                   | Select the local account-state directory; `VW_APPDATA_DIR` wins, then the Bitwarden CLI variable, then the XDG default. |
-| `PATH`                                                                                                                                                                                                                 | `apps/cli/src/webauthn.ts`                                                                                                | Give the system WebAuthn helper access to installed commands.                                                           |
+| Values                                                                                                                                                                                                                 | Read path                                                                                                                 | Purpose                                                                                                       |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `VW_SESSION`, `VW_PASSWORD`, `VW_EMAIL`, `VW_2FA_TOKEN`, `VW_CLIENTID`, `VW_CLIENTSECRET`, `VW_IMPORT_PASSWORD`, `VW_EXPORT_PASSWORD`, `VW_SEND_PASSWORD`, `VW_SERVE_TOKEN`, `VW_PRETTY`, `VW_RAW`, `VW_NOINTERACTION` | DreamCLI `.env()` bindings on command inputs; `cli('vw').envPrefix('VW_')` maps `.env('SERVE_TOKEN')` to `VW_SERVE_TOKEN` | Resolve fixed-name command inputs. Credential values also use `.sensitive()` so parser diagnostics omit them. |
+| `VW_CLEANEXIT`, `VW_RESPONSE`, `VW_NOINTERACTION`, `VW_QUIET` and their `BW_*` aliases                                                                                                                                 | `apps/cli/src/main.ts`                                                                                                    | Apply process-wide exit, response, prompt, and output behavior before command execution.                      |
+| Names supplied to `--passwordenv`, `--clientidenv`, and `--clientsecretenv`                                                                                                                                            | `apps/cli/src/auth-input.ts`, `tool-commands.ts`, and `send-commands.ts`                                                  | Read a variable chosen at runtime; `.env()` takes a fixed name declared in the command schema.                |
+| `VW_APPDATA_DIR`, `XDG_CONFIG_HOME`                                                                                                                                                                                    | `apps/cli/src/store.ts`                                                                                                   | Select the local account-state directory; `VW_APPDATA_DIR` wins, then the XDG default.                        |
+| `PATH`                                                                                                                                                                                                                 | `apps/cli/src/webauthn.ts`                                                                                                | Give the system WebAuthn helper access to installed commands.                                                 |
 
 The CLI depends on `@kjanat/dreamcli` 5.0.0, as recorded in the Bun lockfile. Its
 prompt session and password factory handle master passwords, API secrets,
@@ -705,8 +702,8 @@ node apps/cli/dist/main.js receive 'https://vault.example.com/#/send/ACCESS_ID/K
 node apps/cli/dist/main.js receive 'https://vault.example.com/#/send/ACCESS_ID/KEY' --output ./received.pdf
 ```
 
-`VW_SEND_PASSWORD` (or `BW_SEND_PASSWORD`) supplies the default recipient or
-new-Send password. `--password` overrides that value; `--passwordenv NAME`
+`VW_SEND_PASSWORD` supplies the default recipient or new-Send password.
+`--password` overrides that value; `--passwordenv NAME`
 selects another environment variable.
 
 The quick `send` command accepts text from stdin when its data argument is
@@ -770,8 +767,7 @@ currently processed in memory, bounded by Vaultwarden's 525 MiB encrypted-file
 limit. A move carries readable attachments for items with per-item keys.
 
 State defaults to `$XDG_CONFIG_HOME/vaultwarden-cli/state.json`, falling back to
-`~/.config/vaultwarden-cli/state.json`. `VW_APPDATA_DIR` selects an isolated profile;
-`BITWARDENCLI_APPDATA_DIR` is accepted for compatibility with `bw`.
+`~/.config/vaultwarden-cli/state.json`. `VW_APPDATA_DIR` selects an isolated profile.
 Directories use mode 0700 and files 0600. Locking removes the encrypted session
 wrapper; unlocking again replaces it, invalidating the previous token. A command
 lock prevents concurrent refresh/logout writes. Its local process owner is

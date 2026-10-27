@@ -16,9 +16,9 @@ const policies = new AsyncLocalStorage<OutputPolicy>();
 
 export function outputCommand(name: string) {
 	return command(name)
-		.flag('pretty', flag.boolean().env('PRETTY').describe('Format JSON with two-space indentation'))
-		.flag('raw', flag.boolean().env('RAW').describe('Return raw message output'))
-		.flag('nointeraction', flag.boolean().env('NOINTERACTION').describe('Do not prompt for interactive input'));
+		.flag('pretty', flag.boolean().env().describe('Format JSON with two-space indentation'))
+		.flag('raw', flag.boolean().env().describe('Return raw message output'))
+		.flag('nointeraction', flag.boolean().env().describe('Do not prompt for interactive input'));
 }
 
 /** The policy follows one command execution, including raw writes outside DreamCLI. */

@@ -42,7 +42,7 @@ import { toolCommands } from '#tool-commands';
 import { vaultCommands } from '#vault-commands';
 import { dataDirectory, openSession, sealSession, withStore, type State } from '#store';
 
-const sessionFlag = () => flag.string().sensitive().env('SESSION').describe('Unlock session (or VW_SESSION)');
+const sessionFlag = () => flag.string().sensitive().env().describe('Unlock session');
 const passwordEnvFlag = () =>
 	flag.string().describe(
 		'Read the master password from the variable named here. Without this option, login reads VW_PASSWORD.',
@@ -97,7 +97,7 @@ function sessionMessage(title: string, token: string): JsonObject {
 		object: 'message',
 		title,
 		message:
-			`\nTo unlock your vault, set your session key to the \`BW_SESSION\` environment variable. ex:\n$ export BW_SESSION="${token}"\n> $env:BW_SESSION="${token}"\n\nYou can also pass the session key to any command with the \`--session\` option. ex:\n$ bw list items --session ${token}`,
+			`\nTo unlock your vault, set the session key in \`VW_SESSION\`. For example:\n$ export VW_SESSION="${token}"\n> $env:VW_SESSION="${token}"\n\nYou can also pass it with \`--session\`:\n$ vw list items --session ${token}`,
 		raw: token,
 		noColor: false,
 	};
@@ -206,14 +206,14 @@ export function createApp(directory = dataDirectory()) {
 			})
 		);
 	const login = command('login').description('Log in with a master password, SSO, or a personal API key')
-		.arg('email', arg.string().env('EMAIL').optional()).arg(
+		.arg('email', arg.string().env().optional()).arg(
 			'password',
-			arg.string().sensitive().env('PASSWORD').optional(),
+			arg.string().sensitive().env().optional(),
 		)
 		.flag('passwordenv', passwordEnvFlag()).flag('passwordfile', flag.path())
 		.flag('apikey', flag.boolean())
-		.flag('clientid', flag.string().sensitive().env('CLIENTID'))
-		.flag('clientsecret', flag.string().sensitive().env('CLIENTSECRET'))
+		.flag('clientid', flag.string().sensitive().env())
+		.flag('clientsecret', flag.string().sensitive().env())
 		.flag(
 			'clientidenv',
 			flag.string().describe(
@@ -357,7 +357,7 @@ export function createApp(directory = dataDirectory()) {
 			})
 		);
 	const unlock = command('unlock').description('Unlock the cached user key and issue a session')
-		.arg('password', arg.string().sensitive().env('PASSWORD').optional()).flag(
+		.arg('password', arg.string().sensitive().env().optional()).flag(
 			'passwordenv',
 			passwordEnvFlag(),
 		)
@@ -684,7 +684,7 @@ export function createApp(directory = dataDirectory()) {
 	let helpApp: ReturnType<typeof cli>;
 	const versions = versionCommands();
 	const app = cli('vw')
-		.envPrefix('VW_')
+		.envPrefix()
 		.plugin(outputPolicyPlugin())
 		.plugin(accountAccessPlugin(directory))
 		.version(CLI_PACKAGE.version)

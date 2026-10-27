@@ -4,30 +4,6 @@ import { normalizeSsoArguments } from '#sso-login';
 import { createAdapter } from '@kjanat/dreamcli/runtime';
 import { withOutputPolicy } from '#output';
 
-for (
-	const [vwName, bwName] of [
-		['VW_SESSION', 'BW_SESSION'],
-		['VW_PASSWORD', 'BW_PASSWORD'],
-		['VW_EMAIL', 'BW_EMAIL'],
-		['VW_2FA_TOKEN', 'BW_2FA_TOKEN'],
-		['VW_CLIENTID', 'BW_CLIENTID'],
-		['VW_CLIENTSECRET', 'BW_CLIENTSECRET'],
-		['VW_IMPORT_PASSWORD', 'BW_IMPORT_PASSWORD'],
-		['VW_EXPORT_PASSWORD', 'BW_EXPORT_PASSWORD'],
-		['VW_SEND_PASSWORD', 'BW_SEND_PASSWORD'],
-		['VW_PRETTY', 'BW_PRETTY'],
-		['VW_QUIET', 'BW_QUIET'],
-		['VW_NOINTERACTION', 'BW_NOINTERACTION'],
-		['VW_CLEANEXIT', 'BW_CLEANEXIT'],
-		['VW_RESPONSE', 'BW_RESPONSE'],
-		['VW_RAW', 'BW_RAW'],
-	] as const
-) {
-	if (process.env[vwName] === undefined && process.env[bwName] !== undefined) {
-		process.env[vwName] = process.env[bwName];
-	}
-}
-
 function cleanExitArguments(argv: readonly string[]): { argv: string[]; enabled: boolean } {
 	const result: string[] = [];
 	// Parse this as a boolean; Boolean('false') would enable clean-exit mode.
@@ -77,7 +53,7 @@ function responseArguments(argv: readonly string[]): { argv: string[]; enabled: 
 
 function noInteractionArguments(argv: readonly string[]): { argv: string[]; enabled: boolean } {
 	const result: string[] = [];
-	let enabled = process.env.VW_NOINTERACTION === 'true';
+	let enabled = false;
 	let afterSeparator = false;
 	for (const token of argv) {
 		if (token === '--') afterSeparator = true;

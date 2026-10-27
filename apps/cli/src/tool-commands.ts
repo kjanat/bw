@@ -71,7 +71,7 @@ export function toolCommands(runtime: VaultRuntime, directory: string) {
 			'allow-partial',
 			flag.boolean().describe('Allow a ZIP with missing attachments and report every skipped file'),
 		)
-		.flag('organizationid', flag.string()).flag('session', flag.string().sensitive().env('SESSION'))
+		.flag('organizationid', flag.string()).flag('session', flag.string().sensitive().env())
 		.flag('output', flag.path())
 		.flag('password', flag.string().sensitive().env('EXPORT_PASSWORD')).flag(
 			'passwordenv',
@@ -130,7 +130,7 @@ export function toolCommands(runtime: VaultRuntime, directory: string) {
 		.arg('format', arg.string().optional()).arg('input', arg.path().optional())
 		.flag('formats', flag.boolean()).flag('organizationid', flag.string()).flag(
 			'session',
-			flag.string().sensitive().env('SESSION'),
+			flag.string().sensitive().env(),
 		)
 		.flag('password', flag.string().sensitive().env('IMPORT_PASSWORD'))
 		.flag(

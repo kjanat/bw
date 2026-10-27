@@ -43,7 +43,7 @@ export async function prepareArchivedItemEdit(
 	} else if (await options.ask() !== 'confirmed') throw new Error('Edit cancelled.');
 	data.archivedDate = null;
 }
-const session = () => flag.string().sensitive().env('SESSION').describe('Unlock session (or VW_SESSION)');
+const session = () => flag.string().sensitive().env().describe('Unlock session');
 const input = () => arg.string().stdin({ trim: true }).describe('Base64-encoded JSON, or pipe from vw encode');
 const org = () => flag.string().describe('Organization ID');
 function organization(value?: string): string {
