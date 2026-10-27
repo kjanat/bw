@@ -657,9 +657,11 @@ test('True Key CSV maps login, credit card, and secure-note records', () => {
 		],
 		['cc', '', 'True Key card', 'false', '', '', '', '', '', 'Alice', '4111111111111111', '2030-06-01', '', ''],
 		['note', '', 'True Key note', 'false', '', 'Caption', '', '', '', '', '', '', 'Document body', 'note reference'],
+		['note', '', 'True Key document-only', 'false', '', '', '', '', '', '', '', '', 'Body without caption', ''],
+		['note', '', 'True Key caption-only', 'false', '', 'Caption without body', '', '', '', '', '', '', '', ''],
 	]);
 	const parsed = items(parseExternalCsv('truekeycsv', source));
-	expect(parsed).toHaveLength(3);
+	expect(parsed).toHaveLength(5);
 	expect(parsed[0]).toMatchObject({
 		name: 'True Key login',
 		favorite: true,
@@ -678,6 +680,8 @@ test('True Key CSV maps login, credit card, and secure-note records', () => {
 		fields: [{ name: 'Reference', value: 'note reference', type: 0 }],
 		secureNote: { type: 0 },
 	});
+	expect(parsed[3]).toMatchObject({ type: 2, notes: 'Body without caption' });
+	expect(parsed[4]).toMatchObject({ type: 2, notes: 'Caption without body' });
 });
 test('SplashID positional CSV maps login details, continuation notes, and category grouping', () => {
 	const source = writeCsv([

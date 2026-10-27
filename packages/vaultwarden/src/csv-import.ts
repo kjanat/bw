@@ -537,7 +537,7 @@ function trueKey(row: Record<string, string>): VaultItem {
 		item.type = 2;
 		delete item.login;
 		item.secureNote = { type: 0 };
-		if (present(item.notes as string | undefined)) item.notes = present(row.document_content);
+		item.notes = present(row.document_content) ?? item.notes;
 		const ignored = new Set([
 			'kind',
 			'autologin',
