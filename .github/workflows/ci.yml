@@ -20,7 +20,7 @@ jobs:
         with: { persist-credentials: false }
       - uses: $/.github/actions/setup-bun
       - name: Install registry tooling from mise.toml
-        uses: jdx/mise-action@v5.2.3
+        uses: jdx/mise-action@v5.2.4
         with:
           install_args: crane
           add_shims_to_path: false
