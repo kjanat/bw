@@ -1,10 +1,13 @@
 import { expect, test } from 'bun:test';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { once } from 'node:events';
+import { chmod, mkdtemp, rm, stat } from 'node:fs/promises';
+import { createServer } from 'node:http';
+import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createApp } from '#app';
 import { withStore } from '#store';
-import { effectiveServePort, rejectUnreadyUnixSocket, serveRequiresToken } from '#serve-command';
+import { effectiveServePort, listenOwnerOnlyUnixSocket, serveRequiresToken } from '#serve-command';
 import { runCapturedProcess } from '#test/process';
 
 test('serve uses the reference default port when zero is supplied', () => {
@@ -22,25 +25,53 @@ test('serve requires a bearer token for listeners that can accept peer connectio
 	expect(serveRequiresToken('fd+connected://3', true)).toBe(true);
 	expect(serveRequiresToken('unix:///tmp/vw.sock')).toBe(false);
 });
-test('unix socket requests receive no API data until owner-only permissions are applied', () => {
-	let resumed = false;
-	let status = 0;
-	let headers: Record<string, string> = {};
-	let body = '';
-	const incoming = { resume: () => resumed = true } as never;
-	const outgoing = {
-		writeHead: (code: number, value: Record<string, string>) => {
-			status = code;
-			headers = value;
-		},
-		end: (value: string) => body = value,
-	} as never;
-	expect(rejectUnreadyUnixSocket(false, incoming, outgoing)).toBe(true);
-	expect(resumed).toBe(true);
-	expect(status).toBe(503);
-	expect(headers).toMatchObject({ 'Cache-Control': 'no-store', Connection: 'close' });
-	expect(JSON.parse(body)).toEqual({ success: false, message: 'Listener is starting.' });
-	expect(rejectUnreadyUnixSocket(true, incoming, outgoing)).toBe(false);
+test('unix socket connections opened before owner-only permissions are dropped, not served later', async () => {
+	const directory = await mkdtemp(join(tmpdir(), 'vw-serve-unix-race-'));
+	const path = join(directory, 'api.sock');
+	const server = createServer((_, response) => response.end('served'));
+	// Read the umask without the deprecated zero-argument getter.
+	const umask = process.umask(0o022);
+	process.umask(umask);
+	let early: Socket | undefined;
+	let earlyData = '';
+	let earlyClosed: Promise<unknown> | undefined;
+	try {
+		await listenOwnerOnlyUnixSocket(server, path, async socketPath => {
+			// The owner-only umask applies at bind, before the explicit chmod.
+			expect((await stat(socketPath)).mode & 0o777).toBe(0o600);
+			const accepted = once(server, 'connection');
+			early = connect(socketPath);
+			early.setEncoding('utf8');
+			early.on('data', (chunk: string) => earlyData += chunk);
+			early.on('error', () => {});
+			earlyClosed = once(early, 'close');
+			await once(early, 'connect');
+			await accepted;
+			await chmod(socketPath, 0o600);
+		});
+		const restored = process.umask(umask);
+		expect(restored).toBe(umask);
+		// An idle connection accepted before the listener was ready must be dropped, not kept open to be
+		// served once it is. Without the gate, the server holds it open and this wait times out.
+		await earlyClosed;
+		expect(earlyData).toBe('');
+		const response = await new Promise<string>((resolve, reject) => {
+			const client: Socket = connect(
+				path,
+				() => client.end('GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n'),
+			);
+			let data = '';
+			client.setEncoding('utf8');
+			client.on('data', (chunk: string) => data += chunk);
+			client.on('end', () => resolve(data));
+			client.on('error', reject);
+		});
+		expect(response).toContain('served');
+	} finally {
+		early?.destroy();
+		await new Promise<void>(resolve => server.close(() => resolve()));
+		await rm(directory, { recursive: true, force: true });
+	}
 });
 test('serve refuses an exposed TCP listener before binding when its token is absent', async () => {
 	const dir = await mkdtemp(join(tmpdir(), 'vw-serve-token-'));

@@ -1,6 +1,6 @@
 import { outputCommand as command } from '#output';
 import { timingSafeEqual } from 'node:crypto';
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createServer, type Server } from 'node:http';
 import { isIP, Socket } from 'node:net';
 import { chmod } from 'node:fs/promises';
 import { Readable } from 'node:stream';
@@ -28,20 +28,40 @@ export function serveRequiresToken(hostname: string, descriptor = false): boolea
 	return !loopbackHost(hostname);
 }
 
-export function rejectUnreadyUnixSocket(
-	ready: boolean,
-	incoming: Pick<IncomingMessage, 'resume'>,
-	outgoing: Pick<ServerResponse, 'writeHead' | 'end'>,
-): boolean {
-	if (ready) return false;
-	incoming.resume();
-	outgoing.writeHead(503, {
-		'Cache-Control': 'no-store',
-		Connection: 'close',
-		'Retry-After': '1',
+/**
+ * Bind a Unix socket that only its owner can connect to. File permissions are the socket's only
+ * access control and are checked at connect time. The owner-only umask is the protection: it keeps
+ * the socket private from bind onward. Destroying connections seen before the chmod completes is a
+ * backup only, since the kernel can queue a connection early that Node accepts after `ready` is set.
+ */
+export async function listenOwnerOnlyUnixSocket(
+	server: Server,
+	socketPath: string,
+	restrict: (path: string) => Promise<void> = path => chmod(path, 0o600),
+): Promise<void> {
+	let ready = false;
+	server.on('connection', (socket: Socket) => {
+		if (!ready) socket.destroy();
 	});
-	outgoing.end(JSON.stringify({ success: false, message: 'Listener is starting.' }));
-	return true;
+	const previousUmask = process.umask(0o177);
+	try {
+		await new Promise<void>((resolve, reject) => {
+			server.once('error', reject);
+			server.listen(socketPath, () => {
+				server.off('error', reject);
+				resolve();
+			});
+		});
+	} finally {
+		process.umask(previousUmask);
+	}
+	try {
+		await restrict(socketPath);
+	} catch (error) {
+		await new Promise<void>(resolve => server.close(() => resolve()));
+		throw error;
+	}
+	ready = true;
 }
 
 function authorizedServeRequest(header: string | string[] | undefined, token: string): boolean {
@@ -146,9 +166,7 @@ export function serveCommand(
 				},
 				disableOriginProtection: flags['disable-origin-protection'],
 			});
-			let unixSocketReady = socketPath === undefined;
 			const server = createServer(async (incoming, outgoing) => {
-				if (rejectUnreadyUnixSocket(unixSocketReady, incoming, outgoing)) return;
 				try {
 					if (token !== undefined && !authorizedServeRequest(incoming.headers.authorization, token)) {
 						outgoing.writeHead(401, {
@@ -180,36 +198,30 @@ export function serveCommand(
 				}
 			});
 			let connected: Socket | undefined;
-			await new Promise<void>((resolve, reject) => {
-				server.once('error', reject);
-				const listening = () => {
-					server.off('error', reject);
-					const address = server.address();
-					if (address && typeof address !== 'string') port = address.port;
-					resolve();
-				};
-				if (descriptor?.[1] === 'connected') {
-					connected = new Socket({ fd: Number(descriptor[2]), readable: true, writable: true });
-					server.keepAliveTimeout = 0;
-					server.headersTimeout = 0;
-					server.requestTimeout = 0;
-					server.timeout = 0;
-					connected.pause();
-					server.emit('connection', connected);
-					connected.resume();
-					listening();
-				} else if (descriptor) server.listen({ fd: Number(descriptor[2]) }, listening);
-				else if (socketPath !== undefined) server.listen(socketPath, listening);
-				else server.listen(port, hostname === 'all' ? undefined : hostname, listening);
-			});
 			if (socketPath !== undefined) {
-				try {
-					await chmod(socketPath, 0o600);
-					unixSocketReady = true;
-				} catch (error) {
-					await new Promise<void>(resolve => server.close(() => resolve()));
-					throw error;
-				}
+				await listenOwnerOnlyUnixSocket(server, socketPath);
+			} else {
+				await new Promise<void>((resolve, reject) => {
+					server.once('error', reject);
+					const listening = () => {
+						server.off('error', reject);
+						const address = server.address();
+						if (address && typeof address !== 'string') port = address.port;
+						resolve();
+					};
+					if (descriptor?.[1] === 'connected') {
+						connected = new Socket({ fd: Number(descriptor[2]), readable: true, writable: true });
+						server.keepAliveTimeout = 0;
+						server.headersTimeout = 0;
+						server.requestTimeout = 0;
+						server.timeout = 0;
+						connected.pause();
+						server.emit('connection', connected);
+						connected.resume();
+						listening();
+					} else if (descriptor) server.listen({ fd: Number(descriptor[2]) }, listening);
+					else server.listen(port, hostname === 'all' ? undefined : hostname, listening);
+				});
 			}
 			out.status(
 				descriptor || socketPath !== undefined ? `Listening on ${hostname}` : `Listening on http://${hostname}:${port}`,
