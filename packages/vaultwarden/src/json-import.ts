@@ -89,11 +89,19 @@ function enpassRows(value: unknown, key: string): Record<string, unknown>[] {
 function enpassText(value: unknown): string | null {
 	return typeof value === 'string' && value.trim() ? value : null;
 }
-function enpassCustom(item: VaultItem, label: unknown, value: unknown, sensitive: unknown, separateNotes = false): void {
+function enpassCustom(
+	item: VaultItem,
+	label: unknown,
+	value: unknown,
+	sensitive: unknown,
+	separateNotes = false,
+): void {
 	if (typeof value !== 'string' || !value.trim()) return;
 	const name = typeof label === 'string' && label.trim() ? label : '';
 	if (value.length > 200 || /\r|\n/.test(value.trim())) {
-		item.notes = `${separateNotes && item.notes ? `${item.notes}\n` : item.notes ?? ''}${name}: ${value.replace(/\r\n|\r/g, '\n')}\n`;
+		item.notes = `${separateNotes && item.notes ? `${item.notes}\n` : item.notes ?? ''}${name}: ${
+			value.replace(/\r\n|\r/g, '\n')
+		}\n`;
 	} else item.fields!.push({ name, value, type: sensitive === 1 ? 1 : 0 });
 }
 function enpassCardExpiry(value: string): { month: string; year: string } | null {

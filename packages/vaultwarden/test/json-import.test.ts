@@ -1097,13 +1097,22 @@ test('Passman JSON converts organization folders to collections and rejects malf
 
 test('TOTP-only records remain logins across external JSON importers', () => {
 	const sources: [string, unknown][] = [
-		['enpassjson', { items: [{ title: 'Enpass OTP', template_type: 'login.default', fields: [{ type: 'totp', value: 'ENPASS_TEST_SEED' }] }] }],
+		['enpassjson', {
+			items: [{
+				title: 'Enpass OTP',
+				template_type: 'login.default',
+				fields: [{ type: 'totp', value: 'ENPASS_TEST_SEED' }],
+			}],
+		}],
 		['passmanjson', [{ label: 'Passman OTP', otp: { secret: 'PASSMAN_TEST_SEED' } }]],
-		['keeperjson', { records: [{ $type: 'login', title: 'Keeper OTP', custom_fields: { $oneTimeCode: ['KEEPER_TEST_SEED'] } }] }],
+		['keeperjson', {
+			records: [{ $type: 'login', title: 'Keeper OTP', custom_fields: { $oneTimeCode: ['KEEPER_TEST_SEED'] } }],
+		}],
 		['passwordbossjson', [{ itemTypeName: 'Login', name: 'Password Boss OTP', totp: 'BOSS_TEST_SEED' }]],
 	];
 	for (const [format, source] of sources) {
-		const imported = items(parseExternalJson(format as Parameters<typeof parseExternalJson>[0], JSON.stringify(source)))[0];
+		const imported =
+			items(parseExternalJson(format as Parameters<typeof parseExternalJson>[0], JSON.stringify(source)))[0];
 		expect(imported).toMatchObject({ type: 1, login: { totp: expect.any(String) } });
 	}
 });
