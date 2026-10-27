@@ -65,7 +65,6 @@ function accountAccessPlugin(directory: string) {
 		'help',
 		'login',
 		'receive',
-		'root',
 		'sdk-version',
 		'serve',
 		'status',
@@ -688,12 +687,6 @@ export function createApp(directory = dataDirectory()) {
 		.envPrefix('VW_')
 		.plugin(outputPolicyPlugin())
 		.plugin(accountAccessPlugin(directory))
-		.default(
-			command('root').action(async ({ out }) => {
-				const help = await helpApp.execute(['--help']);
-				out.log(help.stdout.join(''));
-			}),
-		)
 		.version(CLI_PACKAGE.version)
 		.description('A Vaultwarden-first client')
 		.command(deviceApprovalCommand(async commandName => {

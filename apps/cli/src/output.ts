@@ -43,11 +43,11 @@ export function outputPolicyPlugin() {
 		beforeAction: ({ out, flags, command, args }) => {
 			const policy = policies.getStore();
 			if (policy) {
-				policy.quiet = command.name !== 'root' && out.verbosity === 'quiet';
+				policy.quiet = out.verbosity === 'quiet';
 				policy.pretty = !!flags.pretty;
 				policy.commandName = command.name;
 				policy.args = args;
-				if (policy.response && command.name !== 'root') {
+				if (policy.response) {
 					const writeResponse = (data: unknown) => policy.writeJson({ success: true, data }, !!flags.pretty);
 					out.error = message => {
 						if (!policy.responseErrorWritten) {

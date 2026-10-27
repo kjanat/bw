@@ -37,6 +37,9 @@ test('org collection create/edit treat whitespace organization options as absent
 test('built Node CLI exposes DreamCLI help and common flags', { timeout: 15000 }, async () => {
 	const dir = await mkdtemp(join(tmpdir(), 'vw-cli-'));
 	try {
+		const noArgs = await run(dir, []);
+		expect(noArgs.code).toBe(0);
+		expect(noArgs.stdout).toContain('A Vaultwarden-first client');
 		const help = await run(dir, ['--help']);
 		expect(help.code).toBe(0);
 		expect(help.stdout).toContain('Vaultwarden-first');
