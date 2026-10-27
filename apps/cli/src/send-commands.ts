@@ -58,7 +58,7 @@ export function sendResponseData(send: JsonObject, objectType = 'send'): JsonObj
 export function quickSendResult(send: JsonObject, fullObject: boolean): JsonObject | string {
 	return fullObject ? sendResponseData(send) : String(send.accessUrl ?? '');
 }
-async function raw(contents: Uint8Array): Promise<void> {
+async function raw(contents: string | Uint8Array): Promise<void> {
 	await writeStdout(contents);
 }
 export function receiveCommand() {
@@ -98,7 +98,7 @@ export function receiveCommand() {
 				} finally {
 					result.contents.fill(0);
 				}
-			} else await raw(Buffer.from(String(object(result.send.text).text)));
+			} else await raw(String(object(result.send.text).text));
 		});
 }
 export function sendCommands(runtime: VaultRuntime) {
@@ -150,7 +150,7 @@ export function sendCommands(runtime: VaultRuntime) {
 				throw error;
 			}
 			if (flags.text) {
-				await raw(Buffer.from(String(object(send.text).text)));
+				await raw(String(object(send.text).text));
 			} else out.json(sendResponseData(send));
 		});
 	const edit = command('edit').description('Edit Send metadata or text; file contents are immutable')

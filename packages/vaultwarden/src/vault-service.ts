@@ -884,10 +884,30 @@ export class VaultService {
 		}
 		if (existing.viewPassword === false) {
 			const original = decryptOwnedItem(existing, await this.ownerKey(existing));
-			const originalLogin = object(original.login);
-			const login = object(editable.login);
-			if (login.password == null && originalLogin.password != null) login.password = originalLogin.password;
-			if (login.totp == null && originalLogin.totp != null) login.totp = originalLogin.totp;
+			const originalLogin = original.login == null ? undefined : object(original.login);
+			const login = editable.login == null ? undefined : object(editable.login);
+			if (originalLogin && login) {
+				if (login.password == null && originalLogin.password != null) login.password = originalLogin.password;
+				if (login.totp == null && originalLogin.totp != null) login.totp = originalLogin.totp;
+				if (Array.isArray(login.fido2Credentials) && Array.isArray(originalLogin.fido2Credentials)) {
+					const originalCredentials = new Map<string, JsonObject>();
+					for (const value of originalLogin.fido2Credentials) {
+						const credential = object(value);
+						if (typeof credential.credentialId === 'string') {
+							originalCredentials.set(credential.credentialId, credential);
+						}
+					}
+					login.fido2Credentials = login.fido2Credentials.map(value => {
+						const credential = object(value);
+						const originalCredential = typeof credential.credentialId === 'string'
+							? originalCredentials.get(credential.credentialId)
+							: undefined;
+						return credential.keyValue == null && originalCredential?.keyValue != null
+							? { ...credential, keyValue: originalCredential.keyValue }
+							: credential;
+					});
+				}
+			}
 			if (Array.isArray(editable.fields) && Array.isArray(original.fields)) {
 				const originalFields = original.fields.map(object);
 				const hiddenValues = new Map<unknown, unknown[]>();

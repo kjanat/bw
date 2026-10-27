@@ -85,11 +85,11 @@ function enpassRows(value: unknown, key: string): Record<string, unknown>[] {
 function enpassText(value: unknown): string | null {
 	return typeof value === 'string' && value.trim() ? value : null;
 }
-function enpassCustom(item: VaultItem, label: unknown, value: unknown, sensitive: unknown): void {
+function enpassCustom(item: VaultItem, label: unknown, value: unknown, sensitive: unknown, separateNotes = false): void {
 	if (typeof value !== 'string' || !value.trim()) return;
 	const name = typeof label === 'string' && label.trim() ? label : '';
 	if (value.length > 200 || /\r|\n/.test(value.trim())) {
-		item.notes = `${item.notes ?? ''}${name}: ${value.replace(/\r\n|\r/g, '\n').split('\n').join('\n')}\n`;
+		item.notes = `${separateNotes && item.notes ? `${item.notes}\n` : item.notes ?? ''}${name}: ${value.replace(/\r\n|\r/g, '\n')}\n`;
 	} else item.fields!.push({ name, value, type: sensitive === 1 ? 1 : 0 });
 }
 function enpassCardExpiry(value: string): { month: string; year: string } | null {
@@ -142,6 +142,7 @@ function parseEnpassJson(source: string): JsonObject {
 	}
 	const items: VaultItem[] = sourceItems.map(sourceItem => {
 		const result = item(sourceItem.title);
+		if (typeof sourceItem.note === 'string' && sourceItem.note.trim()) result.notes = sourceItem.note.trimEnd();
 		result.favorite = typeof sourceItem.favorite === 'number' && sourceItem.favorite > 0;
 		const fields = enpassRows(sourceItem.fields, 'field');
 		const template = typeof sourceItem.template_type === 'string' ? sourceItem.template_type : '';
@@ -169,7 +170,7 @@ function parseEnpassJson(source: string): JsonObject {
 						let uri = value.startsWith('androidapp://') ? value : `androidapp://${value}`;
 						uri = uri.replace('android://', '').replace(/androidapp:\/\/[A-Za-z0-9\-_+/]*==@/g, 'androidapp://');
 						urls.push(uri);
-					} else enpassCustom(result, field.label, value, field.sensitive);
+					} else enpassCustom(result, field.label, value, field.sensitive, true);
 				}
 				result.login!.uris = uris(urls);
 			} else if (kind === 'card') {
@@ -194,17 +195,16 @@ function parseEnpassJson(source: string): JsonObject {
 					else if (field.type === 'ccExpiry' && !card.expYear) {
 						const expiry = enpassCardExpiry(value);
 						if (expiry) Object.assign(card, { expMonth: expiry.month, expYear: expiry.year });
-						else enpassCustom(result, field.label, value, field.sensitive);
-					} else enpassCustom(result, field.label, value, field.sensitive);
+						else enpassCustom(result, field.label, value, field.sensitive, true);
+					} else enpassCustom(result, field.label, value, field.sensitive, true);
 				}
 				result.card = card;
 			} else {
 				for (const field of fields) {
-					if (field.type !== 'section') enpassCustom(result, field.label, field.value, field.sensitive);
+					if (field.type !== 'section') enpassCustom(result, field.label, field.value, field.sensitive, true);
 				}
 			}
 		}
-		if (typeof sourceItem.note === 'string' && sourceItem.note.trim()) result.notes = sourceItem.note.trimEnd();
 		if (
 			result.type === 1 && !enpassText(result.login!.username) && !enpassText(result.login!.password)
 			&& !(result.login!.uris as unknown[]).length

@@ -2273,7 +2273,7 @@ test('Send templates are available before login, and malformed recipient links d
 	}
 });
 
-test('owned Send CLI results use bw response discriminators', async () => {
+test('owned Send CLI results use bw response discriminators', { timeout: 15000 }, async () => {
 	const dir = await mkdtemp(join(tmpdir(), 'vw-send-response-'));
 	const userKey = Buffer.alloc(64, 47), seed = Buffer.alloc(16, 48), sendKey = deriveSendKey(seed);
 	const id = 'synthetic-send-id';
@@ -2335,6 +2335,19 @@ test('owned Send CLI results use bw response discriminators', async () => {
 			success: true,
 			data: { object: 'send', id, name: 'Cached synthetic Send' },
 		});
+		const responseText = await run(dir, [
+			'--response',
+			'send',
+			'get',
+			id,
+			'--text',
+			'--session',
+			session,
+		]);
+		expect(JSON.parse(responseText.stdout)).toEqual({
+			success: true,
+			data: { object: 'string', data: 'Synthetic payload' },
+		});
 		const textFromFile = await run(dir, ['send', 'get', 'synthetic-file-send-id', '--text', '--session', session]);
 		expect(textFromFile.code).toBe(1);
 		expect(textFromFile.stderr).toContain('Not found.');
@@ -2370,6 +2383,48 @@ test('owned Send CLI results use bw response discriminators', async () => {
 		userKey.fill(0);
 		seed.fill(0);
 		sendKey.fill(0);
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test('anonymous text Send receive uses the response envelope for text output', async () => {
+	const dir = await mkdtemp(join(tmpdir(), 'vw-receive-response-'));
+	const seed = Buffer.alloc(16, 61);
+	const accessId = Buffer.alloc(16, 62).toString('base64url');
+	const key = deriveSendKey(seed);
+	const server = createServer((request, response) => {
+		response.setHeader('Content-Type', 'application/json');
+		if (request.url === '/identity/connect/token') {
+			response.end(JSON.stringify({ access_token: 'synthetic-send-token' }));
+		} else if (request.url === '/api/sends/access') {
+			response.end(JSON.stringify({
+				id: 'synthetic-received-send',
+				accessId,
+				type: 0,
+				name: encrypt(Buffer.from('Synthetic received Send'), key),
+				text: { text: encrypt(Buffer.from('Anonymous payload'), key), hidden: false },
+				emails: null,
+				deletionDate: new Date(Date.now() + 86400000).toISOString(),
+				disabled: false,
+				hideEmail: false,
+			}));
+		} else response.writeHead(404).end('{}');
+	});
+	await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+	const address = server.address();
+	if (!address || typeof address === 'string') throw new Error('Missing Send fixture address.');
+	try {
+		const url = `http://127.0.0.1:${address.port}/#/send/${accessId}/${seed.toString('base64url')}`;
+		const result = await run(dir, ['--response', 'receive', url]);
+		expect(result.code, result.stderr).toBe(0);
+		expect(JSON.parse(result.stdout)).toEqual({
+			success: true,
+			data: { object: 'string', data: 'Anonymous payload' },
+		});
+	} finally {
+		seed.fill(0);
+		key.fill(0);
+		await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
 		await rm(dir, { recursive: true, force: true });
 	}
 });

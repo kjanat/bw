@@ -985,7 +985,12 @@ test('editing a hidden-password item leaves CLI-redacted secrets unchanged', asy
 	const privateItem = {
 		type: 1,
 		name: 'Private',
-		login: { username: 'person', password: 'hidden-password', totp: 'hidden-totp' },
+		login: {
+			username: 'person',
+			password: 'hidden-password',
+			totp: 'hidden-totp',
+			fido2Credentials: [{ credentialId: 'credential-id', keyValue: 'hidden-passkey-key' }],
+		},
 		fields: [
 			{ name: 'hidden-field', value: 'hidden-custom-value', type: 1 },
 			{ name: 'hidden-field', value: 'second-hidden-custom-value', type: 1 },
@@ -1009,15 +1014,42 @@ test('editing a hidden-password item leaves CLI-redacted secrets unchanged', asy
 	const response = vaultItemResponse(await vault.getItem('item'));
 	expect(JSON.stringify(response)).not.toContain('hidden-password');
 	expect(JSON.stringify(response)).not.toContain('hidden-totp');
+	expect(JSON.stringify(response)).not.toContain('hidden-passkey-key');
 	expect(JSON.stringify(response)).not.toContain('hidden-custom-value');
 	expect(JSON.stringify(response)).not.toContain('second-hidden-custom-value');
 	response.name = 'Renamed';
 	await vault.editItem('item', response as Parameters<VaultService['editItem']>[1]);
 	expect((submitted?.login as JsonObject).password).toBe('hidden-password');
 	expect((submitted?.login as JsonObject).totp).toBe('hidden-totp');
+	expect(((submitted?.login as JsonObject).fido2Credentials as JsonObject[])[0]?.keyValue)
+		.toBe('hidden-passkey-key');
 	expect(((submitted?.fields as JsonObject[])[0] ?? {}).value).toBe('hidden-custom-value');
 	expect(((submitted?.fields as JsonObject[])[1] ?? {}).value).toBe('second-hidden-custom-value');
 	expect(submitted?.name).toBe('Renamed');
+});
+test('editing a hidden-password non-login item does not require a login section', async () => {
+	const existing = {
+		...encryptItem({ type: 3, name: 'Private card', card: { number: 'hidden-card-number' } }, itemKey),
+		id: 'card',
+		key: encrypt(itemKey, userKey),
+		edit: true,
+		viewPassword: false,
+		revisionDate: '2026-01-01T00:00:00Z',
+	};
+	let submitted: JsonObject | undefined;
+	const vault = service((_path, init) => {
+		submitted = transformItem(JSON.parse(String(init.body)), itemKey, 'decrypt');
+		return Response.json({ ...JSON.parse(String(init.body)), id: 'card', viewPassword: false });
+	}, { profile: { id: 'user' }, ciphers: [existing], folders: [] });
+	try {
+		const response = vaultItemResponse(await vault.getItem('card'));
+		response.name = 'Renamed card';
+		await vault.editItem('card', response as Parameters<VaultService['editItem']>[1]);
+		expect(submitted?.name).toBe('Renamed card');
+		expect(submitted?.card).toMatchObject({ number: 'hidden-card-number' });
+	} finally {
+		vault.dispose();
+	}
 });
 test('item collection edits reject personal items before mutation', async () => {
 	let requests = 0;

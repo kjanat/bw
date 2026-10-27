@@ -886,6 +886,22 @@ test('Enpass JSON maps nested folders, login data, secure notes, and cards', () 
 	});
 });
 
+test('Enpass JSON combines source notes with long and multiline custom fields', () => {
+	const recovery = `first-line\n${'x'.repeat(220)}\nlast-line`;
+	const result = parseExternalJson(
+		'enpassjson',
+		JSON.stringify({
+			items: [{
+				title: 'Recovery note',
+				template_type: 'note.default',
+				note: 'Existing note',
+				fields: [{ type: 'text', label: 'Recovery codes', value: recovery }],
+			}],
+		}),
+	);
+	expect(items(result)[0]?.notes).toBe(`Existing note\nRecovery codes: ${recovery}\n`);
+});
+
 test('Enpass JSON rejects malformed documents and ignores cyclic folder paths', () => {
 	expect(() => parseExternalJson('enpassjson', '{bad secret payload')).toThrow('Invalid Enpass JSON.');
 	expect(() => parseExternalJson('enpassjson', JSON.stringify({ items: {} }))).toThrow(
