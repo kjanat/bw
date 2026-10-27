@@ -475,6 +475,38 @@ test('Keeper JSON malformed input and empty record lists fail with fixed diagnos
 	);
 });
 
+test('Keeper JSON resolves numbered typed fields and excludes them from custom fields', () => {
+	const result = parseExternalJson(
+		'keeperjson',
+		JSON.stringify({
+			records: [{
+				$type: 'bankCard',
+				title: 'Numbered Keeper card fields',
+				custom_fields: {
+					'$text:cardholderName:1': 'Alice Example',
+					'$paymentCard:1': {
+						cardNumber: '4111111111111111',
+						cardSecurityCode: '123',
+						cardExpirationDate: '06/2030',
+					},
+					'$pinCode:1': 'card-pin',
+				},
+			}],
+		}),
+	);
+	expect(items(result)[0]).toMatchObject({
+		type: 3,
+		card: {
+			cardholderName: 'Alice Example',
+			number: '4111111111111111',
+			code: '123',
+			expMonth: '06',
+			expYear: '2030',
+		},
+		fields: [{ name: 'PIN', value: 'card-pin', type: 1 }],
+	});
+});
+
 test('Dashlane JSON maps credentials, addresses, identities, cards, and fallback notes', () => {
 	const result = parseExternalJson(
 		'dashlanejson',
@@ -1061,6 +1093,19 @@ test('Passman JSON converts organization folders to collections and rejects malf
 	expect(items(result)[0]!.collectionIds).toEqual([(result.collections as JsonObject[])[0]!.id]);
 	expect(() => parseExternalJson('passmanjson', '{private malformed payload')).toThrow('Invalid Passman JSON.');
 	expect(() => parseExternalJson('passmanjson', '[]')).toThrow('Passman JSON contains no items.');
+});
+
+test('TOTP-only records remain logins across external JSON importers', () => {
+	const sources: [string, unknown][] = [
+		['enpassjson', { items: [{ title: 'Enpass OTP', template_type: 'login.default', fields: [{ type: 'totp', value: 'ENPASS_TEST_SEED' }] }] }],
+		['passmanjson', [{ label: 'Passman OTP', otp: { secret: 'PASSMAN_TEST_SEED' } }]],
+		['keeperjson', { records: [{ $type: 'login', title: 'Keeper OTP', custom_fields: { $oneTimeCode: ['KEEPER_TEST_SEED'] } }] }],
+		['passwordbossjson', [{ itemTypeName: 'Login', name: 'Password Boss OTP', totp: 'BOSS_TEST_SEED' }]],
+	];
+	for (const [format, source] of sources) {
+		const imported = items(parseExternalJson(format as Parameters<typeof parseExternalJson>[0], JSON.stringify(source)))[0];
+		expect(imported).toMatchObject({ type: 1, login: { totp: expect.any(String) } });
+	}
 });
 
 test('Passky JSON maps password records and rejects encrypted or invalid exports', () => {

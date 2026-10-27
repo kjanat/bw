@@ -108,6 +108,17 @@ test('1PUX imports combine source notes with long and multiline custom fields', 
 	expect(item.notes).toBe(`Existing note\nRecovery codes: ${recovery}\n`);
 	expect(item.fields).toEqual([]);
 });
+
+test('1PUX keeps a TOTP-only login as a login item', async () => {
+	const parsed = await parseOnePassword1Pux(
+		document('005', [fields('TOTP_fixture', 'One-Time Password', { totp: 'ONEPASSWORD_TEST_SEED' })]),
+	);
+	expect((parsed.items as JsonObject[])[0]).toMatchObject({
+		type: 1,
+		login: { totp: 'ONEPASSWORD_TEST_SEED' },
+	});
+});
+
 test('1PUX remaining category mappings and login-to-note conversion follow field semantics', async () => {
 	const cases: [string, unknown[], string, JsonObject][] = [
 		[

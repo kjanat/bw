@@ -25,6 +25,10 @@ const present = (value: unknown): string | null => {
 	if (typeof value === 'number' && Number.isFinite(value)) return String(value);
 	return null;
 };
+function hasLoginContent(login: VaultItem['login']): boolean {
+	return !!present(login?.username) || !!present(login?.password) || !!present(login?.totp)
+		|| !!(Array.isArray(login?.uris) && login.uris.length);
+}
 export function bwCardBrand(number: string | null): string | null {
 	if (number == null || number.trim() === '') return null;
 	if (/^4/.test(number)) return 'Visa';
@@ -206,8 +210,7 @@ function parseEnpassJson(source: string): JsonObject {
 			}
 		}
 		if (
-			result.type === 1 && !enpassText(result.login!.username) && !enpassText(result.login!.password)
-			&& !(result.login!.uris as unknown[]).length
+			result.type === 1 && !hasLoginContent(result.login)
 		) {
 			result.type = 2;
 			delete result.login;
@@ -362,8 +365,7 @@ function parsePassmanJson(source: string, organization: boolean): JsonObject {
 			}
 		}
 		if (
-			!present(result.login!.username) && !present(result.login!.password)
-			&& !(result.login!.uris as unknown[]).length
+			!hasLoginContent(result.login)
 		) {
 			result.type = 2;
 			delete result.login;
@@ -397,8 +399,7 @@ function parsePasskyJson(source: string): JsonObject {
 		result.login!.uris = uris(password.website);
 		result.notes = present(password.message);
 		if (
-			!present(result.login!.username) && !present(result.login!.password)
-			&& !(result.login!.uris as unknown[]).length
+			!hasLoginContent(result.login)
 		) {
 			result.type = 2;
 			delete result.login;
@@ -409,6 +410,7 @@ function parsePasskyJson(source: string): JsonObject {
 	return { encrypted: false, items, folders: [] };
 }
 type KeeperRecord = Record<string, unknown>;
+const normalizeKeeperFieldKey = (key: string): string => key.replace(/:?\d$/, '');
 function keeperRows(value: unknown, key: string): KeeperRecord[] {
 	if (value == null) return [];
 	if (!Array.isArray(value)) throw new Error(`Invalid Keeper JSON ${key} records.`);
@@ -497,7 +499,7 @@ function parseKeeperJson(source: string, organization: boolean): JsonObject {
 			for (const part of path.split('/')) {
 				if (!current || typeof current !== 'object' || Array.isArray(current)) return undefined;
 				const object = current as Record<string, unknown>;
-				const key = Object.keys(object).find(candidate => candidate.replace(/:?:\\d$/, '') === part);
+				const key = Object.keys(object).find(candidate => normalizeKeeperFieldKey(candidate) === part);
 				if (!key) return undefined;
 				current = object[key];
 			}
@@ -546,7 +548,7 @@ function parseKeeperJson(source: string, organization: boolean): JsonObject {
 		}
 		if (fields) {
 			for (const [key, raw] of Object.entries(fields)) {
-				const normalizedKey = key.replace(/:?:\d$/, '');
+				const normalizedKey = normalizeKeeperFieldKey(key);
 				if (
 					(kind === 'bankCard' && ['$paymentCard', '$text:cardholderName', '$pinCode'].includes(normalizedKey))
 					|| (kind === 'driverLicense' && ['$accountNumber:dlNumber', '$name'].includes(normalizedKey))
@@ -670,8 +672,7 @@ function parseKeeperJson(source: string, organization: boolean): JsonObject {
 			}
 		}
 		if (
-			result.type === 1 && !present(result.login!.username) && !present(result.login!.password)
-			&& !(result.login!.uris as unknown[]).length
+			result.type === 1 && !hasLoginContent(result.login)
 		) {
 			result.type = 2;
 			delete result.login;
@@ -749,7 +750,7 @@ function parseDashlaneJson(source: string): JsonObject {
 		if (present(credential.note)) notes.push(present(credential.note)!);
 		result.notes = notes.length ? notes.join('') : null;
 		if (
-			!present(result.login!.username) && !present(result.login!.password) && !(result.login!.uris as unknown[]).length
+			!hasLoginContent(result.login)
 		) {
 			result.type = 2;
 			delete result.login;
@@ -1037,8 +1038,7 @@ function parsePasswordBossJson(source: string, organization: boolean): JsonObjec
 			}
 		}
 		if (
-			result.type === 1 && !present(result.login!.username) && !present(result.login!.password)
-			&& !(result.login!.uris as unknown[]).length
+			result.type === 1 && !hasLoginContent(result.login)
 		) {
 			result.type = 2;
 			delete result.login;

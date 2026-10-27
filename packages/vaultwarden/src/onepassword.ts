@@ -222,7 +222,7 @@ async function parseItem(source: JsonObject): Promise<{ item: VaultItem; tag: st
 		}
 	}
 	if (
-		item.type === 1 && blank(item.login!.username) && blank(item.login!.password)
+		item.type === 1 && blank(item.login!.username) && blank(item.login!.password) && blank(item.login!.totp)
 		&& !(item.login!.uris as unknown[]).length
 	) {
 		item.type = 2;
