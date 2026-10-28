@@ -23,12 +23,14 @@ jobs:
         with:
           ref: refs/tags/${{ env.TAG }}
           persist-credentials: false
+      - name: Download release assets
+        run: gh release download "${TAG}" --pattern '*.tgz' --pattern release.json --pattern SHA256SUMS --dir artifacts
+      - name: Verify release checksums
+        working-directory: artifacts
+        run: sha256sum -c SHA256SUMS
       - name: Validate release assets and build provenance
         id: source
         run: |
-          mkdir -p artifacts
-          gh release download "${TAG}" --pattern release.json --pattern SHA256SUMS --dir artifacts
-          (cd artifacts && sha256sum -c SHA256SUMS)
           sha=$(git rev-parse HEAD)
           jq -e --arg tag "${TAG}" --arg sha "${sha}" \
             '.tag == $tag and .version == ($tag | ltrimstr("v")) and .sha == $sha and .packages == ["vaultwarden","cli"] and (.run | type == "number" and . > 0 and . == floor)' \
