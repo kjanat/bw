@@ -43,7 +43,7 @@ live('focused external import matches the independent bw importer', async () => 
 	master.fill(0);
 	stretched.fill(0);
 	const spawnCli = async (executable: string, profile: string, args: string[], extra: Record<string, string> = {}) => {
-		const command = executable.endsWith('.js') ? ['node', executable, ...args] : [executable, ...args];
+		const command = /\.[cm]?[jt]s$/.test(executable) ? ['node', executable, ...args] : [executable, ...args];
 		const child = Bun.spawn(command, {
 			env: {
 				PATH: process.env.PATH,

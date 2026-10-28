@@ -32,6 +32,8 @@
 				"required_status_checks": [
 					{ "context": "test", "integration_id": 15368 },
 					{ "context": "Installed packages (node)", "integration_id": 15368 },
+					{ "context": "Installed packages (node 24.8.0)", "integration_id": 15368 },
+					{ "context": "Installed packages (node arm64)", "integration_id": 15368 },
 					{ "context": "Installed packages (bun)", "integration_id": 15368 }
 				]
 			}

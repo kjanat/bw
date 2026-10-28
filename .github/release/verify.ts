@@ -28,5 +28,6 @@ await writeFile(
 	}),
 );
 await cp(fileURLToPath(new URL('./smoke.mjs', import.meta.url)), resolve(consumer, 'smoke.mjs'));
+await cp(resolve('apps/cli/test/fixtures/kdbx'), resolve(consumer, 'fixtures/kdbx'), { recursive: true });
 execFileSync('bun', ['install', '--ignore-scripts'], { cwd: consumer, stdio: 'inherit' });
 execFileSync(runtime, ['smoke.mjs'], { cwd: consumer, stdio: 'inherit' });

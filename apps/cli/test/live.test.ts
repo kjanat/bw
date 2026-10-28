@@ -1519,19 +1519,16 @@ for (
 						if (reference.code) throw new Error(`Reference item ${item.type} read failed: ${reference.stderr}`);
 						expect(JSON.parse(reference.stdout)).toMatchObject({ type: item.type, [item.section]: item.fields });
 					}
-					for (
-						const [query, expectedId] of [
-							['Fixture Bank', newerItems.find(item => item.type === 6)!.id],
-							['Fixture NH', newerItems.find(item => item.type === 7)!.id],
-							['Fixture NL', newerItems.find(item => item.type === 8)!.id],
-						] as const
-					) {
+					for (const [type, query] of [[6, 'Fixture Bank'], [7, 'Fixture NH'], [8, 'Fixture NL']] as const) {
+						// Older servers reject these item types above, so they have no records to search.
+						const supportedItem = newerItems.find(item => item.type === type);
+						if (!supportedItem) continue;
 						const listed = JSON.parse(await checked(['list', 'items', '--search', query])) as { id: string }[];
 						const reference = await official(['list', 'items', '--search', query], login.stdout.trim());
 						if (reference.code) throw new Error(`Reference item search failed: ${reference.stderr}`);
 						const referenceIds = (JSON.parse(reference.stdout) as { id: string }[]).map(item => item.id);
 						expect(listed.map(item => item.id)).toEqual(referenceIds);
-						expect(referenceIds).toContain(expectedId);
+						expect(referenceIds).toContain(supportedItem.id);
 					}
 					for (const query of [`>shortid:${item.id.slice(0, 8)}`, '>name:Compatibility']) {
 						const listed = JSON.parse(await checked(['list', 'items', '--search', query])) as { id: string }[];

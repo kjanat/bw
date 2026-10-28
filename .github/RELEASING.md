@@ -6,9 +6,12 @@ CI runs formatting, source checks and package builds independently. Type checks,
 lint and unit tests use the checkout, with Turbo building their workspace
 dependencies. The package build uses `bun pm pack --ignore-scripts` and uploads
 the archives and SHA-256 sidecars as workflow artifacts. Separate consumers
-install the exact archives under Node and Bun and exercise the SDK import and
-`vw` executable. The Vaultwarden compatibility matrix runs alongside this test
-workflow.
+install the exact archives under Node 24.8.0, Node 26 and Bun on Linux amd64,
+plus Node 26 on Linux arm64. Each consumer checks package versions, independent
+PBKDF2 and Argon2id vectors, authenticated encryption, all four KDBX worker
+fixtures, and SDK prelogin/login/sync through a local HTTP fixture. The full
+Vaultwarden server matrix runs on Node 26 alongside this workflow, with each
+server's pinned Bitwarden CLI reference.
 
 The `pkg-pr-new` workflow starts when CI begins. It waits for the build-ready
 artifact, publishes the prebuilt archives, then runs the package consumers against

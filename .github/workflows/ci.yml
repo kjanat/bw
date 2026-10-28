@@ -38,7 +38,7 @@ jobs:
         run: bun apps/cli/test/plan-compatibility.ts
 
   compatibility:
-    name: Vaultwarden ${{ matrix.server }} / Node ${{ matrix.node }}
+    name: Vaultwarden ${{ matrix.server }} / ${{ matrix.reference && format('bw {0}', matrix.referenceCliVersion) || 'protocol' }}
     needs: planner
     runs-on: ubuntu-26.04
     timeout-minutes: 40
@@ -48,6 +48,7 @@ jobs:
     env:
       VW_TEST_VERSION: ${{ matrix.server }}
       VW_TEST_IMAGE: ${{ matrix.image }}
+      VW_TEST_BW_VERSION: ${{ matrix.referenceCliVersion || '' }}
     steps:
       - parallel:
           - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
