@@ -199,7 +199,12 @@ for (
 			const certificate = await readFile(ca);
 			const privateKey = await readFile(keyPath);
 			const proxy = createHttpsServer({ cert: certificate, key: privateKey }, (incoming, outgoing) => {
-				const target = new URL(incoming.url ?? '/', server);
+				const path = incoming.url ?? '/';
+				if (!path.startsWith('/') || path.startsWith('//') || path.startsWith('/\\')) {
+					outgoing.writeHead(400);
+					outgoing.end();
+					return;
+				}
 				const requestHeaders = { ...incoming.headers };
 				const requestConnectionHeaders = requestHeaders.connection
 					?.split(',')
@@ -220,7 +225,8 @@ for (
 				) delete requestHeaders[name];
 				if (incoming.headers.host) requestHeaders.host = incoming.headers.host;
 				requestHeaders['x-forwarded-proto'] = 'https';
-				const upstream = httpRequest(target, {
+				const upstream = httpRequest(url, {
+					path,
 					method: incoming.method,
 					headers: requestHeaders,
 				}, response => {
