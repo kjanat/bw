@@ -9,19 +9,22 @@ import { resolveCompatibilityTarget, type CompatibilityTargets } from '#test/com
 const {
 	servers: compatibilityTargets,
 	referenceCliVersion,
-	referenceUnsupportedServers,
+	referenceCliVersions,
 	mailpitImage,
 } = await Bun
 	.file(
 		new URL('./fixtures/compatibility-targets.json', import.meta.url),
-	).json() as CompatibilityTargets;
+	).json() as CompatibilityTargets & { mailpitImage: string };
 
 const version = process.env.VW_TEST_VERSION ?? '1.37.4';
 if (process.platform === 'win32') throw new Error('The managed compatibility runner requires POSIX process groups.');
 const { image } = resolveCompatibilityTarget({ servers: compatibilityTargets }, version, process.env.VW_TEST_IMAGE);
 const reference = process.env.VW_TEST_BW;
-const requestedReferenceVersion = process.env.VW_TEST_BW_VERSION;
-const expectedReferenceVersion = requestedReferenceVersion ?? referenceCliVersion;
+const requestedReferenceVersion = process.env.VW_TEST_BW_VERSION || undefined;
+const configuredReferenceVersion = Object.hasOwn(referenceCliVersions, version)
+	? referenceCliVersions[version]
+	: referenceCliVersion;
+const expectedReferenceVersion = requestedReferenceVersion ?? configuredReferenceVersion ?? referenceCliVersion;
 if (!/^\d+\.\d+\.\d+$/.test(expectedReferenceVersion)) {
 	throw new Error('VW_TEST_BW_VERSION must be a semantic version such as 2026.1.0.');
 }
@@ -35,11 +38,13 @@ if (process.env.VW_TEST_PROTOCOL_ONLY && !protocolOnly) {
 	throw new Error('VW_TEST_PROTOCOL_ONLY must be 1 when enabled.');
 }
 const compareReference = !protocolOnly && !smtpEnabled && !ssoEnabled
-	&& (!referenceUnsupportedServers.includes(version) || requestedReferenceVersion !== undefined);
+	&& (configuredReferenceVersion !== null || requestedReferenceVersion !== undefined);
 if (process.env.VW_TEST_SMTP && !smtpEnabled) throw new Error('VW_TEST_SMTP must be 1 when enabled.');
 if (!/^axllent\/mailpit@sha256:[a-f0-9]{64}$/.test(mailpitImage)) throw new Error('Mailpit must use a pinned digest.');
 if (compareReference && (!reference || !isAbsolute(reference) || !(await stat(reference)).isFile())) {
-	throw new Error('VW_TEST_BW must name an absolute path to the independent bw 2026.10.0 executable.');
+	throw new Error(
+		`VW_TEST_BW must name an absolute path to the independent bw ${expectedReferenceVersion} executable.`,
+	);
 }
 if (!Bun.which('envctl')) throw new Error('Compatibility runner requires envctl for Docker output redaction.');
 for (const command of ['docker', 'node', 'ssh-keygen']) {
@@ -129,14 +134,14 @@ try {
 	console.log(`Node ${nodeVersion.trim()}; Bun ${Bun.version}`);
 	console.log(
 		ssoEnabled
-			? 'SSO suite: synthetic OIDC provider and compiled CLI login.'
+			? 'SSO suite: synthetic OIDC provider and CLI login.'
 			: smtpEnabled
-			? 'SMTP suite: library and compiled CLI login; no reference CLI required.'
+			? 'SMTP suite: library and CLI login; no reference CLI required.'
 			: compareReference
 			? `Reference: ${reference} (${expectedReferenceVersion})`
 			: protocolOnly
-			? 'Protocol-only suite: compiled CLI against Vaultwarden; independent bw comparison disabled.'
-			: `Reference comparison unavailable: bw ${referenceCliVersion} cannot parse Vaultwarden ${version}'s prelogin response. Running our protocol checks.`,
+			? 'Protocol-only suite: CLI against Vaultwarden; independent bw comparison disabled.'
+			: `Reference comparison unavailable: bw ${expectedReferenceVersion} cannot parse Vaultwarden ${version}'s prelogin response. Running our protocol checks.`,
 	);
 	if (smtpEnabled) {
 		const created = await docker(['network', 'create', network]);
@@ -277,6 +282,7 @@ try {
 		VW_TEST_SERVER: server,
 		VW_TEST_VERSION: version,
 		VW_TEST_BW: compareReference ? reference : undefined,
+		VW_TEST_BW_VERSION: compareReference ? expectedReferenceVersion : undefined,
 		VW_TEST_IMPORT_FORMAT: process.env.VW_TEST_IMPORT_FORMAT,
 		VW_TEST_IMPORT_SHARD: undefined as string | undefined,
 		VW_TEST_SKIP_IMPORTS: undefined as string | undefined,

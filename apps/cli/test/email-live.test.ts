@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { expect, test } from 'bun:test';
 import { randomBytes, randomUUID, generateKeyPairSync } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -69,7 +70,7 @@ for (const kdf of [{ type: 0, iterations: 600000 }, { type: 1, iterations: 3, me
 			throw new Error('Verification email was not delivered to the disposable SMTP receiver.');
 		}
 		async function run(args: string[]) {
-			const child = Bun.spawn(['node', new URL('../dist/main.js', import.meta.url).pathname, ...args], {
+			const child = Bun.spawn(['node', fileURLToPath(import.meta.resolve('#main')), ...args], {
 				env: { PATH: process.env.PATH, VW_APPDATA_DIR: directory, VW_PASSWORD: password },
 				stdin: 'ignore',
 				stdout: 'pipe',

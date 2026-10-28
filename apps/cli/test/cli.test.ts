@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { expect, test } from 'bun:test';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -17,7 +18,7 @@ import {
 	stretchKey,
 } from '@kjanat/vaultwarden';
 
-const executable = new URL('../dist/main.js', import.meta.url).pathname;
+const executable = fileURLToPath(import.meta.resolve('#main'));
 async function run(
 	dir: string,
 	args: string[],
@@ -716,7 +717,7 @@ test(
 	},
 );
 
-test('CLI responses redact secrets when Vaultwarden denies password visibility', async () => {
+test('CLI responses redact secrets when Vaultwarden denies password visibility', { timeout: 15000 }, async () => {
 	const dir = await mkdtemp(join(tmpdir(), 'vw-hidden-passwords-'));
 	const key = Buffer.alloc(64, 23), id = 'abcdef02-0000-0000-0000-000000000002';
 	const paths: string[] = [];

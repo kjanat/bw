@@ -1,0 +1,37 @@
+name: Build
+on:
+  workflow_call:
+    inputs:
+      ref: { type: string, default: "" }
+    outputs:
+      artifact-id:
+        description: Built public package archives
+        value: ${{ jobs.packages.outputs.artifact-id }}
+permissions: { contents: read }
+jobs:
+  source:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    outputs: { ref: "${{ steps.source.outputs.ref }}" }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { ref: "${{ inputs.ref || github.sha }}", persist-credentials: false }
+      - id: source
+        run: printf 'ref=%s\n' "$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
+  packages:
+    needs: [source]
+    uses: $/.github/workflows/package.yml
+    with: { ref: "${{ needs.source.outputs.ref }}" }
+  ready:
+    needs: [source, packages]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    steps:
+      - name: Record completed package builds
+        env: { SOURCE_REF: "${{ needs.source.outputs.ref }}" }
+        run: jq -cn --arg ref "${SOURCE_REF}" --argjson run "${GITHUB_RUN_ID}" '{ref:$ref,run:$run}' > build.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: build-ready
+          path: build.json
+          if-no-files-found: error

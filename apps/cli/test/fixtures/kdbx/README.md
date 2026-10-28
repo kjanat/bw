@@ -1,6 +1,6 @@
 # Synthetic KDBX interoperability fixtures
 
-These files contain synthetic entries used by the compiled Node CLI's real-server
+These files contain synthetic entries used by the Node CLI's real-server
 compatibility test. They were generated with `kdbxweb` 2.1.1 and the project's
 Argon2 adapter. The password-bearing files use `synthetic-database-password`.
 

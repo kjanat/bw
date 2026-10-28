@@ -24,20 +24,18 @@ with an installed Bitwarden CLI.
 
 ## Run
 
-Requires Bun for dependency management/tests and Node 24.8.0+ for the compiled CLI.
+Requires Node.js 24.8.0+.
 
 ```sh
-bun install
-bun run build --filter=@kjanat/vaultwarden-cli
-node apps/cli/dist/main.js --help
-node apps/cli/dist/main.js config server https://vault.example.com
-export VW_SESSION="$(node apps/cli/dist/main.js login you@example.com --raw)"
-node apps/cli/dist/main.js list items
-node apps/cli/dist/main.js list items --search example
-node apps/cli/dist/main.js get password ITEM_ID
-node apps/cli/dist/main.js lock
+vw --help
+vw config server https://vault.example.com
+export VW_SESSION="$(vw login you@example.com --raw)"
+vw list items
+vw list items --search example
+vw get password ITEM_ID
+vw lock
 unset VW_SESSION
-node apps/cli/dist/main.js logout
+vw logout
 ```
 
 `--quiet` suppresses command results on stdout and command-error diagnostics on
@@ -150,7 +148,7 @@ verification has not been run. Personal `/auth-requests` are not substituted.
 For installations with separate services, configure their full endpoint URLs:
 
 ```sh
-node apps/cli/dist/main.js config server https://vault.example.com \
+vw config server https://vault.example.com \
   --api https://api.example.com/api \
   --identity https://auth.example.com/identity \
   --web-vault https://web.example.com
@@ -179,10 +177,10 @@ or `unlocked` for the supplied `VW_SESSION` or `--session` token.
 ## API-key authentication
 
 ```sh
-node apps/cli/dist/main.js login --apikey --nointeraction
-node apps/cli/dist/main.js sync
-export VW_SESSION="$(node apps/cli/dist/main.js unlock --passwordenv VW_PASSWORD --raw)"
-node apps/cli/dist/main.js get password ITEM_ID
+vw login --apikey --nointeraction
+vw sync
+export VW_SESSION="$(vw unlock --passwordenv VW_PASSWORD --raw)"
+vw get password ITEM_ID
 ```
 
 API-key login uses `VW_CLIENTID` (`user.USER_UUID`) and `VW_CLIENTSECRET`.
@@ -211,18 +209,18 @@ base64; create/edit accept that encoded JSON as an argument or from stdin. The
 same command pattern applies to items and folders:
 
 ```sh
-node apps/cli/dist/main.js get template folder
-printf '%s' '{"name":"Work"}' | node apps/cli/dist/main.js encode | node apps/cli/dist/main.js create folder
-node apps/cli/dist/main.js get item ITEM_ID
+vw get template folder
+printf '%s' '{"name":"Work"}' | vw encode | vw create folder
+vw get item ITEM_ID
 # Edit the returned JSON without changing its revisionDate, then encode it:
-node apps/cli/dist/main.js edit item ITEM_ID ENCODED_JSON
-node apps/cli/dist/main.js archive item ITEM_ID
-node apps/cli/dist/main.js list items --archived
-node apps/cli/dist/main.js restore item ITEM_ID
-node apps/cli/dist/main.js delete item ITEM_ID
-node apps/cli/dist/main.js list items --trash
-node apps/cli/dist/main.js restore item ITEM_ID
-node apps/cli/dist/main.js delete item ITEM_ID --permanent
+vw edit item ITEM_ID ENCODED_JSON
+vw archive item ITEM_ID
+vw list items --archived
+vw restore item ITEM_ID
+vw delete item ITEM_ID
+vw list items --trash
+vw restore item ITEM_ID
+vw delete item ITEM_ID --permanent
 ```
 
 Item writes cover login, secure note, card, identity, and SSH-key data. Edits
@@ -243,14 +241,14 @@ TypeScript selecting source files and compiled Node selecting `dist` files.
 ## Generation and transfers
 
 ```sh
-node apps/cli/dist/main.js generate --length 24 -u -l -n -s
-node apps/cli/dist/main.js generate --passphrase --words 6 --capitalize
-node apps/cli/dist/main.js import --formats
-node apps/cli/dist/main.js export --format json --output ./vault.json
-node apps/cli/dist/main.js export --format encrypted_json --passwordenv EXPORT_PASSWORD --output ./vault.encrypted.json
-node apps/cli/dist/main.js import bitwardenjson ./vault.encrypted.json --passwordenv EXPORT_PASSWORD
-node apps/cli/dist/main.js export --format zip --output ./vault.zip
-node apps/cli/dist/main.js import bitwardenzip ./vault.zip
+vw generate --length 24 -u -l -n -s
+vw generate --passphrase --words 6 --capitalize
+vw import --formats
+vw export --format json --output ./vault.json
+vw export --format encrypted_json --passwordenv EXPORT_PASSWORD --output ./vault.encrypted.json
+vw import bitwardenjson ./vault.encrypted.json --passwordenv EXPORT_PASSWORD
+vw export --format zip --output ./vault.zip
+vw import bitwardenzip ./vault.zip
 ```
 
 Generation uses cryptographic randomness and the 7,776-word EFF list for
@@ -307,7 +305,7 @@ and trash. Use `--organizationid ORG_ID` for organization imports and exports.
 Organization export uses the server's administrative export endpoint.
 
 ```sh
-node apps/cli/dist/main.js import 1password1pux ./backup.1pux
+vw import 1password1pux ./backup.1pux
 ```
 
 1PUX imports map logins, passwords, cards, identities, secure notes, and SSH keys
@@ -327,9 +325,9 @@ The importer processes every source account and vault. The reference CLI reads
 only the first account.
 
 ```sh
-node apps/cli/dist/main.js import 1password1pif ./data.1pif
-node apps/cli/dist/main.js import 1passwordmaccsv ./export.csv
-node apps/cli/dist/main.js import 1passwordwincsv ./export.csv
+vw import 1password1pif ./data.1pif
+vw import 1passwordmaccsv ./export.csv
+vw import 1passwordwincsv ./export.csv
 ```
 
 1PIF imports standard and Windows OPVault-shaped records, skips trash, and adds
@@ -380,7 +378,7 @@ passport, and license item types behind a feature flag. This importer creates
 complete secure notes for those records by default.
 
 ```sh
-node apps/cli/dist/main.js import keepass2xml ./keepass-backup.xml
+vw import keepass2xml ./keepass-backup.xml
 ```
 
 KeePass XML entries become logins. The root group's name is omitted; nested
@@ -395,8 +393,8 @@ As in the reference importer, nested history and embedded binaries are ignored;
 this format does not restore KeePass attachment files.
 
 ```sh
-node apps/cli/dist/main.js import keepasskdbx ./vault.kdbx --passwordenv DATABASE_PASSWORD
-node apps/cli/dist/main.js import keepasskdbx ./vault.kdbx --keyfile ./vault.keyx --passwordenv DATABASE_PASSWORD
+vw import keepasskdbx ./vault.kdbx --passwordenv DATABASE_PASSWORD
+vw import keepasskdbx ./vault.kdbx --keyfile ./vault.keyx --passwordenv DATABASE_PASSWORD
 ```
 
 KDBX 3.1 and 4 imports accept passwords, key files, or both. Omitting a password
@@ -440,11 +438,11 @@ name, and all file output refuses overwrite.
 ## Item lookup and URI matching
 
 ```sh
-node apps/cli/dist/main.js get password 'work alice'
-node apps/cli/dist/main.js list items --search 'cafe company'
-node apps/cli/dist/main.js list items --url https://login.example.com
-node apps/cli/dist/main.js get fingerprint me
-node apps/cli/dist/main.js get fingerprint USER_UUID
+vw get password 'work alice'
+vw list items --search 'cafe company'
+vw list items --url https://login.example.com
+vw get fingerprint me
+vw get fingerprint USER_UUID
 ```
 
 Basic item search matches every query term against at least one display field:
@@ -514,7 +512,7 @@ no private key is required for this calculation.
 ## Local REST API
 
 ```sh
-node apps/cli/dist/main.js serve --hostname 127.0.0.1 --port 8087
+vw serve --hostname 127.0.0.1 --port 8087
 curl -fsS http://127.0.0.1:8087/status
 curl -fsS 'http://127.0.0.1:8087/list/object/items?search=example'
 ```
@@ -547,7 +545,7 @@ Responses include `Cache-Control: no-store`.
 Unix sockets and inherited descriptors use the reference hostname forms:
 
 ```sh
-node apps/cli/dist/main.js serve --hostname unix:///absolute/path/vw.sock
+vw serve --hostname unix:///absolute/path/vw.sock
 curl --unix-socket /absolute/path/vw.sock http://localhost:8087/status
 ```
 
@@ -612,10 +610,10 @@ exact-field and error-message parity is tracked in the implementation inventory.
 ## Shell completion
 
 ```sh
-node apps/cli/dist/main.js completions zsh > ./_vw
-node apps/cli/dist/main.js completions bash > ./vw.bash
-node apps/cli/dist/main.js completions fish > ./vw.fish
-node apps/cli/dist/main.js completions powershell > ./vw.ps1
+vw completions zsh > ./_vw
+vw completions bash > ./vw.bash
+vw completions fish > ./vw.fish
+vw completions powershell > ./vw.ps1
 ```
 
 Completion scripts target the `vw` executable. Install or source the generated
@@ -629,15 +627,15 @@ Generation does not require login or read vault data.
 Use `--organizationid` with organization collection and member commands:
 
 ```sh
-node apps/cli/dist/main.js list org-collections --organizationid ORG_ID
-node apps/cli/dist/main.js get org-collection COLLECTION_ID --organizationid ORG_ID
-node apps/cli/dist/main.js create org-collection ENCODED_JSON --organizationid ORG_ID
-node apps/cli/dist/main.js edit org-collection COLLECTION_ID ENCODED_JSON --organizationid ORG_ID
-node apps/cli/dist/main.js delete org-collection COLLECTION_ID --organizationid ORG_ID
-node apps/cli/dist/main.js list org-members --organizationid ORG_ID
-node apps/cli/dist/main.js confirm org-member MEMBER_ID --organizationid ORG_ID
-printf '%s' '["COLLECTION_ID"]' | node apps/cli/dist/main.js encode | node apps/cli/dist/main.js move ITEM_ID ORG_ID
-node apps/cli/dist/main.js edit item-collections ITEM_ID ENCODED_COLLECTION_IDS
+vw list org-collections --organizationid ORG_ID
+vw get org-collection COLLECTION_ID --organizationid ORG_ID
+vw create org-collection ENCODED_JSON --organizationid ORG_ID
+vw edit org-collection COLLECTION_ID ENCODED_JSON --organizationid ORG_ID
+vw delete org-collection COLLECTION_ID --organizationid ORG_ID
+vw list org-members --organizationid ORG_ID
+vw confirm org-member MEMBER_ID --organizationid ORG_ID
+printf '%s' '["COLLECTION_ID"]' | vw encode | vw move ITEM_ID ORG_ID
+vw edit item-collections ITEM_ID ENCODED_COLLECTION_IDS
 ```
 
 When collection edits omit group/user access fields, the CLI sends the collection's
@@ -651,10 +649,10 @@ items receive a new item key. The personal account key is never shared.
 ## Password health and exposure
 
 ```sh
-node apps/cli/dist/main.js report password-health --no-check-exposed
-node apps/cli/dist/main.js report password-health
-node apps/cli/dist/main.js get exposed ITEM_ID
-node apps/cli/dist/main.js report password-health --hibp-url https://mirror.example.com
+vw report password-health --no-check-exposed
+vw report password-health
+vw get exposed ITEM_ID
+vw report password-health --hibp-url https://mirror.example.com
 ```
 
 `password-health` reports every non-deleted login with a non-empty password,
@@ -687,19 +685,19 @@ is separate from Vaultwarden's authenticated breached-account proxy.
 ## Sends
 
 ```sh
-node apps/cli/dist/main.js send 'Text to share' --name 'One-time note' --maxAccessCount 1
-node apps/cli/dist/main.js send ./document.pdf --file --fullObject
-node apps/cli/dist/main.js send 'Protected text' --passwordenv SEND_PASSWORD
-node apps/cli/dist/main.js send template text
-node apps/cli/dist/main.js send create ENCODED_SEND_JSON
-node apps/cli/dist/main.js send list
-node apps/cli/dist/main.js send get SEND_ID
-node apps/cli/dist/main.js send get SEND_ID --text
-node apps/cli/dist/main.js send edit ENCODED_SEND_JSON --itemid SEND_ID
-node apps/cli/dist/main.js send remove-password SEND_ID
-node apps/cli/dist/main.js send delete SEND_ID
-node apps/cli/dist/main.js receive 'https://vault.example.com/#/send/ACCESS_ID/KEY' --passwordenv SEND_PASSWORD
-node apps/cli/dist/main.js receive 'https://vault.example.com/#/send/ACCESS_ID/KEY' --output ./received.pdf
+vw send 'Text to share' --name 'One-time note' --maxAccessCount 1
+vw send ./document.pdf --file --fullObject
+vw send 'Protected text' --passwordenv SEND_PASSWORD
+vw send template text
+vw send create ENCODED_SEND_JSON
+vw send list
+vw send get SEND_ID
+vw send get SEND_ID --text
+vw send edit ENCODED_SEND_JSON --itemid SEND_ID
+vw send remove-password SEND_ID
+vw send delete SEND_ID
+vw receive 'https://vault.example.com/#/send/ACCESS_ID/KEY' --passwordenv SEND_PASSWORD
+vw receive 'https://vault.example.com/#/send/ACCESS_ID/KEY' --output ./received.pdf
 ```
 
 `VW_SEND_PASSWORD` supplies the default recipient or new-Send password.
@@ -743,10 +741,10 @@ password removal, access limits, expiry, disabling and deletion.
 ## Attachments
 
 ```sh
-node apps/cli/dist/main.js create attachment --file ./document.pdf --itemid ITEM_ID
-node apps/cli/dist/main.js get attachment ATTACHMENT_ID --itemid ITEM_ID --output ./download.pdf
-node apps/cli/dist/main.js get attachment document.pdf --itemid ITEM_ID --raw > ./download.pdf
-node apps/cli/dist/main.js delete attachment ATTACHMENT_ID --itemid ITEM_ID
+vw create attachment --file ./document.pdf --itemid ITEM_ID
+vw get attachment ATTACHMENT_ID --itemid ITEM_ID --output ./download.pdf
+vw get attachment document.pdf --itemid ITEM_ID --raw > ./download.pdf
+vw delete attachment ATTACHMENT_ID --itemid ITEM_ID
 ```
 
 Attachment reads accept an ID or a case-insensitive filename substring. A unique

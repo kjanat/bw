@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { test, expect } from 'bun:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -5,17 +6,12 @@ import { join } from 'node:path';
 import { SDK_VERSION } from '@kjanat/vaultwarden';
 import { CLI_PACKAGE, checkForUpdates } from '#version-commands';
 
-test('compiled CLI version and SDK version identify their own package manifests before login', async () => {
+test('CLI version and SDK version identify their own package manifests before login', async () => {
 	const directory = await mkdtemp(join(tmpdir(), 'vw-version-'));
 	const sdk = await Bun.file(new URL('../../../packages/vaultwarden/package.json', import.meta.url)).json();
 	try {
-		for (
-			const [command, expected] of [['--version', CLI_PACKAGE.version], ['sdk-version', sdk.version], [
-				'update',
-				'private development build',
-			]] as const
-		) {
-			const child = Bun.spawn(['node', new URL('../dist/main.js', import.meta.url).pathname, command], {
+		for (const [command, expected] of [['--version', CLI_PACKAGE.version], ['sdk-version', sdk.version]] as const) {
+			const child = Bun.spawn(['node', fileURLToPath(import.meta.resolve('#main')), command], {
 				env: { PATH: process.env.PATH, VW_APPDATA_DIR: directory },
 				stdout: 'pipe',
 				stderr: 'pipe',

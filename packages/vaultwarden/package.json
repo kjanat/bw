@@ -1,31 +1,25 @@
 {
 	"name": "@kjanat/vaultwarden",
 	"version": "0.1.0",
-	"private": true,
 	"type": "module",
 	"imports": {
 		"#test/*": "./test/*.ts",
-		"#*": {
-			"bun": "./src/*.ts",
-			"types": "./src/*.ts",
-			"default": "./dist/*.js"
-		}
+		"#*": "./src/*.ts"
 	},
 	"exports": {
-		".": {
-			"types": "./dist/index.d.ts",
-			"default": "./dist/index.js"
-		}
+		".": "./dist/index.mjs",
+		"./kdbx-worker": "./dist/kdbx-worker.mjs",
+		"./package.json": "./package.json"
 	},
 	"files": [
 		"THIRD_PARTY_NOTICES.md",
 		"dist"
 	],
 	"scripts": {
-		"build": "tsc -p tsconfig.build.json",
-		"check-types": "tsc --noEmit",
+		"build": "tsdown",
 		"lint": "eslint src test",
-		"test": "bun test"
+		"test": "bun test",
+		"typecheck": "tsc --noEmit"
 	},
 	"dependencies": {
 		"@xmldom/xmldom": "catalog:",
@@ -46,9 +40,16 @@
 		"@types/zxcvbn": "catalog:",
 		"@vw/typescript-config": "workspace:*",
 		"eslint": "catalog:",
+		"tsdown": "catalog:",
 		"typescript": "catalog:"
 	},
 	"engines": {
 		"node": ">=24.8.0"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"inlinedDependencies": {
+		"kdbxweb": "2.1.1"
 	}
 }

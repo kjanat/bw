@@ -26,7 +26,9 @@ if (process.env.GITHUB_STEP_SUMMARY) {
 			'| Server | Node | Immutable image | Reference comparison |',
 			'| --- | --- | --- | --- |',
 			...matrix.include.map(row =>
-				`| ${row.server} | ${row.node} | \`${row.image}\` | ${row.reference ? 'yes' : 'unsupported'} |`
+				`| ${row.server} | ${row.node} | \`${row.image}\` | ${
+					row.reference ? `bw ${row.referenceCliVersion}` : 'disabled'
+				} |`
 			),
 			'',
 		].join('\n'),

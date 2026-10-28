@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { test, expect } from 'bun:test';
 import { randomUUID, randomBytes, generateKeyPairSync } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -65,7 +66,7 @@ for (const kdf of [{ type: 0, iterations: 600000 }, { type: 1, iterations: 3, me
 			return completed.headers.get('location')!;
 		}
 		async function run(args: string[], appDataDir = directory) {
-			const child = Bun.spawn(['node', new URL('../dist/main.js', import.meta.url).pathname, ...args], {
+			const child = Bun.spawn(['node', fileURLToPath(import.meta.resolve('#main')), ...args], {
 				env: { PATH: process.env.PATH, VW_APPDATA_DIR: appDataDir, VW_PASSWORD: password },
 				stdin: 'ignore',
 				stdout: 'pipe',
@@ -81,7 +82,7 @@ for (const kdf of [{ type: 0, iterations: 600000 }, { type: 1, iterations: 3, me
 		async function runSsoLogin(appDataDir: string, extraArgs: string[] = []): Promise<string> {
 			const child = Bun.spawn([
 				'node',
-				new URL('../dist/main.js', import.meta.url).pathname,
+				fileURLToPath(import.meta.resolve('#main')),
 				'--pretty',
 				'login',
 				'--sso',

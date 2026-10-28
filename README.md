@@ -7,26 +7,24 @@ and a command-line frontend built on `@kjanat/dreamcli`.
 - `apps/cli` — the `vw` executable, encrypted local cache, and unlock sessions.
 - `packages/typescript-config` — shared compiler settings.
 
-Requires Bun for dependency management and tests, and Node.js 24.8.0+ for the compiled CLI.
+Requires Node.js 24.8.0+.
 
 ```sh
-bun install
-bun run build
-node apps/cli/dist/main.js --help
+vw --help
 ```
 
 ```sh
-node apps/cli/dist/main.js config server https://vault.example.com
-export VW_SESSION="$(node apps/cli/dist/main.js login you@example.com --raw)"
-node apps/cli/dist/main.js list items
-node apps/cli/dist/main.js lock
+vw config server https://vault.example.com
+export VW_SESSION="$(vw login you@example.com --raw)"
+vw list items
+vw lock
 unset VW_SESSION
 ```
 
 Development checks:
 
 ```sh
-bun run check-types
+bun run typecheck
 bun run lint
 bun run test
 bun run format

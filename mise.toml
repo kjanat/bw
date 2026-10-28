@@ -2,5 +2,6 @@
 bun = "latest"
 crane = "latest"
 "github:kjanat/dprint" = "latest"
+"github:kjanat/shellcheck-rs" = "latest"
 node = "26"
 tombi = "latest"

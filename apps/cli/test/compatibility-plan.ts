@@ -1,9 +1,8 @@
 export interface CompatibilityTargets {
-	nodeVersions: string[];
+	nodeVersion: string;
 	servers: Record<string, string>;
 	referenceCliVersion: string;
-	referenceUnsupportedServers: string[];
-	mailpitImage: string;
+	referenceCliVersions: Record<string, string | null>;
 }
 const pinnedImage = /^vaultwarden\/server@sha256:[a-f0-9]{64}$/;
 const stableVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
@@ -37,13 +36,12 @@ export function resolveCompatibilityTarget(
 	return { version, image };
 }
 
-/** Baselines plus the latest stable release, once per server/Node pair. */
+/** Test each server once on the primary Node runtime, with its pinned reference CLI. */
 export async function planCompatibility(
 	targets: CompatibilityTargets,
 	tags: readonly string[],
 	resolveImage: (version: string) => Promise<string>,
 ) {
-	const latest = latestStableVersion(tags);
 	const servers = new Map(
 		Object.entries(targets.servers).map(([version]) => {
 			const target = resolveCompatibilityTarget(targets, version);
@@ -51,25 +49,32 @@ export async function planCompatibility(
 		}),
 	);
 	if (servers.size === 0) throw new Error('At least one pinned compatibility baseline is required.');
+	if (!/^[1-9]\d*$/.test(targets.nodeVersion)) {
+		throw new Error('The primary Node version must be a positive major version.');
+	}
+	if (!stableVersion.test(targets.referenceCliVersion)) throw new Error('Invalid reference CLI version.');
+	for (const [server, reference] of Object.entries(targets.referenceCliVersions)) {
+		assertStableVersion(server);
+		if (reference !== null && !stableVersion.test(reference)) throw new Error('Invalid reference CLI version.');
+	}
+	const latest = latestStableVersion(tags);
 	const newest = [...servers.keys()].sort(Bun.semver.order).at(-1)!;
 	if (Bun.semver.order(latest, newest) > 0) {
 		const target = resolveCompatibilityTarget(targets, latest, await resolveImage(latest));
 		servers.set(target.version, target.image);
 	}
-	const nodes = [...new Set(targets.nodeVersions)];
-	if (!nodes.length || nodes.some(node => !/^[1-9]\d*$/.test(node))) {
-		throw new Error('Node matrix versions must be positive major versions.');
-	}
-	if (!/^\d+\.\d+\.\d+$/.test(targets.referenceCliVersion)) throw new Error('Invalid reference CLI version.');
-	const include = [...servers].sort(([a], [b]) => Bun.semver.order(a, b)).flatMap(([server, image]) =>
-		nodes.map(node => ({
+	const include = [...servers].sort(([a], [b]) => Bun.semver.order(a, b)).map(([server, image]) => {
+		const referenceCliVersion = Object.hasOwn(targets.referenceCliVersions, server)
+			? targets.referenceCliVersions[server]!
+			: targets.referenceCliVersion;
+		return {
 			server,
-			node,
+			node: targets.nodeVersion,
 			image,
-			reference: !targets.referenceUnsupportedServers.includes(server),
-			referenceCliVersion: targets.referenceCliVersion,
-		}))
-	);
+			reference: referenceCliVersion !== null,
+			referenceCliVersion,
+		};
+	});
 	if (include.length > 256) throw new Error("Compatibility matrix exceeds GitHub Actions' 256-job limit.");
 	return { include };
 }

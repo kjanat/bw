@@ -37,12 +37,12 @@ test('CLI prompting fails before visible input when hidden reading is unsupporte
 
 const terminalTest = process.platform !== 'win32' && Bun.which('python3') ? test : test.skip;
 terminalTest(
-	'compiled Node prompt host restores terminal modes after answer, interrupt, and sequential questions',
+	'Node prompt host restores terminal modes after answer, interrupt, and sequential questions',
 	async () => {
 		const child = Bun.spawn([
 			'python3',
 			new URL('./fixtures/prompt-terminal.py', import.meta.url).pathname,
-			new URL('../dist/prompts.js', import.meta.url).href,
+			import.meta.resolve('#prompts'),
 		], { stdout: 'pipe', stderr: 'pipe' });
 		const [code, stdout, stderr] = await Promise.all([
 			child.exited,

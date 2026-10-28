@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { expect, test } from 'bun:test';
 import { runCommand } from '@kjanat/dreamcli/testkit';
 import { runCapturedProcess } from '#test/process';
@@ -9,7 +10,7 @@ import { join } from 'node:path';
 import { withStore } from '#store';
 import type { VaultRuntime } from '#vault-commands';
 
-test('compiled CLI generation enforces policiesNew with legacy policy controls', async () => {
+test('CLI generation enforces policiesNew with legacy policy controls', async () => {
 	const dir = await mkdtemp(join(tmpdir(), 'vw-generator-policy-'));
 	try {
 		for (const field of ['policies', 'policiesNew']) {
@@ -30,7 +31,7 @@ test('compiled CLI generation enforces policiesNew with legacy policy controls',
 			});
 			const child = await runCapturedProcess([
 				'node',
-				new URL('../dist/main.js', import.meta.url).pathname,
+				fileURLToPath(import.meta.resolve('#main')),
 				'generate',
 				'--length',
 				'5',
