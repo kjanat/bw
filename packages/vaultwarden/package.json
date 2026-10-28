@@ -1,6 +1,18 @@
 {
 	"name": "@kjanat/vaultwarden",
 	"version": "0.1.0",
+	"keywords": [
+		"vaultwarden",
+		"bitwarden",
+		"password-manager",
+		"sdk",
+		"dreamcli",
+		"micro509"
+	],
+	"funding": {
+		"type": "github",
+		"url": "https://github.com/sponsors/kjanat"
+	},
 	"type": "module",
 	"imports": {
 		"#test/*": "./test/*.ts",
@@ -12,6 +24,7 @@
 		"./package.json": "./package.json"
 	},
 	"files": [
+		"README.md",
 		"THIRD_PARTY_NOTICES.md",
 		"dist"
 	],

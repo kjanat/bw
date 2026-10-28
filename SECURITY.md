@@ -11,4 +11,3 @@ Include the affected package and version, steps to reproduce, and the potential
 impact. Redact credentials, tokens, and vault contents.
 
 Please avoid public issues or pull requests that disclose vulnerability details.
-

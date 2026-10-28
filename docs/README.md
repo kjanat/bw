@@ -10,21 +10,33 @@ and the source and test evidence for each.
 
 The implementation is being developed against the full Vaultwarden-supported
 `bw` command surface tracked in [implementation status](implementation-status.md).
-Both packages are private while the API and compatibility coverage develop. The executable is `vw` to avoid colliding
-with an installed Bitwarden CLI.
+The executable is `vw` to avoid colliding with an installed Bitwarden CLI.
 
 ## Packages
 
-- `packages/vaultwarden` — `@kjanat/vaultwarden`: transport, authentication,
+- [@kjanat/vaultwarden](../packages/vaultwarden/README.md): transport, authentication,
   PBKDF2/Argon2id, master-password hashing, user-key unwrapping, authenticated
   EncString encryption/decryption, per-item and organization keys, and vault operations.
-- `apps/cli` — `@kjanat/vaultwarden-cli`: DreamCLI commands, private atomic
+- [@kjanat/vaultwarden-cli](../apps/cli/README.md): DreamCLI commands, private atomic
   local storage, encrypted cache, and revocable local unlock sessions.
 - `packages/typescript-config` — shared TypeScript compiler settings.
 
 ## Run
 
 Requires Node.js 24.8.0+.
+
+Run without a global installation using either form:
+
+```sh
+npx @kjanat/vaultwarden-cli
+npx --package=@kjanat/vaultwarden-cli vw
+```
+
+To use `vw` directly in the examples below, install it globally:
+
+```sh
+npm install --global @kjanat/vaultwarden-cli
+```
 
 ```sh
 vw --help

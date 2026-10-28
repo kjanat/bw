@@ -1,15 +1,32 @@
 # Vaultwarden CLI
 
+[![CI](https://github.com/kjanat/vw/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/kjanat/vw/actions/workflows/ci.yml)
+[![pkg.pr.new](https://pkg.pr.new/badge/kjanat/vw)](https://pkg.pr.new/~/kjanat/vw)
+[![GitHub Sponsors](https://img.shields.io/badge/Sponsor-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/kjanat)
+
 An independent TypeScript client built for Vaultwarden, with a reusable library
 and a command-line frontend built on `@kjanat/dreamcli`.
 
-- `packages/vaultwarden` — authentication, protocol, cryptography, vault management, generation, and transfers.
-- `apps/cli` — the `vw` executable, encrypted local cache, and unlock sessions.
-- `packages/typescript-config` — shared compiler settings.
+| Package                                                 | Version                                                                                                                                               | Purpose                                                                              |
+| ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| [`@kjanat/vaultwarden`](packages/vaultwarden/README.md) | [![NPM Version](https://img.shields.io/npm/v/@kjanat/vaultwarden?logo=npm&labelColor=CB3837&color=black)](https://npm.im/@kjanat/vaultwarden)         | Authentication, protocol, cryptography, vault management, generation, and transfers. |
+| [`@kjanat/vaultwarden-cli`](apps/cli/README.md)         | [![NPM Version](https://img.shields.io/npm/v/@kjanat/vaultwarden-cli?logo=npm&labelColor=CB3837&color=black)](https://npm.im/@kjanat/vaultwarden-cli) | The `vw` executable, encrypted local cache, and unlock sessions.                     |
+
+`packages/typescript-config` contains shared compiler settings.
 
 Requires Node.js 24.8.0+.
 
+Run the CLI without a global installation using either form:
+
 ```sh
+npx @kjanat/vaultwarden-cli
+npx --package=@kjanat/vaultwarden-cli vw
+```
+
+To install the `vw` command globally:
+
+```sh
+npm install --global @kjanat/vaultwarden-cli
 vw --help
 ```
 
@@ -19,6 +36,13 @@ export VW_SESSION="$(vw login you@example.com --raw)"
 vw list items
 vw lock
 unset VW_SESSION
+```
+
+For direct TypeScript integration, install the
+[@kjanat/vaultwarden SDK](packages/vaultwarden/README.md):
+
+```sh
+npm install @kjanat/vaultwarden
 ```
 
 Development checks:

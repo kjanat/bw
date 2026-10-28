@@ -1,6 +1,18 @@
 {
 	"name": "@kjanat/vaultwarden-cli",
 	"version": "0.1.0",
+	"keywords": [
+		"vaultwarden",
+		"bitwarden",
+		"password-manager",
+		"cli",
+		"dreamcli",
+		"micro509"
+	],
+	"funding": {
+		"type": "github",
+		"url": "https://github.com/sponsors/kjanat"
+	},
 	"type": "module",
 	"imports": {
 		"#test/*": "./test/*.ts",
@@ -15,6 +27,7 @@
 		"vw": "./dist/main.mjs"
 	},
 	"files": [
+		"README.md",
 		"dist"
 	],
 	"scripts": {
