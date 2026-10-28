@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { expect, test } from 'bun:test';
 import { once } from 'node:events';
 import { chmod, mkdtemp, rm, stat } from 'node:fs/promises';
@@ -76,7 +77,7 @@ test('unix socket connections opened before owner-only permissions are dropped, 
 test('serve refuses an exposed TCP listener before binding when its token is absent', async () => {
 	const dir = await mkdtemp(join(tmpdir(), 'vw-serve-token-'));
 	try {
-		const executable = new URL('../dist/main.js', import.meta.url).pathname;
+		const executable = fileURLToPath(import.meta.resolve('#main'));
 		const result = await runCapturedProcess(['node', executable, 'serve', '--hostname', 'all'], {
 			env: { PATH: process.env.PATH, VW_APPDATA_DIR: dir },
 		});
@@ -235,7 +236,7 @@ for (const mode of ['unix', 'listening', 'connected', 'unauth', 'policy', 'expos
 						await save();
 					});
 				}
-				const executable = new URL('../dist/main.js', import.meta.url).pathname;
+				const executable = fileURLToPath(import.meta.resolve('#main'));
 				const result = await runCapturedProcess(
 					['node', '--input-type=module', '-e', harness, mode, executable, dir],
 					{ env: { PATH: process.env.PATH } },

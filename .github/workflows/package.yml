@@ -1,0 +1,34 @@
+name: Package
+on:
+  workflow_call:
+    inputs:
+      ref: { type: string, default: "" }
+    outputs:
+      artifact-id:
+        description: Built public package archives
+        value: ${{ jobs.package.outputs.artifact-id }}
+permissions: { contents: read }
+jobs:
+  package:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    outputs: { artifact-id: "${{ steps.upload.outputs.artifact-id }}" }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { ref: "${{ inputs.ref || github.sha }}", persist-credentials: false }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: "26", package-manager-cache: false }
+      - uses: $/.github/actions/setup-bun
+      - uses: kjanat/runner@b32ea932a1813ae0be44e755c16df9f9f5ca86a4 # master
+      - run: runner i -s build
+      - name: Pack public SDK
+        run: bun .github/release/pack.ts vaultwarden
+      - name: Pack public CLI
+        run: bun .github/release/pack.ts cli
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        id: upload
+        with:
+          name: npm-packages
+          path: artifacts/*
+          if-no-files-found: error
+          compression-level: 0

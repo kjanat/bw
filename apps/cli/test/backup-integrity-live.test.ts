@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { expect, test } from 'bun:test';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -16,7 +17,7 @@ import { sealSession, withStore } from '#store';
 const server = process.env.VW_TEST_SERVER;
 const live = server ? test : test.skip;
 
-live('real Vaultwarden: backup integrity through compiled CLI export and import', async () => {
+live('real Vaultwarden: backup integrity through CLI export and import', async () => {
 	const url = new URL(server!);
 	if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1') {
 		throw new Error('A disposable loopback server is required.');
@@ -114,7 +115,7 @@ live('real Vaultwarden: backup integrity through compiled CLI export and import'
 			await save();
 		});
 		const run = async (args: string[]) => {
-			const child = Bun.spawn(['node', new URL('../dist/main.js', import.meta.url).pathname, ...args], {
+			const child = Bun.spawn(['node', fileURLToPath(import.meta.resolve('#main')), ...args], {
 				env: { PATH: process.env.PATH, VW_APPDATA_DIR: directory, VW_SESSION: session },
 				stdout: 'pipe',
 				stderr: 'pipe',
@@ -170,7 +171,7 @@ live('real Vaultwarden: backup integrity through compiled CLI export and import'
 		expect(contents.sort()).toEqual(['FIRST-BODY', 'FOURTH-BODY', 'SECOND-BODY', 'THIRD-BODY']);
 
 		// Fault injection after client validation reproduces Vaultwarden's HTTP-200
-		// partial import and checks the compiled CLI's uncertain-mutation handling.
+		// partial import and checks the CLI's uncertain-mutation handling.
 		let fault = 'missing-item';
 		const proxy = Bun.serve({
 			hostname: '127.0.0.1',

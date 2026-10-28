@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { deriveMasterKey, encrypt, masterPasswordHash, stretchKey } from '@kjanat/vaultwarden';
 import { expect, test } from 'bun:test';
 import { generateKeyPairSync, randomBytes, randomUUID } from 'node:crypto';
@@ -116,7 +117,7 @@ live('focused external import matches the independent bw importer', async () => 
 		});
 		const official = process.env.VW_TEST_BW;
 		const own = join(directory, 'own');
-		const ownExecutable = new URL('../dist/main.js', import.meta.url).pathname;
+		const ownExecutable = fileURLToPath(import.meta.resolve('#main'));
 		await spawnCli(ownExecutable, own, ['config', 'server', server]);
 		const ownSession = (await spawnCli(ownExecutable, own, [
 			'login',

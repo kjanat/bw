@@ -26,7 +26,7 @@ unset VW_SESSION
 Development checks:
 
 ```sh
-bun run check-types
+bun run typecheck
 bun run lint
 bun run test
 bun run format

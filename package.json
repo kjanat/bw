@@ -7,12 +7,12 @@
 	],
 	"scripts": {
 		"build": "turbo run build",
-		"check-types": "turbo run check-types",
 		"dev": "turbo run dev",
 		"format": "dprint fmt",
 		"lint": "turbo run lint",
 		"test": "turbo run test",
-		"test:compat": "turbo run test:compat"
+		"test:compat": "turbo run test:compat",
+		"typecheck": "turbo run typecheck"
 	},
 	"devDependencies": {
 		"turbo": "^2.11.10",
@@ -43,6 +43,7 @@
 		"micro509": "0.17.1",
 		"parse5": "8.0.1",
 		"tldts": "7.4.19",
+		"tsdown": "^0.23.3",
 		"typescript": "7.0.2",
 		"zxcvbn": "4.4.2"
 	},

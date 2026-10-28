@@ -1,0 +1,71 @@
+name: Test
+on:
+  workflow_call:
+    inputs:
+      ref: { type: string, default: "" }
+      build-run-id: { type: number, default: 0 }
+      preview-sha: { type: string, default: "" }
+permissions: { contents: read, actions: read }
+concurrency:
+  group: tests-${{ github.workflow }}-${{ inputs.ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+defaults: { run: { shell: "bash -euo pipefail {0}" } }
+jobs:
+  format:
+    name: Format
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { ref: "${{ inputs.ref || github.sha }}", persist-credentials: false }
+      - uses: kjanat/dprint-check@29c42153a7346f4d7315883ff7722cfe22cd510c # v3
+  build:
+    if: inputs.build-run-id == 0
+    uses: $/.github/workflows/build.yml
+    with: { ref: "${{ inputs.ref }}" }
+  test:
+    name: test
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { ref: "${{ inputs.ref || github.sha }}", persist-credentials: false }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: "26", package-manager-cache: false }
+      - uses: $/.github/actions/setup-bun
+      - uses: kjanat/runner@b32ea932a1813ae0be44e755c16df9f9f5ca86a4 # master
+      - name: Install completion test shells
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends --yes fish zsh; command -v pwsh python3
+      - run: runner i -fs typecheck lint test
+  consumer:
+    if: always() && (needs.build.result == 'success' || inputs.build-run-id > 0)
+    name: Installed packages (${{ matrix.runtime }})
+    needs: [build]
+    strategy:
+      fail-fast: false
+      matrix: { runtime: [node, bun] }
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { ref: "${{ inputs.ref || github.sha }}", persist-credentials: false }
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with: { bun-version: latest }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: "26", package-manager-cache: false }
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: npm-packages
+          path: artifacts
+          run-id: ${{ inputs.build-run-id || github.run_id }}
+          github-token: ${{ github.token }}
+      - name: Download preview archives
+        if: inputs.preview-sha != ''
+        env: { PREVIEW_SHA: "${{ inputs.preview-sha }}" }
+        run: bun .github/release/preview.ts
+      - name: Verify archive checksums
+        working-directory: artifacts
+        run: sha256sum -c ./*.sha256
+      - name: Test an isolated installation
+        env: { RUNTIME: "${{ matrix.runtime }}" }
+        run: bun .github/release/verify.ts "${RUNTIME}"

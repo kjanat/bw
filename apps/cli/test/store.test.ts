@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { expect, test } from 'bun:test';
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -94,7 +95,7 @@ test('malformed state is left intact without a destructive reset or racing backu
 });
 
 async function interruptStoreOwner(directory: string, signal: 'SIGINT' | 'SIGTERM' | 'SIGKILL'): Promise<void> {
-	const module = new URL('../dist/store.js', import.meta.url).href;
+	const module = import.meta.resolve('#store');
 	const code = `import { withStore } from ${JSON.stringify(module)};
 await withStore(process.argv[1], async () => {
  console.log('holding-store-lock');
@@ -123,7 +124,7 @@ await withStore(process.argv[1], async () => {
 }
 
 for (const signal of ['SIGINT', 'SIGTERM', 'SIGKILL'] as const) {
-	test(`compiled CLI lock and logout recover after a store owner exits through ${signal}`, async () => {
+	test(`CLI lock and logout recover after a store owner exits through ${signal}`, async () => {
 		const dir = await mkdtemp(join(tmpdir(), 'vw-store-interrupt-'));
 		try {
 			for (const command of ['lock', 'logout']) {
@@ -132,7 +133,7 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGKILL'] as const) {
 					await save();
 				});
 				await interruptStoreOwner(dir, signal);
-				const child = Bun.spawn([nodeExecutable, new URL('../dist/main.js', import.meta.url).pathname, command], {
+				const child = Bun.spawn([nodeExecutable, fileURLToPath(import.meta.resolve('#main')), command], {
 					env: { PATH: process.env.PATH, VW_APPDATA_DIR: dir },
 					stdout: 'pipe',
 					stderr: 'pipe',
@@ -152,10 +153,10 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGKILL'] as const) {
 }
 
 for (const boundary of ['detach', 'delete'] as const) {
-	test(`compiled store recovers when killed immediately after lock release ${boundary}`, async () => {
+	test(`store recovers when killed immediately after lock release ${boundary}`, async () => {
 		const dir = await mkdtemp(join(tmpdir(), 'vw-store-release-'));
 		try {
-			const module = new URL('../dist/store.js', import.meta.url).href;
+			const module = import.meta.resolve('#store');
 			const code = `import fs from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
@@ -260,9 +261,9 @@ test('concurrent stale-lock recovery never admits two active store writers', asy
 }, 10000);
 
 for (const boundary of ['takeover', 'detach', 'delete'] as const) {
-	test(`compiled stale-lock recovery survives SIGKILL after ${boundary}`, async () => {
+	test(`stale-lock recovery survives SIGKILL after ${boundary}`, async () => {
 		const dir = await mkdtemp(join(tmpdir(), 'vw-store-reclaim-'));
-		const module = new URL('../dist/store.js', import.meta.url).href;
+		const module = import.meta.resolve('#store');
 		try {
 			await withStore(dir, async (state, save) => {
 				state.server = 'https://saved.example';

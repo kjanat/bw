@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { expect, test } from 'bun:test';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
@@ -277,7 +278,7 @@ for (
 				const child = Bun.spawn(
 					[
 						'node',
-						new URL('../dist/main.js', import.meta.url).pathname,
+						fileURLToPath(import.meta.resolve('#main')),
 						...args,
 					],
 					{
@@ -585,7 +586,7 @@ for (
 				expect((await readFile(legacyDownloadPath)).equals(legacyAttachmentBytes)).toBe(true);
 				const binaryChild = Bun.spawn([
 					'node',
-					new URL('../dist/main.js', import.meta.url).pathname,
+					fileURLToPath(import.meta.resolve('#main')),
 					'get',
 					'attachment',
 					attachmentId,

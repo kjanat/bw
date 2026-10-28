@@ -1,4 +1,4 @@
-"""Exercise the compiled CLI prompt host with synthetic input on an actual PTY."""
+"""Exercise the CLI prompt host with synthetic input on an actual PTY."""
 
 import json
 import os
@@ -21,7 +21,7 @@ def check(scenario, module, directory):
     )
     if scenario in ("challenge", "recovery"):
         script += (
-            "const { answerLoginChallenge } = await import(new URL('./auth-input.js', "
+            "const { answerLoginChallenge } = await import(new URL('./auth-input.ts', "
             + json.dumps(module)
             + "));"
         )
@@ -80,7 +80,7 @@ try {
     environment = {"PATH": os.environ["PATH"]}
     command = ["node", "--input-type=module", "-e", script]
     if scenario == "cli_interrupt":
-        cli = str(Path(unquote(urlparse(module).path)).with_name("main.js"))
+        cli = str(Path(unquote(urlparse(module).path)).with_name("main.ts"))
         environment["VW_APPDATA_DIR"] = directory
         configured = subprocess.run(
             ["node", cli, "config", "server", "https://example.com"],

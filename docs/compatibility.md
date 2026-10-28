@@ -199,7 +199,7 @@ containers were removed.
 
 ```sh
 bun run build --filter=@kjanat/vaultwarden-cli
-bun run check-types --filter=@kjanat/vaultwarden-cli
+bun run typecheck --filter=@kjanat/vaultwarden-cli
 bun run lint --filter=@kjanat/vaultwarden-cli
 bun run test --filter=@kjanat/vaultwarden --filter=@kjanat/vaultwarden-cli
 ```

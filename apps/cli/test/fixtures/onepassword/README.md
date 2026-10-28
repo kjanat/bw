@@ -3,7 +3,7 @@
 `export.data` contains invented vault data and disposable generated SSH keys.
 `synthetic.1pux` packages that JSON plus an ignored document entry as a ZIP archive.
 It contains no real credentials. The live test packages it as a `.1pux` archive
-with an ignored document entry, then imports it through the compiled `vw` CLI
+with an ignored document entry, then imports it through the `vw` CLI
 and an independent `bw` CLI on a disposable Vaultwarden account.
 
 The corpus covers logins, cards, identity/address, passport, bank account,

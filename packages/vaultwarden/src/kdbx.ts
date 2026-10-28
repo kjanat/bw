@@ -17,7 +17,7 @@ export function parseKdbx(input: Uint8Array, options: KdbxImportOptions = {}): P
 	}
 	const bytes = new Uint8Array(input), keyFile = options.keyFile && new Uint8Array(options.keyFile);
 	return new Promise((resolve, reject) => {
-		const worker = new Worker(new URL(import.meta.resolve('#kdbx-worker')), {
+		const worker = new Worker(new URL(import.meta.resolve('@kjanat/vaultwarden/kdbx-worker')), {
 			workerData: { bytes, keyFile, password: options.password, organization: options.organization ?? false },
 			transferList: [bytes.buffer, ...(keyFile ? [keyFile.buffer] : [])],
 			execArgv: [],

@@ -129,13 +129,13 @@ try {
 	console.log(`Node ${nodeVersion.trim()}; Bun ${Bun.version}`);
 	console.log(
 		ssoEnabled
-			? 'SSO suite: synthetic OIDC provider and compiled CLI login.'
+			? 'SSO suite: synthetic OIDC provider and CLI login.'
 			: smtpEnabled
-			? 'SMTP suite: library and compiled CLI login; no reference CLI required.'
+			? 'SMTP suite: library and CLI login; no reference CLI required.'
 			: compareReference
 			? `Reference: ${reference} (${expectedReferenceVersion})`
 			: protocolOnly
-			? 'Protocol-only suite: compiled CLI against Vaultwarden; independent bw comparison disabled.'
+			? 'Protocol-only suite: CLI against Vaultwarden; independent bw comparison disabled.'
 			: `Reference comparison unavailable: bw ${referenceCliVersion} cannot parse Vaultwarden ${version}'s prelogin response. Running our protocol checks.`,
 	);
 	if (smtpEnabled) {

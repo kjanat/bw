@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { expect, test } from 'bun:test';
 import { randomBytes, randomUUID, generateKeyPairSync } from 'node:crypto';
 import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
@@ -173,7 +174,7 @@ live('real Vaultwarden: authentication, external imports, and REST compatibility
 		unlocked.fill(0);
 	}
 	const dir = await mkdtemp(join(tmpdir(), 'vw-live-challenge-'));
-	const executable = new URL('../dist/main.js', import.meta.url).pathname;
+	const executable = fileURLToPath(import.meta.resolve('#main'));
 	const run = (args: string[], importPassword?: string) =>
 		runCapturedProcess(['node', executable, ...args], {
 			env: { PATH: process.env.PATH, VW_APPDATA_DIR: dir, VW_PASSWORD: password, VW_IMPORT_PASSWORD: importPassword },
