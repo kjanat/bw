@@ -44,8 +44,8 @@ jobs:
         with:
           ref: ${{ fromJSON(needs.source.outputs.source).ref }}
           persist-credentials: false
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with: { bun-version: latest }
+      - uses: $/.github/actions/setup-bun
+      - run: bun install --frozen-lockfile --ignore-scripts
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: npm-packages
@@ -55,8 +55,19 @@ jobs:
       - name: Verify archive checksums
         working-directory: artifacts
         run: sha256sum -c ./*.sha256
-      - name: Publish prebuilt archives
-        run: bunx --bun pkg-pr-new@0.0.92 publish --packageManager=bun './artifacts/*.tgz'
+      - name: Extract built packages for preview dependency linking
+        run: |
+          for package in vaultwarden cli; do
+            mkdir -p ".cache/pkg-pr-new/${package}"
+            tar -xzf "artifacts/${package}.tgz" --strip-components=1 --directory ".cache/pkg-pr-new/${package}"
+          done
+      - name: Publish linked preview packages
+        run: bun run --bun pkg-pr-new
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: package-previews
+          path: artifacts/preview.json
+          if-no-files-found: error
   tests:
     name: Preview packages
     needs: [source, preview]
@@ -64,4 +75,4 @@ jobs:
     with:
       ref: ${{ fromJSON(needs.source.outputs.source).ref }}
       build-run-id: ${{ fromJSON(needs.source.outputs.source).run }}
-      preview-sha: ${{ fromJSON(needs.source.outputs.source).ref }}
+      preview: true

@@ -15,6 +15,17 @@ const packages = Object.fromEntries(
 		}),
 	),
 );
+const previewMetadataPath = process.env.PREVIEW_METADATA;
+let dependencies = packages;
+if (previewMetadataPath) {
+	const metadata = JSON.parse(await readFile(previewMetadataPath, 'utf8')) as {
+		packages: { name: string; url: string }[];
+	};
+	const cli = JSON.parse(await readFile(resolve(workspaces.cli, 'package.json'), 'utf8')) as { name: string };
+	const published = metadata.packages.find(pkg => pkg.name === cli.name);
+	assert(published, `Missing publication metadata for ${cli.name}`);
+	dependencies = { [cli.name]: published.url };
+}
 const consumerRoot = resolve('.cache');
 await mkdir(consumerRoot, { recursive: true });
 const consumer = await mkdtemp(resolve(consumerRoot, 'vw-package-consumer-'));
@@ -23,8 +34,8 @@ await writeFile(
 	JSON.stringify({
 		private: true,
 		type: 'module',
-		dependencies: packages,
-		overrides: packages,
+		dependencies,
+		...(previewMetadataPath ? {} : { overrides: packages }),
 	}),
 );
 await cp(fileURLToPath(new URL('./smoke.mjs', import.meta.url)), resolve(consumer, 'smoke.mjs'));

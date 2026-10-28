@@ -10,11 +10,13 @@
 		"dev": "turbo run dev",
 		"format": "dprint fmt",
 		"lint": "turbo run lint",
+		"pkg-pr-new": "pkg-pr-new publish --bun --packageManager=bun --commentWithSha --json artifacts/preview.json './.cache/pkg-pr-new/*'",
 		"test": "turbo run test",
 		"test:compat": "turbo run test:compat",
 		"typecheck": "turbo run typecheck"
 	},
 	"devDependencies": {
+		"pkg-pr-new": "0.0.92",
 		"turbo": "^2.11.10",
 		"typescript": "catalog:"
 	},
