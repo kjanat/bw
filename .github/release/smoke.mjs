@@ -21,6 +21,7 @@ const {
 } = await import(sdkUrl.href);
 
 assert.equal(SDK_VERSION, sdk.version);
+assert.equal(sdk.version, process.env.EXPECTED_SDK_VERSION);
 assert.ok(sdkUrl.href.startsWith(new URL('./node_modules/', import.meta.url).href));
 for (const [command, expected] of [['--version', cli.version], ['sdk-version', sdk.version]]) {
 	const output = execFileSync(process.execPath, [resolve('node_modules/.bin/vw'), command], { encoding: 'utf8' });
