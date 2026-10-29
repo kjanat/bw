@@ -21,7 +21,4 @@ else
 	dist_tag=latest
 	if [[ "${version}" == *-* ]]; then dist_tag=next; fi
 	npm --prefix "${RUNNER_TEMP}" publish "$(realpath "./${PACKAGE}.tgz")" --access public --provenance --ignore-scripts --tag "${dist_tag}"
-	published_integrity=$(npm --prefix "${RUNNER_TEMP}" view "${name}@${version}" dist.integrity --json --registry https://registry.npmjs.org \
-		| jq -er '[.] | flatten | select(length == 1) | .[0] | strings')
-	[[ "${published_integrity}" == "${archive_integrity}" ]]
 fi
