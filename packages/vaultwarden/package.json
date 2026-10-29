@@ -1,6 +1,6 @@
 {
 	"name": "@kjanat/vaultwarden",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"keywords": [
 		"vaultwarden",
 		"bitwarden",
@@ -9,6 +9,11 @@
 		"dreamcli",
 		"micro509"
 	],
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/kjanat/vw.git",
+		"directory": "packages/vaultwarden"
+	},
 	"funding": {
 		"type": "github",
 		"url": "https://github.com/sponsors/kjanat"
@@ -16,6 +21,7 @@
 	"license": "PolyForm-Noncommercial-1.0.0",
 	"type": "module",
 	"imports": {
+		"#pkg": "./package.json",
 		"#test/*": "./test/*.ts",
 		"#*": "./src/*.ts"
 	},
@@ -39,7 +45,6 @@
 	"dependencies": {
 		"@xmldom/xmldom": "catalog:",
 		"fflate": "catalog:",
-		"kdbxweb": "catalog:",
 		"lunr": "catalog:",
 		"micro509": "catalog:",
 		"parse5": "catalog:",
@@ -55,6 +60,7 @@
 		"@types/zxcvbn": "catalog:",
 		"@vw/typescript-config": "workspace:*",
 		"eslint": "catalog:",
+		"kdbxweb": "catalog:",
 		"tsdown": "catalog:",
 		"typescript": "catalog:"
 	},

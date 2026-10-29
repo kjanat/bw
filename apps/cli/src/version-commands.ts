@@ -1,15 +1,14 @@
 import { outputCommand as command } from '#output';
-import { readFileSync } from 'node:fs';
+import CLI_PACKAGE from '#pkg' with { type: 'json' };
 import { SDK_VERSION } from '@kjanat/vaultwarden';
+
+export { CLI_PACKAGE };
 
 export interface PackageVersion {
 	name: string;
 	version: string;
 	private?: boolean;
 }
-export const CLI_PACKAGE = Object.freeze(
-	JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as PackageVersion,
-);
 interface Semver {
 	numbers: bigint[];
 	pre: string[];
