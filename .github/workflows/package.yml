@@ -16,13 +16,17 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: { ref: "${{ inputs.ref || github.sha }}", persist-credentials: false }
-      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
-      - uses: kjanat/runner@b32ea932a1813ae0be44e755c16df9f9f5ca86a4 # master
+      - parallel:
+          - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+          - uses: kjanat/runner@b32ea932a1813ae0be44e755c16df9f9f5ca86a4 # master
       - run: runner i --no-tools -s build
-      - name: Pack public SDK
-        run: bun run repo release pack vaultwarden
-      - name: Pack public CLI
-        run: bun run repo release pack cli
+      - parallel:
+          - name: Pack public SDK
+            env: { RELEASE_PACKAGE: vaultwarden }
+            run: bun run repo release pack
+          - name: Pack public CLI
+            env: { RELEASE_PACKAGE: cli }
+            run: bun run repo release pack
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         id: upload
         with:

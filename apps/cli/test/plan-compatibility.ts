@@ -1,9 +1,15 @@
 #!/usr/bin/env bun
 import { appendFile } from 'node:fs/promises';
-import { planCompatibility, resolveReleaseImage, type CompatibilityTargets } from '#test/compatibility-plan';
+import {
+	planCompatibility,
+	resolveReleaseImage,
+	discoverReferenceVersions,
+	type CompatibilityTargets,
+	type CompatibilityMode,
+} from '#test/compatibility-plan';
 import { runDirect } from '../../../tools/runtime.mjs';
 
-export async function planCompatibilityMatrix() {
+export async function planCompatibilityMatrix(mode: CompatibilityMode = 'full') {
 	const targets = await Bun.file(new URL('./fixtures/compatibility-targets.json', import.meta.url))
 		.json() as CompatibilityTargets;
 	async function runCrane(args: string[]): Promise<string> {
@@ -16,30 +22,44 @@ export async function planCompatibilityMatrix() {
 		if (code !== 0) throw new Error(`crane ${args[0]} failed: ${stderr.trim()}`);
 		return stdout;
 	}
-	const tags = (await runCrane(['ls', 'vaultwarden/server', '-O'])).split(/\r?\n/).map(tag => tag.trim()).filter(
-		Boolean,
+	const [tagOutput, referenceVersions] = await Promise.all([
+		runCrane(['ls', 'vaultwarden/server', '-O']),
+		discoverReferenceVersions(),
+	]);
+	const tags = tagOutput.split(/\r?\n/).map(tag => tag.trim()).filter(Boolean);
+	const plan = await planCompatibility(
+		targets,
+		tags,
+		referenceVersions,
+		version => resolveReleaseImage(version, runCrane),
+		mode,
 	);
-	const matrix = await planCompatibility(targets, tags, version => resolveReleaseImage(version, runCrane));
-	const json = JSON.stringify(matrix);
-	if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, `matrix=${json}\n`);
+	if (process.env.GITHUB_OUTPUT) {
+		await appendFile(
+			process.env.GITHUB_OUTPUT,
+			`matrix=${JSON.stringify(plan.matrix)}\nservers=${JSON.stringify(plan.servers)}\n`,
+		);
+	}
+
 	if (process.env.GITHUB_STEP_SUMMARY) {
 		await appendFile(
 			process.env.GITHUB_STEP_SUMMARY,
 			[
-				'### Vaultwarden compatibility plan',
+				`### Vaultwarden compatibility: ${mode}`,
 				'',
 				'| Server | Node | Immutable image | Reference comparison |',
 				'| --- | --- | --- | --- |',
-				...matrix.include.map(row =>
-					`| ${row.server} | ${row.node} | \`${row.image}\` | ${
-						row.reference ? `bw ${row.referenceCliVersion}` : 'disabled'
-					} |`
+				...plan.matrix.include.map(row =>
+					`| ${row.server} | ${row.node} | \`${row.image}\` | ${`bw ${row.referenceCliVersion}${
+						row.expectedFailure ? ` (known: ${row.expectedFailure}; must reproduce under both KDFs)` : ''
+					}`} |`
 				),
 				'',
 			].join('\n'),
 		);
 	}
-	console.log(json);
+	console.log(JSON.stringify(plan));
+	return plan;
 }
 
 if (import.meta.main) await runDirect(['compat', 'plan'], import.meta.url, { planCompatibilityMatrix });

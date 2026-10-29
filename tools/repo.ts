@@ -4,12 +4,14 @@ import { createAdapter } from '@kjanat/dreamcli/runtime';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { repoRoot, resolveWasmOpt } from './runtime.mjs';
+import { releaseTagPattern } from './release/metadata.ts';
 
 const wasmOptFlag = () =>
 	flag.string({ nonEmpty: true })
 		.describe('Binaryen 133 executable; defaults to the mise pin, then PATH');
 const cargoHomeFlag = () => flag.path({ type: 'directory' }).describe('Cargo registry/cache directory');
-const runtimeFlag = () => flag.enum(['node', 'bun', 'both']).default('both').describe('JavaScript runtime(s)');
+const runtimeFlag = () =>
+	flag.enum(['node', 'bun', 'both']).env('RUNTIME').default('both').describe('JavaScript runtime(s)');
 const measurementRuntimeFlag = () =>
 	flag.enum(['node', 'bun']).default('node')
 		.describe('Runtime/compressor for size measurements; original results use Node');
@@ -176,12 +178,86 @@ export function createRepoCLI(direct: Record<string, unknown> = {}) {
 				),
 		);
 
-	const release = group('release').description('Pack and verify release archives')
+	const tagFlag = () => flag.string({ pattern: releaseTagPattern }).env('TAG').required();
+	const releaseFlag = () => flag.string({ nonEmpty: true }).env('RELEASE').required();
+	const outputFlag = () => flag.path({ type: 'file', mustExist: false }).env('GITHUB_OUTPUT');
+	const release = group('release').description('Pack, verify and publish tested release archives')
+		.command(
+			group('draft').description('Prepare, stage and attach GitHub draft releases')
+				.command(
+					command('prepare').description('Check the release source and create a GitHub draft')
+						.flag('tag', tagFlag())
+						.flag('ref', flag.string({ nonEmpty: true }).env('GITHUB_REF').required())
+						.flag('run-id', flag.string({ pattern: /^[1-9]\d*$/ }).env('GITHUB_RUN_ID').required())
+						.flag('output', outputFlag())
+						.action(async ({ flags }) => {
+							await (await load('./release/draft.ts', () => import('./release/draft.ts')))
+								.prepareDraft({ tag: flags.tag, ref: flags.ref, runId: flags['run-id'], output: flags.output });
+						}),
+				)
+				.command(
+					command('stage').description('Verify tested archives and write release assets and checksums')
+						.flag('release', releaseFlag())
+						.action(async ({ flags }) => {
+							await (await load('./release/draft.ts', () => import('./release/draft.ts')))
+								.stageDraft(flags.release);
+						}),
+				)
+				.command(
+					command('attach').description('Attach staged assets to an existing GitHub draft')
+						.flag('release', releaseFlag())
+						.flag('summary', flag.path({ type: 'file', mustExist: false }).env('GITHUB_STEP_SUMMARY'))
+						.action(async ({ flags }) => {
+							await (await load('./release/draft.ts', () => import('./release/draft.ts')))
+								.attachDraft(flags.release, flags.summary);
+						}),
+				),
+		)
+		.command(
+			command('verify-attestations').description('Verify provenance for every release asset against this checkout')
+				.flag('tag', tagFlag())
+				.flag('repository', flag.string({ pattern: /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/ }).env('GH_REPO').required())
+				.action(async ({ flags }) => {
+					(await load(
+						'./release/verify-attestations.ts',
+						() => import('./release/verify-attestations.ts'),
+					))
+						.verifyAttestations(flags.tag, flags.repository);
+				}),
+		)
+		.command(
+			command('download').description('Download release assets or a selected package with its checksums')
+				.flag('tag', tagFlag())
+				.flag('package', flag.enum(['vaultwarden', 'cli']).env('RELEASE_PACKAGE'))
+				.action(async ({ flags }) => {
+					(await load('./release/download.ts', () => import('./release/download.ts')))
+						.downloadRelease(flags.tag, flags.package);
+				}),
+		)
+		.command(
+			command('validate').description('Verify release checksums, source and successful build workflow')
+				.flag('tag', tagFlag())
+				.flag('output', outputFlag())
+				.action(async ({ flags }) => {
+					await (await load('./release/validate.ts', () => import('./release/validate.ts')))
+						.validateRelease(flags.tag, flags.output);
+				}),
+		)
+		.command(
+			command('publish').description('Publish the approved, byte-identical archive with npm provenance')
+				.arg('package', arg.enum(['vaultwarden', 'cli']).env('RELEASE_PACKAGE'))
+				.flag('release', releaseFlag())
+				.flag('temporary', flag.path({ type: 'directory' }).env('RUNNER_TEMP').required())
+				.action(async ({ args, flags }) => {
+					await (await load('./release/publish.ts', () => import('./release/publish.ts')))
+						.publishRelease({ packageId: args.package, metadata: flags.release, temporary: flags.temporary });
+				}),
+		)
 		.command(
 			command('pack').description('Pack a public workspace and write its SHA-256 checksum')
-				.arg('package', arg.enum(['vaultwarden', 'cli']))
+				.arg('package', arg.enum(['vaultwarden', 'cli']).env('RELEASE_PACKAGE'))
 				.action(async ({ args }) =>
-					(await load('../.github/release/pack.ts', () => import('../.github/release/pack.ts'))).packRelease(
+					(await load('./release/pack.ts', () => import('./release/pack.ts'))).packRelease(
 						args.package,
 					)
 				),
@@ -189,20 +265,26 @@ export function createRepoCLI(direct: Record<string, unknown> = {}) {
 		.command(
 			command('verify').description('Verify isolated installations of archives or published previews')
 				.flag('runtime', runtimeFlag())
-				.flag('preview-metadata', flag.path({ type: 'file' }).describe('Preview publication metadata'))
+				.flag(
+					'preview-metadata',
+					flag.path({ type: 'file' }).env('PREVIEW_METADATA').describe('Preview publication metadata'),
+				)
 				.action(async ({ flags }) => {
 					const metadata = flags['preview-metadata'] ? resolve(flags['preview-metadata']) : undefined;
 					for (const runtime of runtimes(flags.runtime)) {
-						await (await load('../.github/release/verify.ts', () => import('../.github/release/verify.ts')))
+						await (await load('./release/verify.ts', () => import('./release/verify.ts')))
 							.verifyRelease(runtime, metadata);
 					}
 				}),
 		)
 		.command(
 			command('preview').description('Download preview archives and verify their published hashes')
-				.flag('metadata', flag.path({ type: 'file' }).default(resolve(repoRoot, 'artifacts/preview.json')))
+				.flag(
+					'metadata',
+					flag.path({ type: 'file' }).env('PREVIEW_METADATA').default(resolve(repoRoot, 'artifacts/preview.json')),
+				)
 				.action(async ({ flags }) =>
-					(await load('../.github/release/preview.ts', () => import('../.github/release/preview.ts'))).fetchPreview(
+					(await load('./release/preview.ts', () => import('./release/preview.ts'))).fetchPreview(
 						resolve(flags.metadata),
 					)
 				),
@@ -251,30 +333,48 @@ export function createRepoCLI(direct: Record<string, unknown> = {}) {
 		.command(
 			group('compat').description('Disposable Vaultwarden compatibility runs')
 				.command(
-					command('plan').description('Discover supported server images and print the CI matrix')
-						.action(async () =>
-							(await load(
+					command('plan').description('Discover supported server and CLI releases and print the CI matrices')
+						.flag(
+							'mode',
+							flag.enum(['full', 'pr']).env('COMPATIBILITY_MODE').default('full').describe(
+								'Full cross-product or newest server/CLI edges',
+							),
+						)
+						.action(async ({ flags }) => {
+							await (await load(
 								'../apps/cli/test/plan-compatibility.ts',
 								() => import('../apps/cli/test/plan-compatibility.ts'),
-							)).planCompatibilityMatrix()
-						),
+							)).planCompatibilityMatrix(flags.mode);
+						}),
 				)
 				.command(
 					command('run').description('Run the managed compatibility suite in disposable containers')
-						.flag('server-version', flag.string({ pattern: /^\d+\.\d+\.\d+$/ }).default('1.37.4'))
-						.flag('image', flag.string({ nonEmpty: true }).describe('Immutable Vaultwarden image override'))
-						.flag('reference', flag.path({ type: 'file' }).describe('Independent Bitwarden CLI executable'))
-						.flag('reference-version', flag.string({ pattern: /^\d+\.\d+\.\d+$/ }))
-						.flag('protocol-only', flag.boolean().describe('Run without reference CLI comparisons'))
-						.flag('smtp', flag.boolean().describe('Exercise delivered email codes with Mailpit'))
-						.flag('sso', flag.boolean().describe('Exercise OIDC SSO'))
-						.flag('case', flag.string({ nonEmpty: true }).describe('Test name pattern'))
-						.flag('import-format', flag.string({ nonEmpty: true }))
-						.flag('import-shard', flag.string({ pattern: /^\d+\/[1-9]\d*$/ }))
-						.flag('skip-imports', flag.boolean())
-						.flag('focused-import', flag.boolean())
-						.flag('list-filters-only', flag.boolean())
-						.flag('policy-redaction-only', flag.boolean())
+						.flag('server-version', flag.string({ pattern: /^\d+\.\d+\.\d+$/ }).env('SERVER_VERSION').default('1.37.4'))
+						.flag(
+							'image',
+							flag.string({ nonEmpty: true }).env('SERVER_IMAGE').describe('Immutable Vaultwarden image override'),
+						)
+						.flag(
+							'reference',
+							flag.path({ type: 'file' }).env('REFERENCE_CLI').describe('Independent Bitwarden CLI executable'),
+						)
+						.flag('reference-version', flag.string({ pattern: /^\d+\.\d+\.\d+$/ }).env('REFERENCE_VERSION'))
+						.flag(
+							'protocol-only',
+							flag.boolean().env('COMPATIBILITY_PROTOCOL_ONLY').describe('Run without reference CLI comparisons'),
+						)
+						.flag(
+							'smtp',
+							flag.boolean().env('COMPATIBILITY_SMTP').describe('Exercise delivered email codes with Mailpit'),
+						)
+						.flag('sso', flag.boolean().env('COMPATIBILITY_SSO').describe('Exercise OIDC SSO'))
+						.flag('case', flag.string({ nonEmpty: true }).env('COMPATIBILITY_CASE').describe('Test name pattern'))
+						.flag('import-format', flag.string({ nonEmpty: true }).env('COMPATIBILITY_IMPORT_FORMAT'))
+						.flag('import-shard', flag.string({ pattern: /^\d+\/[1-9]\d*$/ }).env('COMPATIBILITY_IMPORT_SHARD'))
+						.flag('skip-imports', flag.boolean().env('COMPATIBILITY_SKIP_IMPORTS'))
+						.flag('focused-import', flag.boolean().env('COMPATIBILITY_FOCUSED_IMPORT'))
+						.flag('list-filters-only', flag.boolean().env('COMPATIBILITY_LIST_FILTERS_ONLY'))
+						.flag('policy-redaction-only', flag.boolean().env('COMPATIBILITY_POLICY_REDACTION_ONLY'))
 						.derive(({ flags }) => {
 							if (flags.smtp && flags.sso) throw new Error('--smtp and --sso are mutually exclusive');
 							if (flags['import-shard']) {

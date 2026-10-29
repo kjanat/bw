@@ -241,59 +241,58 @@ automatically assigned port, waits for health, runs the live fixtures, and remov
 the container and temporary profile on completion or interruption:
 
 ```sh
-VW_TEST_BW=/absolute/path/to/bw bun run test:compat
-VW_TEST_VERSION=1.36.0 bun run test:compat
-VW_TEST_BW=/absolute/path/to/bw VW_TEST_CASE=Argon2id bun run test:compat
-VW_TEST_BW=/absolute/path/to/bw VW_TEST_CASE='authentication, external' \
-  VW_TEST_IMPORT_FORMAT=keepasskdbx bun run test:compat
+REFERENCE_CLI=/absolute/path/to/bw bun run repo compat run
+SERVER_VERSION=1.36.0 COMPATIBILITY_PROTOCOL_ONLY=true bun run repo compat run
+REFERENCE_CLI=/absolute/path/to/bw COMPATIBILITY_CASE=Argon2id bun run repo compat run
+REFERENCE_CLI=/absolute/path/to/bw COMPATIBILITY_CASE='authentication, external' \
+  COMPATIBILITY_IMPORT_FORMAT=keepasskdbx bun run repo compat run
 ```
 
 It requires a POSIX host, Docker, Bun, Node, OpenSSH and `envctl`. Docker output is
 passed through `envctl redact` before display or capture; redactor failure
-withholds that output. Baseline image digests and Node majors come from
-`apps/cli/test/fixtures/compatibility-targets.json`. A discovered release is
-passed as `VW_TEST_VERSION` plus `VW_TEST_IMAGE`, which must be an immutable
-`vaultwarden/server@sha256:...` reference. The runner checks the actual server's
-`/api/version` against the planned version before running any live suite.
-`test:compat` is an uncached
-Turbo package task and forwards only its named test configuration variables.
-For the 1.37.4 reference run, the managed runner executes KDF/vault checks once,
-then divides the external-import matrix into eight independently reported
-shards, and runs authentication/REST parity separately. Each Bun test finishes
-within its timeout, and the runner executes every importer case. The disposable
-server raises its unauthenticated request burst limit for the repeated synthetic
-registrations; this setting applies only to the managed test container. A shard
-can be rerun with `VW_TEST_IMPORT_SHARD=INDEX/8`, and REST/authentication checks
-alone with `VW_TEST_SKIP_IMPORTS=1`.
+withholds that output. Version floors, baseline image digests and exact known
+reference incompatibilities come from
+`apps/cli/test/fixtures/compatibility-targets.json`. A discovered release uses
+`SERVER_VERSION` and `SERVER_IMAGE`, which must be an immutable
+`vaultwarden/server@sha256:...` reference. DreamCLI reads these values directly;
+interactive invocations can also use the corresponding flags. The runner checks
+the actual server's `/api/version` and the reference executable's `--version`
+against the planned versions before running comparisons.
 
-The 1.37.4 run requires the independent **bw 2026.10.0** executable and checks its
-version in an isolated profile. That reference client cannot parse 1.36.0's
-prelogin KDF response: an actual login attempt failed with “KDF config response
-does not contain a valid KDF type”. Therefore 1.36.0 runs our protocol checks
-without the reference-dependent sections. Run version-matched reference
-comparisons and external-format comparisons on that older server.
+Reference runs check login under both PBKDF2 and Argon2id before the comparison
+suite. Only an exact server/CLI pair with a recorded error reproduced under both
+KDFs may omit reference comparisons. The recorded `1.36.0 / 2026.10.0` and
+`1.36.0 / 2026.10.1` failures are
+“KDF config response does not contain a valid KDF type”. Other failures fail the
+job; a known pair that now authenticates also fails until its stale exception is
+removed. No newer CLI version inherits an older version's exception.
 
-[The CI workflow](../.github/workflows/ci.yml) defines unit/build/type/lint checks
-and a planner job that combines the pinned servers with the latest stable
-Vaultwarden image tag from `crane ls vaultwarden/server -O`. Only plain `X.Y.Z`
-tags qualify; Alpine/architecture variants, prereleases and aliases are excluded.
-The planner installs `crane` from `mise.toml`. Older latest-release
-results cannot downgrade the selected baselines. A newer release's Docker Hub
-manifest is resolved once with `crane digest` to an immutable digest before the matrix fans out.
-Versions and Node majors are deduplicated, so a release already pinned does not
-create duplicate jobs. The planner emits `{ "include": [...] }` as a job output;
-the compatibility job consumes it with `fromJSON(needs.planner.outputs.matrix)`.
-Each row includes the server, Node major, image digest, reference CLI version,
-and whether the reference comparison is supported. New releases get the same
-KDF, transfer, organization, Send, REST, email-factor and SSO checks; the known
-The fixture explicitly excludes the 1.36.0 reference comparison. Registry lookup
-failures stop planning rather than silently omitting the newest release.
+On 2026-10-29, disposable local runs reproduced that error under both KDFs for
+each of these two exact pairs. The `2026.10.1` pair failed before its exception
+was added, confirming that the older CLI's exception did not apply to it.
 
-Discovery happens on each existing CI trigger (PR, push to master, or manual
-dispatch); it does not add a separate scheduled run. The workflow installs the
-reference npm CLI independently and uses the same managed runner. The workflow
-has been validated locally with Actionlint; a hosted Actions run has not been
-triggered or observed.
+For compatible pairs, the runner executes KDF/vault checks, eight external-import
+shards, and authentication/REST parity. A shard can be rerun with
+`COMPATIBILITY_IMPORT_SHARD=INDEX/8`, and REST/authentication checks alone with
+`COMPATIBILITY_SKIP_IMPORTS=true`. The disposable server raises its unauthenticated
+request burst limit for repeated synthetic registrations; this setting applies
+only to the managed test container.
+
+[CI](../.github/workflows/ci.yml) discovers every stable Vaultwarden image tag and
+published npm reference CLI version at or above the configured floors, including
+patch releases. Plain numeric `X.Y.Z` versions qualify; prereleases, image variants
+and aliases do not. Each discovered server image is resolved once to an immutable
+digest, retaining existing baseline pins. Registry failures, missing baselines
+and matrices exceeding GitHub's job limit fail planning instead of reducing coverage.
+
+Pull requests run every server with the newest CLI and every CLI with the newest
+server, deduplicating their shared pair. Nightly runs at 02:17 UTC, master pushes,
+manual CI runs and releases run the complete server × CLI matrix. Each pair installs
+its exact reference version independently. A separate matrix always exercises our
+protocol, delivered email codes and OIDC SSO under both KDFs for every server,
+including servers with a known reference incompatibility. Package consumer runtime
+coverage remains separate. The planner emits the pair matrix as `matrix` and the
+server-only matrix as `servers` for the reusable test workflow.
 
 Local runner evidence on 2026-10-20: all three protocol fixtures passed on
 1.36.0 under Node **26.11.1** in 104 seconds and **24.22.0** in 106 seconds,

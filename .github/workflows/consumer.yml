@@ -19,35 +19,27 @@ jobs:
           - { label: node arm64, runtime: node, node: "26", runner: ubuntu-26.04-arm }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 10
-    env:
-      MISE_NODE_VERSION: ${{ matrix.node }}
+    env: { MISE_NODE_VERSION: "${{ matrix.node }}" }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: { ref: "${{ inputs.ref || github.sha }}", persist-credentials: false }
       - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: npm-packages
-          path: artifacts
+        with: { name: npm-packages, path: &a artifacts }
       - name: Verify archive checksums
-        working-directory: artifacts
+        working-directory: *a
         run: sha256sum -c ./*.sha256
       - name: Download preview publication metadata
         if: inputs.preview
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: package-previews
-          path: artifacts
+        with: { name: package-previews, path: *a }
       - name: Install repository tooling
         run: bun install --frozen-lockfile --ignore-scripts
       - name: Download and verify published previews
         if: inputs.preview
-        run: bun run repo release preview --metadata artifacts/preview.json
+        run: bun run repo release preview
       - name: Test an isolated installation
+        run: bun run repo release verify
         env:
           RUNTIME: ${{ matrix.runtime }}
-          PREVIEW_METADATA: ${{ inputs.preview && 'artifacts/preview.json' || '' }}
-        run: |
-          args=(release verify --runtime "${RUNTIME}")
-          if [[ -n "${PREVIEW_METADATA}" ]]; then args+=(--preview-metadata "${PREVIEW_METADATA}"); fi
-          bun run repo "${args[@]}"
+          PREVIEW_METADATA: ${{ case(inputs.preview, 'artifacts/preview.json', '') }}

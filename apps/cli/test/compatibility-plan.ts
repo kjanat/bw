@@ -1,27 +1,36 @@
+export type CompatibilityMode = 'full' | 'pr';
+export interface ReferenceIncompatibility {
+	server: string;
+	referenceCliVersion: string;
+	error: 'invalid-prelogin-kdf';
+}
 export interface CompatibilityTargets {
 	nodeVersion: string;
+	minimumServerVersion: string;
+	minimumReferenceCliVersion: string;
 	servers: Record<string, string>;
-	referenceCliVersion: string;
-	referenceCliVersions: Record<string, string | null>;
+	referenceIncompatibilities: ReferenceIncompatibility[];
 }
 const pinnedImage = /^vaultwarden\/server@sha256:[a-f0-9]{64}$/;
 const stableVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
-function assertStableVersion(version: string): void {
+export function assertStableVersion(version: string): void {
 	if (!stableVersion.test(version) || !Bun.semver.satisfies(version, '>=0.0.0')) {
-		throw new Error(`Invalid stable Vaultwarden version: ${version}`);
+		throw new Error(`Invalid stable version: ${version}`);
 	}
 }
 
-export function latestStableVersion(tags: readonly string[]): string {
-	const versions = [...new Set(tags.filter(tag => stableVersion.test(tag) && Bun.semver.satisfies(tag, '>=0.0.0')))]
-		.sort(Bun.semver.order);
-	const latest = versions.at(-1);
-	if (!latest) throw new Error('No stable Vaultwarden version tags found in the registry.');
-	return latest;
+export function supportedVersions(versions: readonly string[], minimum: string): string[] {
+	assertStableVersion(minimum);
+	return [
+		...new Set(versions.filter(version =>
+			stableVersion.test(version)
+			&& Bun.semver.satisfies(version, `>=${minimum}`)
+		)),
+	].sort(Bun.semver.order);
 }
 
-/** Local baselines stay pinned; newly discovered releases require an explicit immutable image. */
+/** Local baselines stay pinned; other releases require an explicit immutable image. */
 export function resolveCompatibilityTarget(
 	targets: Pick<CompatibilityTargets, 'servers'>,
 	version: string,
@@ -29,57 +38,97 @@ export function resolveCompatibilityTarget(
 ): { version: string; image: string } {
 	assertStableVersion(version);
 	const image = imageOverride ?? (Object.hasOwn(targets.servers, version) ? targets.servers[version] : undefined);
-	if (!image) {
-		throw new Error('Unknown VW_TEST_VERSION. Supply VW_TEST_IMAGE as an immutable vaultwarden/server digest.');
-	}
+	if (!image) throw new Error('Unknown server version. Supply --image with an immutable vaultwarden/server digest.');
 	if (!pinnedImage.test(image)) throw new Error('Compatibility image must use a pinned vaultwarden/server digest.');
 	return { version, image };
 }
 
-/** Test each server once on the primary Node runtime, with its pinned reference CLI. */
+export async function discoverReferenceVersions(
+	fetchRegistry: (input: string, init: RequestInit) => Promise<Response> = fetch,
+): Promise<string[]> {
+	const response = await fetchRegistry('https://registry.npmjs.org/@bitwarden%2fcli', {
+		headers: { Accept: 'application/vnd.npm.install-v1+json' },
+		signal: AbortSignal.timeout(30000),
+	});
+	if (!response.ok) throw new Error(`Bitwarden CLI discovery failed: npm HTTP ${response.status}.`);
+	const metadata = await response.json() as { name?: unknown; versions?: unknown };
+	if (
+		metadata.name !== '@bitwarden/cli' || !metadata.versions || typeof metadata.versions !== 'object'
+		|| Array.isArray(metadata.versions)
+	) throw new Error('Invalid Bitwarden CLI registry metadata.');
+	return Object.keys(metadata.versions);
+}
+
+/** PRs cover both newest edges; full runs cover every supported server/CLI pair. */
 export async function planCompatibility(
 	targets: CompatibilityTargets,
-	tags: readonly string[],
+	serverTags: readonly string[],
+	referenceVersions: readonly string[],
 	resolveImage: (version: string) => Promise<string>,
+	mode: CompatibilityMode = 'full',
 ) {
-	const servers = new Map(
-		Object.entries(targets.servers).map(([version]) => {
-			const target = resolveCompatibilityTarget(targets, version);
-			return [target.version, target.image];
-		}),
-	);
-	if (servers.size === 0) throw new Error('At least one pinned compatibility baseline is required.');
+	if (mode !== 'full' && mode !== 'pr') throw new Error('Compatibility mode must be full or pr.');
 	if (!/^[1-9]\d*$/.test(targets.nodeVersion)) {
 		throw new Error('The primary Node version must be a positive major version.');
 	}
-	if (!stableVersion.test(targets.referenceCliVersion)) throw new Error('Invalid reference CLI version.');
-	for (const [server, reference] of Object.entries(targets.referenceCliVersions)) {
-		assertStableVersion(server);
-		if (reference !== null && !stableVersion.test(reference)) throw new Error('Invalid reference CLI version.');
+	const servers = supportedVersions(serverTags, targets.minimumServerVersion);
+	const references = supportedVersions(referenceVersions, targets.minimumReferenceCliVersion);
+	if (!servers.includes(targets.minimumServerVersion)) {
+		throw new Error('Registry is missing the minimum supported server.');
 	}
-	const latest = latestStableVersion(tags);
-	const newest = [...servers.keys()].sort(Bun.semver.order).at(-1)!;
-	if (Bun.semver.order(latest, newest) > 0) {
-		const target = resolveCompatibilityTarget(targets, latest, await resolveImage(latest));
-		servers.set(target.version, target.image);
+	if (!references.includes(targets.minimumReferenceCliVersion)) {
+		throw new Error('Registry is missing the minimum supported CLI.');
 	}
-	const include = [...servers].sort(([a], [b]) => Bun.semver.order(a, b)).map(([server, image]) => {
-		const referenceCliVersion = Object.hasOwn(targets.referenceCliVersions, server)
-			? targets.referenceCliVersions[server]!
-			: targets.referenceCliVersion;
-		return {
-			server,
-			node: targets.nodeVersion,
-			image,
-			reference: referenceCliVersion !== null,
-			referenceCliVersion,
-		};
-	});
-	if (include.length > 256) throw new Error("Compatibility matrix exceeds GitHub Actions' 256-job limit.");
-	return { include };
+	for (const version of Object.keys(targets.servers)) {
+		resolveCompatibilityTarget(targets, version);
+		if (!servers.includes(version)) throw new Error(`Registry is missing configured server ${version}.`);
+	}
+	const exceptions = new Set<string>();
+	for (const entry of targets.referenceIncompatibilities) {
+		const key = `${entry.server}/${entry.referenceCliVersion}`;
+		if (
+			!servers.includes(entry.server) || !references.includes(entry.referenceCliVersion)
+			|| entry.error !== 'invalid-prelogin-kdf' || exceptions.has(key)
+		) {
+			throw new Error(`Invalid or duplicate reference incompatibility: ${key}.`);
+		}
+		exceptions.add(key);
+	}
+	const newestServer = servers.at(-1)!;
+	const newestReference = references.at(-1)!;
+	const pairs = servers.flatMap(server =>
+		references
+			.filter(reference => mode === 'full' || server === newestServer || reference === newestReference)
+			.map(referenceCliVersion => ({ server, referenceCliVersion }))
+	);
+	if (servers.length > 256 || pairs.length > 256) {
+		throw new Error(
+			`Compatibility plan needs ${servers.length} server jobs and ${pairs.length} pair jobs; GitHub's limit is 256 per matrix. Split the matrix instead of dropping versions.`,
+		);
+	}
+	// Resolve once per server, never once per CLI pairing.
+	const images = new Map<string, string>();
+	for (const server of servers) {
+		const image = Object.hasOwn(targets.servers, server) ? targets.servers[server]! : await resolveImage(server);
+		images.set(server, resolveCompatibilityTarget(targets, server, image).image);
+	}
+	const row = (server: string) => ({ server, node: targets.nodeVersion, image: images.get(server)! });
+	return {
+		mode,
+		servers: { include: servers.map(row) },
+		matrix: {
+			include: pairs.map(pair => ({
+				...row(pair.server),
+				referenceCliVersion: pair.referenceCliVersion,
+				expectedFailure: targets.referenceIncompatibilities.find(entry =>
+					entry.server === pair.server
+					&& entry.referenceCliVersion === pair.referenceCliVersion
+				)?.error ?? null,
+			})),
+		},
+	};
 }
 
-/** Resolve the multi-platform manifest once, before the matrix fans out. */
 export async function resolveReleaseImage(
 	version: string,
 	runCrane: (args: string[]) => Promise<string>,

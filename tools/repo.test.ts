@@ -9,9 +9,14 @@ import { repoRoot } from './runtime.mjs';
 const entrypoints = [
 	'tools/repo.ts',
 	'tools/bundle-size.ts',
-	'.github/release/pack.ts',
-	'.github/release/preview.ts',
-	'.github/release/verify.ts',
+	'tools/release/pack.ts',
+	'tools/release/preview.ts',
+	'tools/release/verify.ts',
+	'tools/release/draft.ts',
+	'tools/release/download.ts',
+	'tools/release/validate.ts',
+	'tools/release/verify-attestations.ts',
+	'tools/release/publish.ts',
 	'packages/vaultwarden/wasm/build.ts',
 	'apps/cli/test/plan-compatibility.ts',
 	'apps/cli/test/run-compatibility.ts',
@@ -49,6 +54,7 @@ test('invalid arguments fail before running builds, downloads or containers', as
 			['experiment', 'sizes', 'build', '--wasm-oot', 'bad'],
 			['experiment', 'wasip2', 'verify-sdk', '--optimization', 'fast'],
 			['compat', 'run', '--server-version', 'latest'],
+			['compat', 'plan', '--mode', 'latest'],
 			['compat', 'run', '--smtp', '--sso'],
 			['compat', 'run', '--import-shard', '8/8'],
 		]
@@ -61,7 +67,12 @@ test('invalid arguments fail before running builds, downloads or containers', as
 test('commands pass validated options to operations and honor runtime selection', async () => {
 	const calls: unknown[] = [];
 	const app = createRepoCLI({
-		[new URL('../.github/release/verify.ts', import.meta.url).href]: {
+		[new URL('../apps/cli/test/plan-compatibility.ts', import.meta.url).href]: {
+			planCompatibilityMatrix: (mode: string) => {
+				calls.push(mode);
+			},
+		},
+		[new URL('./release/verify.ts', import.meta.url).href]: {
 			verifyRelease: (runtime: string, metadata?: string) => calls.push([runtime, metadata]),
 		},
 		[new URL('../experiments/wasip2/verify-sdk.mjs', import.meta.url).href]: {
@@ -88,7 +99,10 @@ test('commands pass validated options to operations and honor runtime selection'
 	).toBe(0);
 	expect(calls.splice(0)).toEqual([{ variant: 'baseline', mode: 'minified', optimization: 'Os' }]);
 	expect((await app.execute(['experiment', 'sizes', 'build', '--js-only', '--runtime', 'bun'])).exitCode).toBe(0);
-	expect(calls).toEqual(['JavaScript only']);
+	expect(calls.splice(0)).toEqual(['JavaScript only']);
+	expect((await app.execute(['compat', 'plan'])).exitCode).toBe(0);
+	expect((await app.execute(['compat', 'plan', '--mode', 'pr'])).exitCode).toBe(0);
+	expect(calls).toEqual(['full', 'pr']);
 });
 
 test('entrypoint imports do not run operations or change the working directory', async () => {

@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
-import { runDirect, inDirectory, repoRoot } from '../../tools/runtime.mjs';
+import { runDirect, inDirectory, repoRoot } from '../runtime.mjs';
 
 export async function fetchPreview(metadataPath: string) {
 	return inDirectory(repoRoot, async () => {

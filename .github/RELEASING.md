@@ -10,8 +10,11 @@ install the exact archives under Node 24.8.0, Node 26 and Bun on Linux amd64,
 plus Node 26 on Linux arm64. Each consumer checks package versions, independent
 PBKDF2 and Argon2id vectors, authenticated encryption, all four KDBX worker
 fixtures, and SDK prelogin/login/sync through a local HTTP fixture. The full
-Vaultwarden server matrix runs on Node 26 alongside this workflow, with each
-server's pinned Bitwarden CLI reference.
+Vaultwarden compatibility matrix runs on Node 26. Releases, nightly runs and
+master pushes cover every stable server and reference CLI combination at or above
+the configured version floors, including patch releases. Pull requests cover
+every server with the newest CLI and every CLI with the newest server. Protocol,
+email and SSO checks run independently for every server.
 
 CI calls the `pkg-pr-new` workflow after its source and package checks pass,
 preserving the pull-request event so the publisher can comment on the PR. It
@@ -22,6 +25,12 @@ consumer uses the publisher's URLs and checksums and installs only the CLI
 preview, allowing its SDK dependency to resolve without overrides. Source checks
 are not repeated for previews. The pkg.pr.new
 GitHub App must be installed on this repository before publication.
+
+Release operations use `bun run repo release`. The workflows call `draft prepare`,
+`draft stage`, `draft attach`, `download`, `verify-attestations`, `validate`, and
+`publish`; DreamCLI binds their inputs directly from the workflow environment.
+Each command also supports flags and `--help`. The command entrypoints in
+`tools/release` are importable and executable through the same CLI.
 
 ## Prepare a draft
 
@@ -70,16 +79,11 @@ Publication uses npm trusted publishing through GitHub OIDC, with no token
 fallback. npm package provenance is generated separately from the GitHub
 release-asset attestations.
 
-To verify downloaded release assets locally:
+To download and verify release assets locally, use a checkout of the tagged
+source commit so the attestation check compares against that commit:
 
 ```sh
-tag=v0.1.2
-gh release download "${tag}" --repo kjanat/vw --dir artifacts
-for asset in vaultwarden.tgz cli.tgz SHA256SUMS release.json; do
-  gh attestation verify "artifacts/${asset}" --repo kjanat/vw \
-    --signer-workflow kjanat/vw/.github/workflows/release.yml \
-    --source-ref "refs/tags/${tag}" \
-    --source-digest "$(jq -r .sha artifacts/release.json)" \
-    --deny-self-hosted-runners
-done
+export TAG=v0.1.2 GH_REPO=kjanat/vw
+bun run repo release download
+bun run repo release verify-attestations
 ```

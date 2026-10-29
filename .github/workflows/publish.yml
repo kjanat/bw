@@ -24,25 +24,16 @@ jobs:
         with:
           ref: refs/tags/${{ env.TAG }}
           persist-credentials: false
+      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+      - name: Install repository tooling
+        run: bun install --frozen-lockfile --ignore-scripts
       - name: Download release assets
-        run: gh release download "${TAG}" --pattern '*.tgz' --pattern release.json --pattern SHA256SUMS --dir artifacts
-      - name: Verify release checksums
-        working-directory: artifacts
-        run: sha256sum -c SHA256SUMS
+        run: bun run repo release download
       - name: Verify release attestations
-        run: bash .github/release/verify-attestations.sh
+        run: bun run repo release verify-attestations
       - name: Validate release assets and build provenance
         id: source
-        run: |
-          sha=$(git rev-parse HEAD)
-          jq -e --arg tag "${TAG}" --arg sha "${sha}" \
-            '.tag == $tag and .version == ($tag | ltrimstr("v")) and .sha == $sha and .packages == ["vaultwarden","cli"] and (.run | type == "number" and . > 0 and . == floor)' \
-            artifacts/release.json
-          run=$(jq -er '.run' artifacts/release.json)
-          gh run watch "${run}" --exit-status --interval 5
-          gh run view "${run}" --json workflowName,conclusion | jq -e '.workflowName == "Release" and .conclusion == "success"'
-          release=$(jq -c . artifacts/release.json)
-          printf 'release=%s\n' "${release}" >> "${GITHUB_OUTPUT}"
+        run: bun run repo release validate
   publish:
     needs: [validate]
     name: Publish ${{ matrix.package }}
@@ -55,7 +46,7 @@ jobs:
     environment: { name: npm, deployment: false }
     permissions: { contents: read, actions: read, id-token: write }
     env:
-      PACKAGE: ${{ matrix.package }}
+      RELEASE_PACKAGE: ${{ matrix.package }}
       RELEASE: ${{ needs.validate.outputs.release }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -63,9 +54,11 @@ jobs:
           ref: ${{ fromJSON(env.RELEASE).sha }}
           persist-credentials: false
       - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+      - name: Install repository tooling
+        run: bun install --frozen-lockfile --ignore-scripts
       - run: npm install --global npm@12.2.1 --ignore-scripts
       - name: Download approved archive and checksums
-        run: gh release download "${TAG}" --pattern "${PACKAGE}.tgz" --pattern SHA256SUMS --dir artifacts
+        run: bun run repo release download
       - name: Download the tested build for comparison
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -73,7 +66,5 @@ jobs:
           path: tested
           run-id: ${{ fromJSON(env.RELEASE).run }}
           github-token: ${{ github.token }}
-      - name: Match the release archive to the tested build
-        run: cmp "artifacts/${PACKAGE}.tgz" "tested/${PACKAGE}.tgz"
       - name: Publish the approved archive
-        run: bash .github/release/publish.sh
+        run: bun run repo release publish

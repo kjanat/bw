@@ -1,11 +1,12 @@
 #!/usr/bin/env bun
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { appendFile, mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
-import { resolveCompatibilityTarget, type CompatibilityTargets } from '#test/compatibility-plan';
+import { assertStableVersion, resolveCompatibilityTarget, type CompatibilityTargets } from '#test/compatibility-plan';
+import { checkReferenceAuthentication } from '#test/reference-authentication';
 import { runDirect } from '../../../tools/runtime.mjs';
 
 export interface CompatibilityOptions {
@@ -28,8 +29,7 @@ export interface CompatibilityOptions {
 export async function runCompatibility(options: CompatibilityOptions = {}) {
 	const {
 		servers: compatibilityTargets,
-		referenceCliVersion,
-		referenceCliVersions,
+		referenceIncompatibilities,
 		mailpitImage,
 	} = await Bun
 		.file(
@@ -40,28 +40,21 @@ export async function runCompatibility(options: CompatibilityOptions = {}) {
 	if (process.platform === 'win32') throw new Error('The managed compatibility runner requires POSIX process groups.');
 	const { image } = resolveCompatibilityTarget({ servers: compatibilityTargets }, version, options.image);
 	const reference = options.reference;
-	const requestedReferenceVersion = options.referenceVersion || undefined;
-	const configuredReferenceVersion = Object.hasOwn(referenceCliVersions, version)
-		? referenceCliVersions[version]
-		: referenceCliVersion;
-	const expectedReferenceVersion = requestedReferenceVersion ?? configuredReferenceVersion ?? referenceCliVersion;
-	if (!/^\d+\.\d+\.\d+$/.test(expectedReferenceVersion)) {
-		throw new Error('--reference-version must be a semantic version such as 2026.1.0.');
-	}
+	let expectedReferenceVersion = options.referenceVersion;
+	if (expectedReferenceVersion !== undefined) assertStableVersion(expectedReferenceVersion);
 	const protocolOnly = options.protocolOnly ?? false;
 	const smtpEnabled = options.smtp ?? false;
 	const ssoEnabled = options.sso ?? false;
 	if (ssoEnabled && process.platform !== 'linux') {
 		throw new Error('The SSO fixture requires Linux.');
 	}
-	const compareReference = !protocolOnly && !smtpEnabled && !ssoEnabled
-		&& (configuredReferenceVersion !== null || requestedReferenceVersion !== undefined);
+	const compareReference = !protocolOnly && !smtpEnabled && !ssoEnabled;
 	if (!/^axllent\/mailpit@sha256:[a-f0-9]{64}$/.test(mailpitImage)) {
 		throw new Error('Mailpit must use a pinned digest.');
 	}
 	if (compareReference && (!reference || !isAbsolute(reference) || !(await stat(reference)).isFile())) {
 		throw new Error(
-			`--reference must name an absolute path to the independent bw ${expectedReferenceVersion} executable.`,
+			'--reference must name an absolute path to the independent bw executable; use --protocol-only to run without it.',
 		);
 	}
 	if (!Bun.which('envctl')) throw new Error('Compatibility runner requires envctl for Docker output redaction.');
@@ -77,6 +70,7 @@ export async function runCompatibility(options: CompatibilityOptions = {}) {
 	let oidcUrl: string | undefined, ssoServer: string | undefined;
 	const oidcControl = randomUUID();
 	let interrupted = false;
+	const cancellation = new AbortController();
 	const running = new Set<ChildProcess>();
 	const stopTests = () => {
 		for (const child of running) {
@@ -89,6 +83,7 @@ export async function runCompatibility(options: CompatibilityOptions = {}) {
 	};
 	const interrupt = () => {
 		interrupted = true;
+		cancellation.abort();
 		stopTests();
 	};
 	process.on('SIGINT', interrupt);
@@ -128,21 +123,27 @@ export async function runCompatibility(options: CompatibilityOptions = {}) {
 		return { code, output: redacted };
 	}
 	let exitCode: number | undefined;
+	const knownIncompatible = Symbol('known reference incompatibility');
 	try {
 		if (compareReference) {
 			const referenceVersion = Bun.spawn([reference!, '--version'], {
 				env: { PATH: process.env.PATH, BITWARDENCLI_APPDATA_DIR: directory },
 				stdout: 'pipe',
 				stderr: 'pipe',
+				timeout: 30000,
 			});
 			const [code, stdout] = await Promise.all([
 				referenceVersion.exited,
 				new Response(referenceVersion.stdout).text(),
 				new Response(referenceVersion.stderr).text(),
 			]);
-			if (code !== 0 || stdout.trim() !== expectedReferenceVersion) {
-				throw new Error(`Reference executable must be bw ${expectedReferenceVersion}.`);
+			if (code !== 0) throw new Error('Could not read the reference CLI version.');
+			const actual = stdout.trim();
+			assertStableVersion(actual);
+			if (expectedReferenceVersion !== undefined && actual !== expectedReferenceVersion) {
+				throw new Error(`Reference executable must be bw ${expectedReferenceVersion}; got ${actual}.`);
 			}
+			expectedReferenceVersion = actual;
 		}
 		const node = Bun.spawn(['node', '--version'], { env: { PATH: process.env.PATH }, stdout: 'pipe', stderr: 'pipe' });
 		const [nodeCode, nodeVersion] = await Promise.all([
@@ -162,9 +163,7 @@ export async function runCompatibility(options: CompatibilityOptions = {}) {
 				? 'SMTP suite: library and CLI login; no reference CLI required.'
 				: compareReference
 				? `Reference: ${reference} (${expectedReferenceVersion})`
-				: protocolOnly
-				? 'Protocol-only suite: CLI against Vaultwarden; independent bw comparison disabled.'
-				: `Reference comparison unavailable: bw ${expectedReferenceVersion} cannot parse Vaultwarden ${version}'s prelogin response. Running our protocol checks.`,
+				: 'Protocol-only suite: CLI against Vaultwarden; independent bw comparison disabled.',
 		);
 		if (smtpEnabled) {
 			const created = await docker(['network', 'create', network]);
@@ -298,6 +297,29 @@ export async function runCompatibility(options: CompatibilityOptions = {}) {
 		if (!actualVersion.ok || await actualVersion.json() !== version) {
 			throw new Error(`Disposable image does not report the planned Vaultwarden version ${version}.`);
 		}
+		if (compareReference) {
+			const expected = referenceIncompatibilities.find(entry =>
+				entry.server === version
+				&& entry.referenceCliVersion === expectedReferenceVersion
+			);
+			const result = await checkReferenceAuthentication({
+				server,
+				reference: reference!,
+				directory,
+				expected,
+				signal: cancellation.signal,
+			});
+			const summary = `Vaultwarden ${version} / bw ${expectedReferenceVersion}: ${
+				result === 'compatible'
+					? 'PBKDF2 and Argon2id login passed; running comparisons.'
+					: `Known incompatibility reproduced for both KDFs (${
+						expected!.error
+					}); reference comparisons unavailable. Server protocol checks run separately.`
+			}`;
+			console.log(summary);
+			if (process.env.GITHUB_STEP_SUMMARY) await appendFile(process.env.GITHUB_STEP_SUMMARY, `${summary}\n`);
+			if (result === 'known-incompatible') throw knownIncompatible;
+		}
 		const cwd = new URL('..', import.meta.url).pathname;
 		const env = {
 			PATH: process.env.PATH,
@@ -405,6 +427,9 @@ export async function runCompatibility(options: CompatibilityOptions = {}) {
 				}
 			}
 		}
+	} catch (error) {
+		if (error !== knownIncompatible) throw error;
+		exitCode = 0;
 	} finally {
 		stopTests();
 		if (oidc) {

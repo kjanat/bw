@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { runDirect, inDirectory, repoRoot } from '../../tools/runtime.mjs';
+import { runDirect, inDirectory, repoRoot } from '../runtime.mjs';
 
 export async function packRelease(packageId: 'vaultwarden' | 'cli') {
 	return inDirectory(repoRoot, async () => {

@@ -88,7 +88,7 @@ export async function verifySdk({ variant = 'p2', mode = 'default', optimization
 					overrides: { [sdkManifest.name]: `file:${archive}` },
 				}),
 			);
-			cpSync(join(repo, '.github/release/smoke.mjs'), join(consumer, 'smoke.mjs'));
+			cpSync(join(repo, 'tools/release/smoke.mjs'), join(consumer, 'smoke.mjs'));
 			cpSync(join(repo, 'apps/cli/test/fixtures/kdbx'), join(consumer, 'fixtures/kdbx'), { recursive: true });
 			run('bun', ['install', '--ignore-scripts'], consumer);
 			run(runtime, ['smoke.mjs'], consumer, { ...process.env, EXPECTED_SDK_VERSION: sdkManifest.version });

@@ -30,12 +30,14 @@ bun run format
 
 ## Compatibility tests
 
-Requires Docker, OpenSSH and `envctl`. For comparison with the Bitwarden CLI, pass its executable with `--reference`. Use the version specified in [compatibility-targets.json](apps/cli/test/fixtures/compatibility-targets.json).
+Requires Docker, OpenSSH and `envctl`. For comparison with the Bitwarden CLI, pass its executable with `--reference`. The runner reads its installed version; `--reference-version` additionally requires an exact match. Supported CI version floors and exact known incompatibilities are defined in [compatibility-targets.json](apps/cli/test/fixtures/compatibility-targets.json).
 
 ```sh
 bun run repo compat run --reference /absolute/path/to/bw
 bun run repo compat run --server-version 1.36.0 --reference /absolute/path/to/bw
 ```
+
+CI discovers every stable server and reference CLI release at or above those floors, including patch releases. Pull requests cover every server with the newest CLI and every CLI with the newest server. Nightly runs, master pushes and releases cover the complete product. Each server also gets independent protocol, email and SSO coverage. Workflow inputs use DreamCLI environment bindings directly; the same commands accept flags for interactive use.
 
 See [implementation status](docs/implementation-status.md) and [Vaultwarden compatibility notes](docs/vaultwarden-deviations.md).
 

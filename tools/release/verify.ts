@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { cp, mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runDirect, inDirectory, repoRoot } from '../../tools/runtime.mjs';
+import { runDirect, inDirectory, repoRoot } from '../runtime.mjs';
 
 export async function verifyRelease(runtime: 'node' | 'bun', previewMetadataPath?: string) {
 	return inDirectory(repoRoot, async () => {
