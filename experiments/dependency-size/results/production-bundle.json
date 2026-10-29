@@ -1,0 +1,96 @@
+{
+	"method": "All SDK exports and KDBX worker bundled separately; includes every shipped Brotli sidecar. Not a Bundlephobia measurement.",
+	"node": "v26.7.0",
+	"esbuild": "0.28.2",
+	"baseline": {
+		"archiveSha256": "02ff30a5644ea3e8798c0060eb8ef422749c36ac605964d95b812fbaefe1f6a0",
+		"allExports": {
+			"minified": 876368,
+			"gzip": 273250,
+			"brotli": 231417
+		},
+		"cryptoOnly": {
+			"minified": 314969,
+			"gzip": 114467,
+			"brotli": 98716
+		},
+		"worker": {
+			"minified": 253491,
+			"gzip": 77004,
+			"brotli": 65544
+		},
+		"sidecars": [
+			{
+				"file": "generated/password-strength.core.wasm.br",
+				"bytes": 639390,
+				"sha256": "5cf9e8e7022cbdf502524b4a644b4c7882ce028c5676e01158a962941b8e080c"
+			},
+			{
+				"file": "generated/password-strength.core2.wasm.br",
+				"bytes": 133,
+				"sha256": "e12f1df4bc423166b9e64017d9a75ffe47398e23c598ab39aef7fd6a2a5cf89b"
+			},
+			{
+				"file": "generated/password-strength.core3.wasm.br",
+				"bytes": 86,
+				"sha256": "79603b3976e5264278f27ce9f141ecd2dfa9fbc70db960ee28c7b033627bf731"
+			}
+		],
+		"sidecarBytes": 639609,
+		"totalGzip": 989863,
+		"totalBrotli": 936570
+	},
+	"candidate": {
+		"archiveSha256": "bccfafc1799de1cc75ae34c0c4d889b3c8ba1c030c3dd1477595682d19d8f2cb",
+		"allExports": {
+			"minified": 733173,
+			"gzip": 213939,
+			"brotli": 180238
+		},
+		"cryptoOnly": {
+			"minified": 216305,
+			"gzip": 75053,
+			"brotli": 64173
+		},
+		"worker": {
+			"minified": 253491,
+			"gzip": 77004,
+			"brotli": 65544
+		},
+		"sidecars": [
+			{
+				"file": "generated/html-entities.bin.br",
+				"bytes": 12645,
+				"sha256": "37b685cd6e16fea8d8d481964648f52d964bb2fb8c1b7807ac4abad9815a8f1f"
+			},
+			{
+				"file": "generated/password-strength.core.wasm.br",
+				"bytes": 638847,
+				"sha256": "665afba407fdde2c3f94c520e805ea488795bf544d8557db59e631cc7d8051d5"
+			},
+			{
+				"file": "generated/password-strength.core2.wasm.br",
+				"bytes": 133,
+				"sha256": "e12f1df4bc423166b9e64017d9a75ffe47398e23c598ab39aef7fd6a2a5cf89b"
+			},
+			{
+				"file": "generated/password-strength.core3.wasm.br",
+				"bytes": 86,
+				"sha256": "79603b3976e5264278f27ce9f141ecd2dfa9fbc70db960ee28c7b033627bf731"
+			},
+			{
+				"file": "generated/public-suffixes.bin.br",
+				"bytes": 36838,
+				"sha256": "a1d5677b625a97151271de2cc4015078c4fa4696c3e327a5b4e00b3307d1ac97"
+			}
+		],
+		"sidecarBytes": 688549,
+		"totalGzip": 979492,
+		"totalBrotli": 934331
+	},
+	"saved": {
+		"javascriptGzip": 59311,
+		"totalGzip": 10371,
+		"totalBrotli": 2239
+	}
+}

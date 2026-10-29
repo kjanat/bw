@@ -24,6 +24,8 @@ const {
 	decrypt,
 	deriveMasterKey,
 	encrypt,
+	matchesUri,
+	parseExternalCsv,
 	parseKdbx,
 	passwordHealth,
 	passwordStrength,
@@ -34,6 +36,24 @@ assert.equal(wasmCompilations, 0, 'SDK import must not compile WASM');
 assert.equal(SDK_VERSION, sdk.version);
 assert.equal(sdk.version, process.env.EXPECTED_SDK_VERSION);
 assert.ok(sdkUrl.href.startsWith(new URL('./node_modules/', import.meta.url).href));
+// Exercise both packed lookup tables, including PSL private rules and exceptions.
+for (
+	const [stored, target, expected] of [
+		['login.example.co.uk', 'example.co.uk', true],
+		['login.city.kawasaki.jp', 'city.kawasaki.jp', true],
+		['a.foo.kawasaki.jp', 'b.foo.kawasaki.jp', false],
+		['alice.github.io', 'bob.github.io', false],
+	]
+) {
+	assert.equal(await matchesUri({ uri: `https://${stored}` }, `https://${target}`), expected);
+}
+const htmlImport = parseExternalCsv(
+	'lastpasscsv',
+	'<!doctype html><html><body><pre>url,username,password,extra,name,grouping,fav\nhttps://example.com,alice,secret,&lt;notes&gt;,Tea &amp; Coffee,Personal,1</pre></body></html>',
+);
+assert.equal(htmlImport.items[0].name, 'Tea & Coffee');
+assert.equal(htmlImport.items[0].notes, '<notes>');
+assert.equal(htmlImport.items[0].login.password, 'secret');
 for (const [command, expected] of [['--version', cli.version], ['sdk-version', sdk.version]]) {
 	const output = execFileSync(process.execPath, [resolve('node_modules/.bin/vw'), command], { encoding: 'utf8' });
 	assert.equal(output.trim(), expected);

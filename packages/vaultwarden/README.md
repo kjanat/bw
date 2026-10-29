@@ -10,6 +10,11 @@ or the [Vaultwarden project](https://github.com/dani-garcia/vaultwarden).
 
 Requires Node.js 24.8.0+. This package does not invoke the Bitwarden CLI.
 
+The distribution includes compressed WASM, public-suffix and HTML-entity data
+under `dist/generated/`. Custom bundlers must copy these runtime assets next to
+the generated JavaScript, preserving the `generated/` directory. The lookup
+tables are decoded locally when their modules initialize; no network fetch is used.
+
 ## Install
 
 ```sh

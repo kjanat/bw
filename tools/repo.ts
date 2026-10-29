@@ -225,6 +225,28 @@ export function createRepoCLI(direct: Record<string, unknown> = {}) {
 						),
 				),
 		)
+		.command(
+			group('bundle').description('Measure installed SDK bundles including all runtime assets')
+				.command(
+					command('compare').description('Compare two SDK tarballs with identical Node/esbuild settings')
+						.flag('baseline', flag.path({ type: 'file' }).required())
+						.flag('candidate', flag.path({ type: 'file' }).required())
+						.flag('output', flag.path({ type: 'file', mustExist: false }))
+						.action(async ({ flags }) => {
+							const args = ['--baseline', resolve(flags.baseline), '--candidate', resolve(flags.candidate)];
+							if (flags.output) args.push('--output', resolve(flags.output));
+							if (process.versions.bun) {
+								runScript('node', 'tools/bundle-size.ts', args);
+								return;
+							}
+							await (await load('./bundle-size.ts', () => import('./bundle-size.ts'))).compareBundles({
+								baseline: resolve(flags.baseline),
+								candidate: resolve(flags.candidate),
+								output: flags.output ? resolve(flags.output) : undefined,
+							});
+						}),
+				),
+		)
 		.command(release)
 		.command(
 			group('compat').description('Disposable Vaultwarden compatibility runs')

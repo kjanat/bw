@@ -8,6 +8,7 @@ import { repoRoot } from './runtime.mjs';
 
 const entrypoints = [
 	'tools/repo.ts',
+	'tools/bundle-size.ts',
 	'.github/release/pack.ts',
 	'.github/release/preview.ts',
 	'.github/release/verify.ts',

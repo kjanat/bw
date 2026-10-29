@@ -1,11 +1,19 @@
 {
 	"extends": "@vw/typescript-config/base.json",
 	"compilerOptions": {
-		"types": ["bun"],
+		"types": [
+			"bun"
+		],
 		"rootDir": ".",
 		"declarationMap": false,
 		"noUnusedLocals": true,
-		"noUnusedParameters": true
+		"noUnusedParameters": true,
+		"allowImportingTsExtensions": true
 	},
-	"include": ["src/**/*.ts", "test/**/*.ts", "wasm/build.ts"]
+	"include": [
+		"src/**/*.ts",
+		"test/**/*.ts",
+		"wasm/build.ts",
+		"build-plugins/**/*.ts"
+	]
 }

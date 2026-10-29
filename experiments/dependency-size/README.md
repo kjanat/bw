@@ -1,6 +1,6 @@
 # Dependency size probes for vw 0.1.2
 
-These are isolated functional slices, not a prediction of the full SDK Bundlephobia result. Production source and dependencies were not changed.
+These are isolated functional slices, not a prediction of the full SDK Bundlephobia result. The initial probes did not change production source or dependencies. The lossless table approach has since been integrated into the production build; see [the SDK comparison](../../docs/bundle-size.md).
 
 All JavaScript was bundled with esbuild 0.28.2, minified for Node 24, compressed with gzip level 9 or Brotli quality 11. External files use Brotli quality 11, matching the existing WASM distribution approach. The totals include external files; they are not simply the initial JavaScript download. The all-Brotli column provides the fairer compression-to-compression comparison.
 

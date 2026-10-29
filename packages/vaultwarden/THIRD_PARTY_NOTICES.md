@@ -27,9 +27,21 @@ shim is bundled; the SDK supplies only the scorer's required host capabilities.
 
 ## tldts
 
-URI domain and hostname parsing uses the npm dependency
+URI domain and hostname parsing bundles
 [`tldts` 7.4.19](https://github.com/remusao/tldts), licensed under MIT.
-Its package includes its license notice and Public Suffix List data attribution.
+The complete MIT notices for tldts and tldts-core are included in
+`dist/THIRD_PARTY_JAVASCRIPT_LICENSES.txt`. Its lookup tables are derived from the
+[Public Suffix List](https://publicsuffix.org/). The build stores the exact table
+values as a Brotli-compressed binary asset; the upstream lookup algorithm is unchanged.
+
+## parse5 and entities
+
+LastPass HTML exports are parsed with the bundled MIT-licensed
+[parse5](https://github.com/inikulin/parse5) and
+[entities](https://github.com/fb55/entities) packages. Their complete license notices
+are included in `dist/THIRD_PARTY_JAVASCRIPT_LICENSES.txt`. The HTML entity table is
+stored losslessly as a Brotli-compressed binary asset; HTML parsing and entity
+decoding still use the upstream implementations.
 
 ## @xmldom/xmldom
 
