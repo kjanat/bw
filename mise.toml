@@ -7,7 +7,7 @@ rust = { version = "1.99.1", profile = "minimal", targets = ["wasm32-wasip2", "w
 tombi = "latest"
 "github:kjanat/dprint" = "latest"
 "github:kjanat/envctl" = "latest"
-"npm:@bitwarden/cli" = "2026.10.0"
+"npm:@bitwarden/cli" = "2026.10.1"
 
 [tools."github:WebAssembly/binaryen"]
 version = "133"
