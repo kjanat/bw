@@ -16,6 +16,9 @@
 		"test:compat": "turbo run test:compat",
 		"typecheck": "turbo run typecheck"
 	},
+	"overrides": {
+		"@xmldom/xmldom": "catalog:"
+	},
 	"devDependencies": {
 		"pkg-pr-new": "0.0.92",
 		"turbo": "^2.11.10",

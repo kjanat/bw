@@ -684,10 +684,11 @@ export function createApp(directory = dataDirectory()) {
 	let helpApp: ReturnType<typeof cli>;
 	const versions = versionCommands();
 	const app = cli('vw')
+		.manifest(CLI_PACKAGE)
+		.links()
 		.envPrefix()
 		.plugin(outputPolicyPlugin())
 		.plugin(accountAccessPlugin(directory))
-		.version(CLI_PACKAGE.version)
 		.description('A Vaultwarden-first client')
 		.command(deviceApprovalCommand(async commandName => {
 			const target = ['list', 'approve', 'approve-all', 'deny', 'deny-all'].includes(commandName ?? '')
