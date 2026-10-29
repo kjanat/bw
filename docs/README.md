@@ -4,6 +4,9 @@ An independent client with an explicit commitment to Vaultwarden compatibility.
 The TypeScript library implements the protocol and cryptography; a DreamCLI
 frontend supplies commands and local state. Neither package invokes `bw`.
 
+This project is not affiliated with or endorsed by [Dani Garcia](https://github.com/dani-garcia)
+or the [Vaultwarden project](https://github.com/dani-garcia/vaultwarden).
+
 See [intentional accommodations for Vaultwarden](vaultwarden-deviations.md) for
 the differences from the Bitwarden reference, their server/version conditions,
 and the source and test evidence for each.
@@ -425,6 +428,9 @@ History and binary attachments are outside the reference KDBX import mapping.
 Decoding runs in an isolated worker; input size, group depth, KDF work and runtime
 are bounded as documented in the compatibility notes. `bun install` applies a
 decoder patch that prevents tabs in unprotected text from becoming spaces.
+
+For a dedicated KeePass-to-Bitwarden migration tool, see also
+[kp2bw](https://github.com/kjanat/kp2bw).
 
 ZIP backups use the Bitwarden `data.json` and sanitized attachment-path layout.
 Final attachment paths are unique, even when generated suffixes collide with

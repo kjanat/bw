@@ -6,6 +6,9 @@ An independent command-line client for Vaultwarden. The executable is `vw`.
 It uses the [@kjanat/vaultwarden SDK](https://www.npmjs.com/package/@kjanat/vaultwarden)
 directly and does not invoke the Bitwarden CLI.
 
+This project is not affiliated with or endorsed by [Dani Garcia](https://github.com/dani-garcia)
+or the [Vaultwarden project](https://github.com/dani-garcia/vaultwarden).
+
 Requires Node.js 24.8.0+.
 
 ## Run or install

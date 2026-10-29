@@ -7,6 +7,10 @@
 An independent TypeScript client built for Vaultwarden, with a reusable library
 and a command-line frontend built on `@kjanat/dreamcli`.
 
+This project is not affiliated with or endorsed by [Dani Garcia](https://github.com/dani-garcia)
+or the [Vaultwarden project](https://github.com/dani-garcia/vaultwarden).
+If Dani would like to take over this project, I'm happy to hand it over.
+
 | Package                                                 | Version                                                                                                                                               | Purpose                                                                              |
 | ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
 | [`@kjanat/vaultwarden`](packages/vaultwarden/README.md) | [![NPM Version](https://img.shields.io/npm/v/@kjanat/vaultwarden?logo=npm&labelColor=CB3837&color=black)](https://npm.im/@kjanat/vaultwarden)         | Authentication, protocol, cryptography, vault management, generation, and transfers. |
@@ -144,7 +148,7 @@ Implementation details and known Vaultwarden differences are in
 - [x] Import GNOME Passwords JSON.
 - [x] Import Kaspersky TXT.
 - [x] Import KeePass 2 XML.
-- [x] Import KeePass KDBX.
+- [x] Import KeePass KDBX. See also [kp2bw](https://github.com/kjanat/kp2bw).
 - [x] Import KeePassXC CSV.
 - [ ] Import generic Keeper export.
 - [x] Import Keeper CSV.

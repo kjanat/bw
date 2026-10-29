@@ -5,6 +5,9 @@
 An independent TypeScript SDK for Vaultwarden: authentication, cryptography,
 vault operations, password generation, imports, exports, and Sends.
 
+This project is not affiliated with or endorsed by [Dani Garcia](https://github.com/dani-garcia)
+or the [Vaultwarden project](https://github.com/dani-garcia/vaultwarden).
+
 Requires Node.js 24.8.0+. This package does not invoke the Bitwarden CLI.
 
 ## Install
