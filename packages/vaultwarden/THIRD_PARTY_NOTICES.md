@@ -14,11 +14,16 @@ Original file SHA256: `addd35536511597a02fa0a9ff1e5284677b8883b83e986e43f15a3db9
 
 Password-strength estimation bundles [`zxcvbn` 3.1.1](https://crates.io/crates/zxcvbn),
 the MIT-licensed Rust port by Joshua Holmer of Dropbox's zxcvbn, as WebAssembly.
-The score-only wrapper uses wasm-bindgen; Rust dependencies are pinned in
-`wasm/Cargo.lock`. The published SDK includes their complete license texts in
-`dist/THIRD_PARTY_NOTICES.txt`. The client supplies login-specific context and
+The score-only WASIp2 wrapper uses wit-bindgen and Jco-generated JavaScript
+bindings (Apache-2.0 WITH LLVM-exception). Rust dependencies are pinned in
+`wasm/Cargo.lock`. The published SDK includes their complete license texts and
+the Jco binding-generator license in `dist/THIRD_PARTY_NOTICES.txt`.
+`wasm/zxcvbn-wasi.patch` modifies zxcvbn's platform selection so WASI uses native
+clocks and the UTC reference year instead of JavaScript-specific imports.
+The client supplies login-specific context and
 bounds the scored input to 100 Unicode characters. The module is Brotli-compressed
-on disk and initialized locally on the first strength check.
+on disk and initialized locally on the first strength check. No general WASI
+shim is bundled; the SDK supplies only the scorer's required host capabilities.
 
 ## tldts
 

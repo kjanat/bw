@@ -29,18 +29,24 @@ if (previewMetadataPath) {
 const consumerRoot = resolve('.cache');
 await mkdir(consumerRoot, { recursive: true });
 const consumer = await mkdtemp(resolve(consumerRoot, 'vw-package-consumer-'));
+const sdk = JSON.parse(await readFile(resolve(workspaces.vaultwarden, 'package.json'), 'utf8')) as {
+	name: string;
+	version: string;
+};
 await writeFile(
 	resolve(consumer, 'package.json'),
 	JSON.stringify({
 		private: true,
 		type: 'module',
 		dependencies,
+		// A same-version registry SDK can otherwise satisfy the CLI's dependency
+		// independently of the direct file dependency. Test the packed SDK everywhere.
+		...(!previewMetadataPath ? { overrides: { [sdk.name]: packages[sdk.name] } } : {}),
 	}),
 );
 await cp(fileURLToPath(new URL('./smoke.mjs', import.meta.url)), resolve(consumer, 'smoke.mjs'));
 await cp(resolve('apps/cli/test/fixtures/kdbx'), resolve(consumer, 'fixtures/kdbx'), { recursive: true });
 execFileSync('bun', ['install', '--ignore-scripts'], { cwd: consumer, stdio: 'inherit' });
-const sdk = JSON.parse(await readFile(resolve(workspaces.vaultwarden, 'package.json'), 'utf8')) as { version: string };
 execFileSync(runtime, ['smoke.mjs'], {
 	cwd: consumer,
 	stdio: 'inherit',

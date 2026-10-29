@@ -54,7 +54,7 @@ run('cargo', [
 	'build',
 	'--locked',
 	'--manifest-path',
-	'../../packages/vaultwarden/wasm/Cargo.toml',
+	'core-wasm/Cargo.toml',
 	'--target',
 	'wasm32-unknown-unknown',
 	'--target-dir',

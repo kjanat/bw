@@ -4,7 +4,7 @@
 	"tasks": {
 		"build": {
 			"dependsOn": ["^build"],
-			"outputs": ["dist/**", "src/generated/**", "src/password-strength.wasm.br", "wasm/THIRD_PARTY_NOTICES.txt"],
+			"outputs": ["dist/**", "src/generated/**", "wasm/THIRD_PARTY_NOTICES.txt"],
 			"inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/mise.toml"],
 			"env": ["RUSTUP_TOOLCHAIN", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"],
 			"passThroughEnv": ["CARGO_HOME", "RUSTUP_HOME"]

@@ -54,6 +54,7 @@
 	"devDependencies": {
 		"@babel/eslint-parser": "catalog:",
 		"@babel/preset-typescript": "catalog:",
+		"@bytecodealliance/jco": "1.40.0",
 		"@eslint/js": "catalog:",
 		"@types/bun": "catalog:",
 		"@types/lunr": "catalog:",

@@ -10,7 +10,7 @@ bun install --frozen-lockfile
 bun run build
 ```
 
-The SDK build compiles its password-strength estimator from Rust to WebAssembly. `mise install` provides the pinned Rust toolchain, WASM target, and matching wasm-bindgen CLI. npm consumers use the prebuilt asset and need no Rust tools. See [WASM build details](packages/vaultwarden/wasm/README.md).
+The SDK build compiles its password-strength estimator to WASIp2. `mise install` provides the pinned Rust toolchain, WASI target, and Binaryen optimizer; Bun installs Jco for JavaScript bindings. The build also uses `tar` and `patch` to apply a verified upstream compatibility patch. npm consumers use prebuilt assets and need no Rust or WASI runtime installation. See [WASM build details](packages/vaultwarden/wasm/README.md).
 
 ## Packages
 

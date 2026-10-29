@@ -10,6 +10,14 @@ import cli from '@kjanat/vaultwarden-cli/package.json' with { type: 'json' };
 const requireFromCli = createRequire(import.meta.resolve('@kjanat/vaultwarden-cli/package.json'));
 const sdkUrl = pathToFileURL(requireFromCli.resolve('@kjanat/vaultwarden'));
 const sdk = requireFromCli('@kjanat/vaultwarden/package.json');
+const OriginalModule = WebAssembly.Module;
+let wasmCompilations = 0;
+WebAssembly.Module = new Proxy(OriginalModule, {
+	construct(target, args) {
+		wasmCompilations++;
+		return Reflect.construct(target, args);
+	},
+});
 const {
 	SDK_VERSION,
 	VaultwardenClient,
@@ -21,6 +29,7 @@ const {
 	passwordStrength,
 	stretchKey,
 } = await import(sdkUrl.href);
+assert.equal(wasmCompilations, 0, 'SDK import must not compile WASM');
 
 assert.equal(SDK_VERSION, sdk.version);
 assert.equal(sdk.version, process.env.EXPECTED_SDK_VERSION);
@@ -33,6 +42,8 @@ for (const [command, expected] of [['--version', cli.version], ['sdk-version', s
 const password = '67t9b5g67$%Dh89n';
 // Exercise the packaged WASM asset under every consumer runtime, with no network.
 assert.equal(passwordStrength('password'), 0);
+const scorerCompilations = wasmCompilations;
+assert(scorerCompilations > 0, 'The first score must initialize WASM');
 assert.equal(passwordStrength('VeryStrong123@#'), 4);
 assert.equal(passwordStrength('asdfjkhkjwer!', 'ASDFJKHKJWER@example.test'), 1);
 assert.equal(passwordStrength('🔑'.repeat(100) + 'NeverScored'), passwordStrength('🔑'.repeat(100)));
@@ -41,6 +52,8 @@ const health = await passwordHealth([
 ], { checkExposed: false });
 assert.equal(health[0].passwordStrength, 0);
 assert.equal(health[0].exposed, false);
+assert.equal(wasmCompilations, scorerCompilations, 'Repeated scores reuse the component');
+WebAssembly.Module = OriginalModule;
 for (
 	const [kdf, expected] of [
 		[{ type: 0, iterations: 10000 }, '1f4f68e29647b15ac250acd1118184518aa745a7fe95021b27c5402a16c3564b'],

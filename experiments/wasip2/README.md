@@ -1,8 +1,10 @@
 # WASIp2 password-strength experiment
 
-The WASIp2 implementation works in the existing SDK and CLI under Node and Bun.
-This directory contains an isolated prototype; the SDK's default remains the
-`wasm32-unknown-unknown` implementation.
+This directory preserves the experiment that led to the SDK's WASIp2 backend.
+The original `wasm32-unknown-unknown` wrapper is retained in `core-wasm/` so the
+comparison remains reproducible. The tables below describe the historical
+prototype builds, not the current release artifact. See the
+[production build](../../packages/vaultwarden/wasm/README.md) for current behavior.
 
 ## What changes
 
@@ -53,10 +55,11 @@ The build downloads the exact published crate, verifies its crates.io SHA-256,
 and applies the patch to an ignored local vendor directory. The production crate
 and Cargo cache sources are not modified.
 
-One semantic difference needs attention before adoption: the native path uses
+One semantic difference identified during the experiment: the native path uses
 the UTC year, whereas the JavaScript path uses the local year. They can disagree
 near New Year; the corpus verifies matching scores at the test date, not every
-timezone/year boundary.
+timezone/year boundary. The production implementation explicitly adopts UTC
+and adds regression tests across the boundary and multiple host timezones.
 
 ## Reproduce
 
@@ -103,23 +106,30 @@ These temporary archives are test artifacts, not release candidates. In
 particular, the integration fixture reuses the existing SDK notices; a production
 migration must generate notices for the added component-toolchain dependencies.
 
+The original consumer smoke results below predate an explicit SDK override in
+the installation fixture: the CLI could resolve a published SDK of the same
+version. Those historical success flags alone do not establish which SDK was
+executed. Package-size measurements and direct backend/report tests are
+unaffected. The corrected verifier forces the local SDK archive throughout the
+dependency tree; production consumer checks also assert lazy WASM compilation.
+
 ## Measurements
 
 Recorded on 2026-10-29, Linux ARM64, Node 26.7.0 and Bun 1.4.4. See
 `measurements.json` for exact values. Sizes below use decimal units.
 
-| Measurement                                     | Current core-WASM backend | WASIp2 prototype |
-| ----------------------------------------------- | ------------------------: | ---------------: |
-| Runtime JS and compressed WASM assets           |                  637.2 KB |         762.4 KB |
-| Sum of gzip-compressed runtime files            |                  634.9 KB |         672.3 KB |
-| Complete SDK tarball                            |           1,131,712 bytes |  1,213,090 bytes |
-| Complete SDK unpacked                           |           2,976,197 bytes |  3,358,159 bytes |
-| Node module import                              |                   5.55 ms |         13.01 ms |
-| Node first score, including WASM initialization |                 116.21 ms |        109.34 ms |
-| Node warm score                                 |                  0.558 ms |         0.671 ms |
-| Bun module import                               |                   8.03 ms |         10.11 ms |
-| Bun first score, including WASM initialization  |                  94.81 ms |        105.13 ms |
-| Bun warm score                                  |                  0.605 ms |         0.675 ms |
+| Measurement                                     | Original core-WASM backend | WASIp2 prototype |
+| ----------------------------------------------- | -------------------------: | ---------------: |
+| Runtime JS and compressed WASM assets           |                   637.2 KB |         762.4 KB |
+| Sum of gzip-compressed runtime files            |                   634.9 KB |         672.3 KB |
+| Complete SDK tarball                            |            1,131,712 bytes |  1,213,090 bytes |
+| Complete SDK unpacked                           |            2,976,197 bytes |  3,358,159 bytes |
+| Node module import                              |                    5.55 ms |         13.01 ms |
+| Node first score, including WASM initialization |                  116.21 ms |        109.34 ms |
+| Node warm score                                 |                   0.558 ms |         0.671 ms |
+| Bun module import                               |                    8.03 ms |         10.11 ms |
+| Bun first score, including WASM initialization  |                   94.81 ms |        105.13 ms |
+| Bun warm score                                  |                   0.605 ms |         0.675 ms |
 
 The complete SDK download grows by 81,378 bytes (7.2%). Most additional runtime
 code is Jco's generated JavaScript: 115,138 bytes versus 2,901 bytes for the
@@ -154,7 +164,7 @@ are unchanged by JavaScript minification and remain separately Brotli-compressed
 
 All four minification builds passed the nine report tests and installed SDK/CLI
 consumer checks under Node and Bun. These options are confined to the experiment;
-the normal SDK build configuration is unchanged.
+these historical measurements predate their adoption in the normal SDK build.
 
 ### Binaryen wasm-opt
 
@@ -198,7 +208,7 @@ with `-Oz --converge`, saving 8,052 bytes (1.0%). P2 with `-Os` is 822,856 bytes
 All three packaged candidates passed the nine report tests and installed SDK/CLI
 smoke checks under Node and Bun. These are size and correctness results; runtime
 timings in the table above were measured before wasm-opt and have not been rerun.
-The default SDK build still does not run wasm-opt.
+The production SDK now uses the converged `-Oz` pipeline as well.
 
 Timings are medians of five fresh processes per variant and runtime, alternating
 variant order. Warm timings average 512 calls after 64 warmup calls. These are
@@ -219,9 +229,10 @@ Verification passed:
   login, and sync.
 
 This makes P2 a practical portability option at a measured size/performance cost.
-Before adopting it, resolve the platform patch and year semantics, regenerate
-license notices, and exercise the supported Node/architecture matrix. The
-experiment does not change the release workflow or the default SDK backend.
+The production migration applies the verified platform patch, documents and
+tests UTC year semantics, and generates the added dependency notices. The
+existing consumer CI matrix covers Node versions and architectures; the
+measurements here remain local Linux ARM64 results.
 
 References: [Rust components](https://component-model.bytecodealliance.org/language-support/building-a-simple-component/rust.html),
 [Jco transpilation and synchronous instantiation](https://bytecodealliance.github.io/jco/transpiling.html),

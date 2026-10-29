@@ -44,7 +44,8 @@
 		"warmupCalls": 64,
 		"timedCalls": 512,
 		"correctnessCasesPerRuntime": 258,
-		"date": "2026-10-29"
+		"date": "2026-10-29",
+		"historicalConsumerSmokeNote": "Original consumer success flags predate the explicit local SDK override; the CLI could resolve a published same-version SDK. Sizes and direct backend/report tests are unaffected."
 	},
 	"sdk": {
 		"baseline": {

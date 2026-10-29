@@ -31,7 +31,9 @@ cpSync(join(repo, 'bun.lock'), join(work, 'bun.lock'));
 cpSync(source, sdk, {
 	recursive: true,
 	filter: path =>
-		!relative(source, path).split('/').some(part => ['node_modules', 'dist', 'target', '.turbo'].includes(part)),
+		!relative(source, path).split('/').some(part =>
+			['node_modules', 'dist', 'target', 'vendor', '.cache', '.turbo'].includes(part)
+		),
 });
 symlinkSync(join(source, 'node_modules'), join(sdk, 'node_modules'), 'dir');
 if (mode === 'minified-no-maps') {
@@ -82,6 +84,7 @@ for (const runtime of ['node', 'bun']) {
 				[sdkManifest.name]: `file:${archive}`,
 				[cliManifest.name]: `file:${cliArchive}`,
 			},
+			overrides: { [sdkManifest.name]: `file:${archive}` },
 		}),
 	);
 	cpSync(join(repo, '.github/release/smoke.mjs'), join(consumer, 'smoke.mjs'));
