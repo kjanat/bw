@@ -13,6 +13,7 @@
 		"type": "github",
 		"url": "https://github.com/sponsors/kjanat"
 	},
+	"license": "PolyForm-Noncommercial-1.0.0",
 	"type": "module",
 	"imports": {
 		"#test/*": "./test/*.ts",
@@ -24,6 +25,7 @@
 		"./package.json": "./package.json"
 	},
 	"files": [
+		"LICENSE",
 		"README.md",
 		"THIRD_PARTY_NOTICES.md",
 		"dist"

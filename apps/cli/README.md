@@ -47,5 +47,13 @@ For direct TypeScript integration, use the
 
 [Sponsor on GitHub](https://github.com/sponsors/kjanat).
 
+## License
+
+Source-available under the [PolyForm Noncommercial License 1.0.0](https://github.com/kjanat/vw/blob/master/LICENSE).
+Noncommercial use is free, including the personal uses and organizations
+specified in the license.
+
+Commercial use is permitted with [sponsorship](https://github.com/sponsors/kjanat).
+
 Report vulnerabilities through the repository's
 [security policy](https://github.com/kjanat/vw/security/policy).

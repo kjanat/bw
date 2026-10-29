@@ -50,5 +50,15 @@ npx @kjanat/vaultwarden-cli
 
 [Sponsor on GitHub](https://github.com/sponsors/kjanat).
 
+## License
+
+Source-available under the [PolyForm Noncommercial License 1.0.0](https://github.com/kjanat/vw/blob/master/LICENSE).
+Noncommercial use is free, including the personal uses and organizations
+specified in the license.
+
+Commercial use is permitted with [sponsorship](https://github.com/sponsors/kjanat).
+
+[Third-party notices](https://github.com/kjanat/vw/blob/master/packages/vaultwarden/THIRD_PARTY_NOTICES.md).
+
 Report vulnerabilities through the repository's
 [security policy](https://github.com/kjanat/vw/security/policy).

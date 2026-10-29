@@ -1,7 +1,12 @@
 [tools]
 bun = "latest"
 crane = "latest"
-"github:kjanat/dprint" = "latest"
-"github:kjanat/shellcheck-rs" = "latest"
 node = "26"
 tombi = "latest"
+"github:kjanat/dprint" = "latest"
+"github:kjanat/envctl" = "latest"
+"npm:@bitwarden/cli" = "2026.10.0"
+
+[tools."github:kjanat/shellcheck-rs"]
+version = "latest"
+asset_pattern = 'rshellcheck-*-{{ arch(x64="x86_64", arm64="aarch64") }}-{{ os(linux="unknown-linux-musl", macos="apple-darwin", windows="pc-windows-msvc") }}.*'

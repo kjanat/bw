@@ -12,8 +12,6 @@ and a command-line frontend built on `@kjanat/dreamcli`.
 | [`@kjanat/vaultwarden`](packages/vaultwarden/README.md) | [![NPM Version](https://img.shields.io/npm/v/@kjanat/vaultwarden?logo=npm&labelColor=CB3837&color=black)](https://npm.im/@kjanat/vaultwarden)         | Authentication, protocol, cryptography, vault management, generation, and transfers. |
 | [`@kjanat/vaultwarden-cli`](apps/cli/README.md)         | [![NPM Version](https://img.shields.io/npm/v/@kjanat/vaultwarden-cli?logo=npm&labelColor=CB3837&color=black)](https://npm.im/@kjanat/vaultwarden-cli) | The `vw` executable, encrypted local cache, and unlock sessions.                     |
 
-`packages/typescript-config` contains shared compiler settings.
-
 Requires Node.js 24.8.0+.
 
 Run the CLI without a global installation using either form:
@@ -45,38 +43,19 @@ For direct TypeScript integration, install the
 npm install @kjanat/vaultwarden
 ```
 
-Development checks:
-
-```sh
-bun run typecheck
-bun run lint
-bun run test
-bun run format
-```
-
-Formatting uses the project's dprint configuration.
-
-Run the managed disposable-server checks with Docker, OpenSSH and
-`envctl` installed:
-
-```sh
-VW_TEST_BW=/absolute/path/to/bw bun run test:compat
-VW_TEST_VERSION=1.36.0 bun run test:compat
-```
-
-The current-server comparison requires independent `bw` 2026.10.0. The older
-server runs our protocol checks; that reference CLI cannot parse its prelogin
-response. The runner uses immutable images, creates an ephemeral loopback server,
-and removes it afterward. CI's planner combines the pinned baseline servers with
-the latest stable Vaultwarden release, deduplicates versions, resolves any new
-release to an image digest, and emits the JSON matrix for Node 24/26.
-
 See the [usage guide](docs/README.md), [implementation status](docs/implementation-status.md),
-and [Vaultwarden accommodations](docs/vaultwarden-deviations.md) for supported
-commands, compatibility behavior, real-server tests, and outstanding work.
-The implementation is in progress against the full CLI scope.
-The [Vaultwarden accommodations inventory](docs/vaultwarden-deviations.md) explains
-intentional differences from Bitwarden and the production rules that select them.
+[Vaultwarden compatibility notes](docs/vaultwarden-deviations.md),
+and [contributing guide](CONTRIBUTING.md).
+
+## License
+
+Source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE).
+Noncommercial use is free, including the personal uses and organizations
+specified in the license.
+
+Commercial use is permitted with [sponsorship](https://github.com/sponsors/kjanat).
+
+[Third-party notices](packages/vaultwarden/THIRD_PARTY_NOTICES.md).
 
 ## Feature checklist
 
