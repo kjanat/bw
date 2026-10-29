@@ -1,0 +1,13 @@
+{
+	"extends": "../packages/typescript-config/base.json",
+	"compilerOptions": {
+		"noEmit": true,
+		"allowJs": true,
+		"checkJs": false,
+		"allowImportingTsExtensions": true,
+		"module": "Preserve",
+		"moduleResolution": "Bundler",
+		"types": ["bun"]
+	},
+	"include": ["*.ts"]
+}

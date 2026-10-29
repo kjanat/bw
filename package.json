@@ -2,6 +2,7 @@
 	"name": "vw",
 	"private": true,
 	"license": "PolyForm-Noncommercial-1.0.0",
+	"type": "module",
 	"workspaces": [
 		"apps/*",
 		"packages/*"
@@ -12,14 +13,19 @@
 		"format": "dprint fmt",
 		"lint": "turbo run lint",
 		"pkg-pr-new": "pkg-pr-new publish --bun --packageManager=bun --commentWithSha --json artifacts/preview.json './.cache/pkg-pr-new/*'",
-		"test": "turbo run test",
+		"repo": "bun tools/repo.ts",
+		"test": "bun run test:repo && turbo run test",
 		"test:compat": "turbo run test:compat",
-		"typecheck": "turbo run typecheck"
+		"test:repo": "bun test tools",
+		"typecheck": "bun run typecheck:repo && turbo run typecheck",
+		"typecheck:repo": "tsc --noEmit -p tools/tsconfig.json"
 	},
 	"overrides": {
 		"@xmldom/xmldom": "catalog:"
 	},
 	"devDependencies": {
+		"@kjanat/dreamcli": "catalog:",
+		"@types/bun": "catalog:",
 		"baseline-browser-mapping": "^2.11.34",
 		"pkg-pr-new": "0.0.92",
 		"turbo": "^2.11.10",

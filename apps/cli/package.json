@@ -43,7 +43,7 @@
 		"dev": "bun src/main.ts",
 		"lint": "eslint src test",
 		"test": "bun test",
-		"test:compat": "bun test/run-compatibility.ts",
+		"test:compat": "bun ../../tools/repo.ts compat run",
 		"typecheck": "tsc --noEmit"
 	},
 	"dependencies": {

@@ -3,11 +3,11 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
-		"benchmark": "node benchmark.mjs",
-		"build": "bun build.mjs",
-		"optimize": "node optimize.mjs",
-		"test": "node verify.mjs && bun verify.mjs",
-		"test:sdk": "node verify-sdk.mjs"
+		"benchmark": "bun ../../tools/repo.ts experiment wasip2 benchmark",
+		"build": "bun ../../tools/repo.ts experiment wasip2 build",
+		"optimize": "bun ../../tools/repo.ts experiment wasip2 optimize",
+		"test": "bun ../../tools/repo.ts experiment wasip2 test",
+		"test:sdk": "bun ../../tools/repo.ts experiment wasip2 verify-sdk"
 	},
 	"devDependencies": {
 		"@bytecodealliance/jco": "1.40.0"

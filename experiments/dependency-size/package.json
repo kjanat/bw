@@ -3,9 +3,9 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
-		"build": "node build.mjs",
-		"build:js": "node probe.mjs",
-		"test": "node parity.mjs && bun parity.mjs && node verify-recorded.mjs"
+		"build": "bun ../../tools/repo.ts experiment sizes build",
+		"build:js": "bun ../../tools/repo.ts experiment sizes build --js-only",
+		"test": "bun ../../tools/repo.ts experiment sizes test"
 	},
 	"devDependencies": {
 		"@bytecodealliance/jco": "1.40.0",

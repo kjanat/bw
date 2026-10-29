@@ -5,6 +5,8 @@
     "": {
       "name": "bw",
       "devDependencies": {
+        "@kjanat/dreamcli": "catalog:",
+        "@types/bun": "catalog:",
         "baseline-browser-mapping": "^2.11.34",
         "pkg-pr-new": "0.0.92",
         "turbo": "^2.11.10",

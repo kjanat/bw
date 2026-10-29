@@ -48,9 +48,10 @@ jobs:
         with: { ref: "${{ inputs.ref || github.sha }}", persist-credentials: false }
       - name: Install tools from mise.toml
         uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+      - run: bun install --frozen-lockfile --ignore-scripts
       - name: Discover releases and deduplicate pinned and current targets
         id: matrix
-        run: bun apps/cli/test/plan-compatibility.ts
+        run: bun run repo compat plan
 
   compatibility:
     name: Vaultwarden ${{ matrix.server }} / ${{ matrix.reference && format('bw {0}', matrix.referenceCliVersion) || 'protocol' }}
@@ -62,9 +63,9 @@ jobs:
       matrix: ${{ fromJSON(needs.planner.outputs.matrix) }}
     env:
       MISE_NODE_VERSION: ${{ matrix.node }}
-      VW_TEST_VERSION: ${{ matrix.server }}
-      VW_TEST_IMAGE: ${{ matrix.image }}
-      VW_TEST_BW_VERSION: ${{ matrix.referenceCliVersion || '' }}
+      SERVER_VERSION: ${{ matrix.server }}
+      SERVER_IMAGE: ${{ matrix.image }}
+      REFERENCE_VERSION: ${{ matrix.referenceCliVersion || '' }}
     steps:
       - parallel:
           - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -82,14 +83,16 @@ jobs:
       - run: runner install --no-tools --frozen
       - name: Exercise both KDFs, transfers, organizations, Sends, authentication and REST
         env:
-          VW_TEST_BW: ${{ runner.temp }}/reference-cli/node_modules/.bin/bw
-        run: run test:compat
+          REFERENCE_CLI: ${{ runner.temp }}/reference-cli/node_modules/.bin/bw
+        run: |
+          args=(compat run --server-version "${SERVER_VERSION}" --image "${SERVER_IMAGE}")
+          if [[ -n "${REFERENCE_VERSION}" ]]; then
+            args+=(--reference "${REFERENCE_CLI}" --reference-version "${REFERENCE_VERSION}")
+          else
+            args+=(--protocol-only)
+          fi
+          bun run repo "${args[@]}"
       - name: Verify delivered email codes under both KDFs
-        env:
-          VW_TEST_SMTP: "1"
-          VW_TEST_CASE: email two-factor
-        run: run test:compat
+        run: bun run repo compat run --server-version "${SERVER_VERSION}" --image "${SERVER_IMAGE}" --smtp --case 'email two-factor'
       - name: Verify OIDC SSO under both KDFs
-        env:
-          VW_TEST_SSO: "1"
-        run: run test:compat
+        run: bun run repo compat run --server-version "${SERVER_VERSION}" --image "${SERVER_IMAGE}" --sso

@@ -67,12 +67,13 @@ From the repository root, with the normal mise tools installed:
 
 ```sh
 rustup target add --toolchain 1.99.1 wasm32-wasip2 wasm32-unknown-unknown
+bun install --frozen-lockfile --ignore-scripts
 bun install --cwd experiments/wasip2 --frozen-lockfile --ignore-scripts
-bun run --cwd experiments/wasip2 build
-bun run --cwd experiments/wasip2 test
-bun run --cwd experiments/wasip2 benchmark
+bun run repo experiment wasip2 build
+bun run repo experiment wasip2 test
+bun run repo experiment wasip2 benchmark
 bun run build
-bun run --cwd experiments/wasip2 test:sdk
+bun run repo experiment wasip2 verify-sdk
 ```
 
 The build requires `cargo`, `wasm-bindgen` 0.2.129, Node, Bun, `tar`, and `patch`.
@@ -88,7 +89,7 @@ and runs the repository's consumer smoke tests under Node and Bun. Pass
 `baseline` to test the comparison backend through the identical packaging path:
 
 ```sh
-node experiments/wasip2/verify-sdk.mjs baseline
+bun run repo experiment wasip2 verify-sdk --variant baseline
 ```
 
 The optional second argument selects final SDK minification. Both modes retain
@@ -96,10 +97,10 @@ TypeScript declarations; `minified` retains source maps, while
 `minified-no-maps` disables JavaScript and declaration maps in the isolated build:
 
 ```sh
-node experiments/wasip2/verify-sdk.mjs baseline minified
-node experiments/wasip2/verify-sdk.mjs p2 minified
-node experiments/wasip2/verify-sdk.mjs baseline minified-no-maps
-node experiments/wasip2/verify-sdk.mjs p2 minified-no-maps
+bun run repo experiment wasip2 verify-sdk --variant baseline --mode minified
+bun run repo experiment wasip2 verify-sdk --variant p2 --mode minified
+bun run repo experiment wasip2 verify-sdk --variant baseline --mode minified-no-maps
+bun run repo experiment wasip2 verify-sdk --variant p2 --mode minified-no-maps
 ```
 
 These temporary archives are test artifacts, not release candidates. In
@@ -172,9 +173,9 @@ these historical measurements predate their adoption in the normal SDK build.
 GitHub backend configuration as Statute. Run it after the experiment build:
 
 ```sh
-bun run --cwd experiments/wasip2 optimize
-node experiments/wasip2/verify-sdk.mjs baseline minified-no-maps Os
-node experiments/wasip2/verify-sdk.mjs p2 minified-no-maps Oz-converge
+bun run repo experiment wasip2 optimize
+bun run repo experiment wasip2 verify-sdk --variant baseline --mode minified-no-maps --optimization Os
+bun run repo experiment wasip2 verify-sdk --variant p2 --mode minified-no-maps --optimization Oz-converge
 ```
 
 The pipeline is Rust → wasm-bindgen/Jco → wasm-opt → Brotli. For P2, optimization

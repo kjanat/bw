@@ -38,7 +38,7 @@
 	],
 	"scripts": {
 		"build": "bun run build:wasm && tsdown",
-		"build:wasm": "bun wasm/build.ts",
+		"build:wasm": "bun ../../tools/repo.ts wasm build",
 		"lint": "eslint src test wasm/build.ts",
 		"test": "bun test",
 		"typecheck": "tsc --noEmit"

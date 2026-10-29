@@ -38,11 +38,16 @@ jobs:
         with:
           name: package-previews
           path: artifacts
+      - name: Install repository tooling
+        run: bun install --frozen-lockfile --ignore-scripts
       - name: Download and verify published previews
         if: inputs.preview
-        run: bun .github/release/preview.ts artifacts/preview.json
+        run: bun run repo release preview --metadata artifacts/preview.json
       - name: Test an isolated installation
         env:
           RUNTIME: ${{ matrix.runtime }}
           PREVIEW_METADATA: ${{ inputs.preview && 'artifacts/preview.json' || '' }}
-        run: bun .github/release/verify.ts "${RUNTIME}"
+        run: |
+          args=(release verify --runtime "${RUNTIME}")
+          if [[ -n "${PREVIEW_METADATA}" ]]; then args+=(--preview-metadata "${PREVIEW_METADATA}"); fi
+          bun run repo "${args[@]}"

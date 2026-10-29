@@ -55,18 +55,20 @@ The committed `results/` files preserve the original measurements and compatibil
 
 Prerequisites: Node 24 or newer, Bun, rustup, and Binaryen **133** (`wasm-opt` on PATH). The Rust toolchain file pins Rust **1.99.1** and the `wasm32-wasip2` target. JavaScript packages and Rust crates are pinned through the included manifests and lockfiles; the build uses Cargo's `--locked` option. The original JavaScript measurements ran on Node 26.7.0; the output target is Node 24. Compression bytes can vary with runtime/compressor versions.
 
-From the repository root, using mise to select Binaryen 133 (install with `mise install binaryen@133` if needed). Without mise, set `WASM_OPT` to the absolute path of your Binaryen 133 executable. This avoids Jco's transitive Binaryen executable taking precedence in Bun scripts:
+From the repository root:
 
 ```sh
-cd experiments/dependency-size
 bun install --frozen-lockfile --ignore-scripts
-WASM_OPT="$(mise where binaryen@133)/bin/wasm-opt" bun run build
-bun run test
+bun install --cwd experiments/dependency-size --frozen-lockfile --ignore-scripts
+bun run repo experiment sizes build
+bun run repo experiment sizes test
 ```
+
+Size builds use Node by default to retain the original compressor; `--runtime bun` explicitly measures with Bun instead. The DreamCLI interface resolves Binaryen 133 from the repository's mise pin. Use `--wasm-opt /path/to/wasm-opt` to override it, or `--cargo-home /path/to/cache` to choose a Cargo cache. `--help` lists all options. Every runnable script also has an executable shebang and an `import.meta.main` guard; for example, `./experiments/dependency-size/build.mjs --help` uses the same command definition. Importing its exported function does not build anything.
 
 `build.mjs` builds each Rust feature separately, saves its component, bundles all JavaScript variants, runs Jco and `wasm-opt`, and measures the compressed outputs. It records tool versions in `out/environment.json`. `host.ts` is a snapshot of the SDK host at the commit above, with generated type references removed; the experiment does not import production files.
 
-`bun run test` runs the compatibility corpus under both Node and Bun, asserting exact-table parity and comparing the complete reports with the recorded findings. A successful run means the known candidate mismatches were reproduced, not that every candidate is interchangeable with production. Inspect `out/sizes.json`, `out/wasm-sizes.json`, and `out/parity-{node,bun}.json` for fresh results. To explore only the JavaScript sizes, run `bun run build:js` without the Rust/Binaryen prerequisites.
+`bun run repo experiment sizes test` runs the compatibility corpus under both Node and Bun, asserting exact-table parity and comparing the complete reports with the recorded findings. A successful run means the known candidate mismatches were reproduced, not that every candidate is interchangeable with production. Inspect `out/sizes.json`, `out/wasm-sizes.json`, and `out/parity-{node,bun}.json` for fresh results. To explore only the JavaScript sizes, run `bun run repo experiment sizes build --js-only` without the Rust/Binaryen prerequisites.
 
 ## Primary references
 

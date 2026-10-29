@@ -3,49 +3,66 @@
 	"ui": "tui",
 	"tasks": {
 		"build": {
-			"dependsOn": ["^build"],
-			"outputs": ["dist/**", "src/generated/**", "wasm/THIRD_PARTY_NOTICES.txt"],
-			"inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/mise.toml"],
-			"env": ["RUSTUP_TOOLCHAIN", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"],
-			"passThroughEnv": ["CARGO_HOME", "RUSTUP_HOME"]
+			"dependsOn": [
+				"^build"
+			],
+			"outputs": [
+				"dist/**",
+				"src/generated/**",
+				"wasm/THIRD_PARTY_NOTICES.txt"
+			],
+			"inputs": [
+				"$TURBO_DEFAULT$",
+				"$TURBO_ROOT$/mise.toml",
+				"$TURBO_ROOT$/tools/**"
+			],
+			"env": [
+				"RUSTUP_TOOLCHAIN",
+				"RUSTFLAGS",
+				"CARGO_ENCODED_RUSTFLAGS"
+			],
+			"passThroughEnv": [
+				"CARGO_HOME",
+				"RUSTUP_HOME"
+			]
 		},
 		"lint": {
-			"dependsOn": ["^lint"]
+			"dependsOn": [
+				"^lint"
+			]
 		},
 		"typecheck": {
-			"dependsOn": ["build", "^typecheck"]
+			"dependsOn": [
+				"build",
+				"^typecheck"
+			]
 		},
 		"dev": {
 			"cache": false,
 			"persistent": true
 		},
 		"test:compat": {
-			"dependsOn": ["build"],
+			"dependsOn": [
+				"build"
+			],
 			"outputs": [],
 			"cache": false,
 			"env": [
-				"VW_TEST_VERSION",
-				"VW_TEST_IMAGE",
-				"VW_TEST_BW",
-				"VW_TEST_BW_VERSION",
-				"VW_TEST_CASE",
-				"VW_TEST_FOCUSED_IMPORT",
-				"VW_TEST_PROTOCOL_ONLY",
-				"VW_TEST_IMPORT_FORMAT",
-				"VW_TEST_IMPORT_SHARD",
-				"VW_TEST_SKIP_IMPORTS",
-				"VW_TEST_LIST_FILTERS_ONLY",
-				"VW_TEST_POLICY_REDACTION_ONLY",
-				"VOLTA_HOME",
-				"VW_TEST_SMTP",
-				"VW_TEST_SSO"
+				"VOLTA_HOME"
 			]
 		},
 		"test": {
-			"dependsOn": ["build"],
+			"dependsOn": [
+				"build"
+			],
 			"outputs": [],
 			"cache": false,
-			"env": ["VW_TEST_SERVER", "VW_TEST_BW", "VW_TEST_IMPORT_FORMAT", "VW_TEST_MAILPIT"]
+			"env": [
+				"VW_TEST_SERVER",
+				"VW_TEST_BW",
+				"VW_TEST_IMPORT_FORMAT",
+				"VW_TEST_MAILPIT"
+			]
 		}
 	}
 }
