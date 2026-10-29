@@ -73,9 +73,4 @@ jobs:
       - name: Match the release archive to the tested build
         run: cmp "artifacts/${PACKAGE}.tgz" "tested/${PACKAGE}.tgz"
       - name: Publish the approved archive
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/.npmrc
-        run: |
-          printf '%s\n' "//registry.npmjs.org/:_authToken=\${NODE_AUTH_TOKEN}" > "${NPM_CONFIG_USERCONFIG}"
-          bash .github/release/publish.sh
+        run: bash .github/release/publish.sh
