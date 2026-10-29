@@ -37,8 +37,9 @@
 		"dist"
 	],
 	"scripts": {
-		"build": "tsdown",
-		"lint": "eslint src test",
+		"build": "bun run build:wasm && tsdown",
+		"build:wasm": "bun wasm/build.ts",
+		"lint": "eslint src test wasm/build.ts",
 		"test": "bun test",
 		"typecheck": "tsc --noEmit"
 	},
@@ -48,8 +49,7 @@
 		"lunr": "catalog:",
 		"micro509": "catalog:",
 		"parse5": "catalog:",
-		"tldts": "catalog:",
-		"zxcvbn": "catalog:"
+		"tldts": "catalog:"
 	},
 	"devDependencies": {
 		"@babel/eslint-parser": "catalog:",
@@ -57,7 +57,6 @@
 		"@eslint/js": "catalog:",
 		"@types/bun": "catalog:",
 		"@types/lunr": "catalog:",
-		"@types/zxcvbn": "catalog:",
 		"@vw/typescript-config": "workspace:*",
 		"eslint": "catalog:",
 		"kdbxweb": "catalog:",

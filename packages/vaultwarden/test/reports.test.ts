@@ -26,6 +26,14 @@ test('password-health scoring uses username tokens, no global brand words, and a
 	expect(passwordStrength('bitwarden')).toBeGreaterThan(0);
 	expect(passwordStrength('🔑'.repeat(100) + 'NeverScored')).toBe(passwordStrength('🔑'.repeat(100)));
 });
+test('WASM scoring handles empty and Unicode inputs without retaining previous username context', () => {
+	expect(passwordStrength('')).toBe(0);
+	expect(passwordStrength('asdfjkhkjwer!', 'asdfjkhkjwer@example.com')).toBe(1);
+	expect(passwordStrength('asdfjkhkjwer!')).toBe(4);
+	expect(passwordStrength('asdfjkhkjwer!', 'unrelated@example.com')).toBe(4);
+	expect(passwordStrength('𐰊𐰂𐰄𐰀𐰁')).toBe(1);
+	expect(passwordStrength('!QASW@#EDFR$%TGHY^&UJKI*(OL')).toBe(4);
+});
 test('offline reports include archived and organization logins, exclude trash, non-logins and empty passwords, and count exact reuse', async () => {
 	const items = [
 		login('a', 'private-secret-token'),

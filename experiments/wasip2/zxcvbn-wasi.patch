@@ -1,0 +1,99 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -84 +84 @@
+-[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies.criterion]
++[target.'cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))'.dev-dependencies.criterion]
+@@ -87 +87 @@
+-[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies.serde_json]
++[target.'cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))'.dev-dependencies.serde_json]
+@@ -90 +90 @@
+-[target.'cfg(target_arch = "wasm32")'.dependencies.chrono]
++[target.'cfg(all(target_arch = "wasm32", not(target_os = "wasi")))'.dependencies.chrono]
+@@ -93 +93 @@
+-[target.'cfg(target_arch = "wasm32")'.dependencies.wasm-bindgen]
++[target.'cfg(all(target_arch = "wasm32", not(target_os = "wasi")))'.dependencies.wasm-bindgen]
+@@ -96 +96 @@
+-[target.'cfg(target_arch = "wasm32")'.dependencies.web-sys]
++[target.'cfg(all(target_arch = "wasm32", not(target_os = "wasi")))'.dependencies.web-sys]
+@@ -100 +100 @@
+-[target.'cfg(target_arch = "wasm32")'.dev-dependencies.criterion]
++[target.'cfg(all(target_arch = "wasm32", not(target_os = "wasi")))'.dev-dependencies.criterion]
+@@ -104 +104 @@
+-[target.'cfg(target_arch = "wasm32")'.dev-dependencies.getrandom]
++[target.'cfg(all(target_arch = "wasm32", not(target_os = "wasi")))'.dev-dependencies.getrandom]
+@@ -108 +108 @@
+-[target.'cfg(target_arch = "wasm32")'.dev-dependencies.wasm-bindgen-test]
++[target.'cfg(all(target_arch = "wasm32", not(target_os = "wasi")))'.dev-dependencies.wasm-bindgen-test]
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -20 +20 @@
+-#[cfg(all(target_arch = "wasm32", not(feature = "custom_wasm_env")))]
++#[cfg(all(all(target_arch = "wasm32", not(target_os = "wasi")), not(feature = "custom_wasm_env")))]
+@@ -36 +36 @@
+-#[cfg(not(target_arch = "wasm32"))]
++#[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
+@@ -47 +47 @@
+-#[cfg(all(target_arch = "wasm32", not(feature = "custom_wasm_env")))]
++#[cfg(all(all(target_arch = "wasm32", not(target_os = "wasi")), not(feature = "custom_wasm_env")))]
+@@ -66 +66 @@
+-#[cfg(all(target_arch = "wasm32", feature = "custom_wasm_env"))]
++#[cfg(all(all(target_arch = "wasm32", not(target_os = "wasi")), feature = "custom_wasm_env"))]
+@@ -196 +196 @@
+-    #[cfg(target_arch = "wasm32")]
++    #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
+@@ -262,2 +262,2 @@
+-    #[cfg_attr(not(target_arch = "wasm32"), test)]
+-    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
++    #[cfg_attr(not(all(target_arch = "wasm32", not(target_os = "wasi"))), test)]
++    #[cfg_attr(all(target_arch = "wasm32", not(target_os = "wasi")), wasm_bindgen_test)]
+@@ -274,2 +274,2 @@
+-    #[cfg_attr(not(target_arch = "wasm32"), test)]
+-    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
++    #[cfg_attr(not(all(target_arch = "wasm32", not(target_os = "wasi"))), test)]
++    #[cfg_attr(all(target_arch = "wasm32", not(target_os = "wasi")), wasm_bindgen_test)]
+@@ -286,2 +286,2 @@
+-    #[cfg_attr(not(target_arch = "wasm32"), test)]
+-    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
++    #[cfg_attr(not(all(target_arch = "wasm32", not(target_os = "wasi"))), test)]
++    #[cfg_attr(all(target_arch = "wasm32", not(target_os = "wasi")), wasm_bindgen_test)]
+@@ -294,2 +294,2 @@
+-    #[cfg_attr(not(target_arch = "wasm32"), test)]
+-    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
++    #[cfg_attr(not(all(target_arch = "wasm32", not(target_os = "wasi"))), test)]
++    #[cfg_attr(all(target_arch = "wasm32", not(target_os = "wasi")), wasm_bindgen_test)]
+@@ -302,2 +302,2 @@
+-    #[cfg_attr(not(target_arch = "wasm32"), test)]
+-    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
++    #[cfg_attr(not(all(target_arch = "wasm32", not(target_os = "wasi"))), test)]
++    #[cfg_attr(all(target_arch = "wasm32", not(target_os = "wasi")), wasm_bindgen_test)]
+@@ -310,2 +310,2 @@
+-    #[cfg_attr(not(target_arch = "wasm32"), test)]
+-    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
++    #[cfg_attr(not(all(target_arch = "wasm32", not(target_os = "wasi"))), test)]
++    #[cfg_attr(all(target_arch = "wasm32", not(target_os = "wasi")), wasm_bindgen_test)]
+@@ -320,2 +320,2 @@
+-    #[cfg_attr(not(target_arch = "wasm32"), test)]
+-    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
++    #[cfg_attr(not(all(target_arch = "wasm32", not(target_os = "wasi"))), test)]
++    #[cfg_attr(all(target_arch = "wasm32", not(target_os = "wasi")), wasm_bindgen_test)]
+@@ -330,2 +330,2 @@
+-    #[cfg_attr(not(target_arch = "wasm32"), test)]
+-    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
++    #[cfg_attr(not(all(target_arch = "wasm32", not(target_os = "wasi"))), test)]
++    #[cfg_attr(all(target_arch = "wasm32", not(target_os = "wasi")), wasm_bindgen_test)]
+@@ -339,2 +339,2 @@
+-    #[cfg_attr(not(target_arch = "wasm32"), test)]
+-    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
++    #[cfg_attr(not(all(target_arch = "wasm32", not(target_os = "wasi"))), test)]
++    #[cfg_attr(all(target_arch = "wasm32", not(target_os = "wasi")), wasm_bindgen_test)]
+--- a/src/scoring.rs
++++ b/src/scoring.rs
+@@ -75 +75 @@
+-#[cfg(not(target_arch = "wasm32"))]
++#[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
+@@ -80 +80 @@
+-#[cfg(all(target_arch = "wasm32", not(feature = "custom_wasm_env")))]
++#[cfg(all(all(target_arch = "wasm32", not(target_os = "wasi")), not(feature = "custom_wasm_env")))]
+@@ -88 +88 @@
+-#[cfg(all(target_arch = "wasm32", feature = "custom_wasm_env"))]
++#[cfg(all(all(target_arch = "wasm32", not(target_os = "wasi")), feature = "custom_wasm_env"))]

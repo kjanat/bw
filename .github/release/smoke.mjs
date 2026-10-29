@@ -17,6 +17,8 @@ const {
 	deriveMasterKey,
 	encrypt,
 	parseKdbx,
+	passwordHealth,
+	passwordStrength,
 	stretchKey,
 } = await import(sdkUrl.href);
 
@@ -29,6 +31,16 @@ for (const [command, expected] of [['--version', cli.version], ['sdk-version', s
 }
 
 const password = '67t9b5g67$%Dh89n';
+// Exercise the packaged WASM asset under every consumer runtime, with no network.
+assert.equal(passwordStrength('password'), 0);
+assert.equal(passwordStrength('VeryStrong123@#'), 4);
+assert.equal(passwordStrength('asdfjkhkjwer!', 'ASDFJKHKJWER@example.test'), 1);
+assert.equal(passwordStrength('🔑'.repeat(100) + 'NeverScored'), passwordStrength('🔑'.repeat(100)));
+const health = await passwordHealth([
+	{ id: 'score-fixture', type: 1, name: 'Score fixture', login: { password: 'password' } },
+], { checkExposed: false });
+assert.equal(health[0].passwordStrength, 0);
+assert.equal(health[0].exposed, false);
 for (
 	const [kdf, expected] of [
 		[{ type: 0, iterations: 10000 }, '1f4f68e29647b15ac250acd1118184518aa745a7fe95021b27c5402a16c3564b'],
@@ -125,5 +137,5 @@ try {
 console.log(
 	`Installed packages verified: ${process.versions.bun ? 'Bun' : 'Node'} ${
 		process.versions.bun ?? process.version
-	} / ${process.arch}; crypto, KDBX workers, login and sync.`,
+	} / ${process.arch}; password-strength WASM, crypto, KDBX workers, login and sync.`,
 );

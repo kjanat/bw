@@ -21,6 +21,10 @@ coverage
 build
 dist
 artifacts/
+packages/vaultwarden/wasm/target/
+packages/vaultwarden/wasm/THIRD_PARTY_NOTICES.txt
+packages/vaultwarden/src/generated/
+packages/vaultwarden/src/password-strength.wasm.br
 
 
 # Debug

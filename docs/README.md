@@ -673,10 +673,12 @@ item ID/name, a strength score from 0 to 4, `reuseCount` (null for a unique
 password), and `exposed`, `exposedCount`, and `exposedError`. Comparisons for
 reuse are case-sensitive. Report rows omit passwords, usernames, and hashes.
 
-Scoring uses zxcvbn with the login username's tokens as context, matching the
+Scoring uses the Rust zxcvbn estimator compiled to WebAssembly, with the login username's tokens as context, matching the
 SDK report path rather than the password-generator UI's global brand words.
 Only the first 100 Unicode characters are scored, matching the Rust estimator's
 work limit. Exposure and reuse checks use the entire password.
+The compressed WASM is included in the SDK and loaded locally on the first strength
+check; scoring requires no network access or native runtime installation.
 
 Exposure checking is enabled by default. `--no-check-exposed` makes the report
 entirely offline. Checks use the [HIBP Pwned Passwords range API](https://haveibeenpwned.com/API/v3#SearchingPwnedPasswordsByRange):

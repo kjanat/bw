@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomBytes } from 'node:crypto';
-import zxcvbn from 'zxcvbn';
+import { passwordScore } from '#password-strength';
 import { object, text, serverUrl } from '#client';
 import type { VaultItem } from '#models';
 
@@ -120,7 +120,7 @@ export function passwordStrength(password: string, username?: string): number {
 		prefix += character;
 	}
 	const context = (username?.split('@', 1)[0] ?? '').trim().toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
-	return zxcvbn(prefix, context).score;
+	return passwordScore(prefix, context);
 }
 export interface PasswordHealthOptions {
 	/** Defaults to true, like bw report password-health. Set false for an entirely offline report. */

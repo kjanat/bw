@@ -7,7 +7,10 @@ Install [mise](https://mise.jdx.dev/), then run:
 ```sh
 mise install
 bun install --frozen-lockfile
+bun run build
 ```
+
+The SDK build compiles its password-strength estimator from Rust to WebAssembly. `mise install` provides the pinned Rust toolchain, WASM target, and matching wasm-bindgen CLI. npm consumers use the prebuilt asset and need no Rust tools. See [WASM build details](packages/vaultwarden/wasm/README.md).
 
 ## Packages
 

@@ -1,0 +1,321 @@
+{
+	"node": {
+		"baseline": {
+			"importMs": 5.5533709999999985,
+			"firstScoreMs": 116.211046,
+			"warmScoreMs": 0.557529306640625
+		},
+		"p2": {
+			"importMs": 13.007500999999998,
+			"firstScoreMs": 109.33558199999999,
+			"warmScoreMs": 0.67132654296875
+		}
+	},
+	"bun": {
+		"baseline": {
+			"importMs": 8.034093,
+			"firstScoreMs": 94.812861,
+			"warmScoreMs": 0.6053529570312499
+		},
+		"p2": {
+			"importMs": 10.110722999999998,
+			"firstScoreMs": 105.126251,
+			"warmScoreMs": 0.674893650390625
+		}
+	},
+	"bytes": {
+		"baseline": {
+			"runtime": 637160,
+			"gzip": 634892
+		},
+		"p2": {
+			"runtime": 762412,
+			"gzip": 672281
+		}
+	},
+	"metadata": {
+		"rust": "1.99.1",
+		"edition": 2024,
+		"jco": "1.40.0",
+		"node": "26.7.0",
+		"bun": "1.4.4",
+		"architecture": "aarch64",
+		"samplesPerVariant": 5,
+		"warmupCalls": 64,
+		"timedCalls": 512,
+		"correctnessCasesPerRuntime": 258,
+		"date": "2026-10-29"
+	},
+	"sdk": {
+		"baseline": {
+			"packedBytes": 1131712,
+			"unpackedBytes": 2976197,
+			"nodeSmokePassed": true,
+			"bunSmokePassed": true,
+			"reportTestsPassed": 9
+		},
+		"p2": {
+			"packedBytes": 1213090,
+			"unpackedBytes": 3358159,
+			"nodeSmokePassed": true,
+			"bunSmokePassed": true,
+			"reportTestsPassed": 9
+		}
+	},
+	"wasmtime": {
+		"version": "50.0.0",
+		"cases": 8,
+		"passed": true
+	},
+	"sdkMinification": {
+		"tsdown": "0.23.3",
+		"rolldown": "1.2.15",
+		"minified": {
+			"baseline": {
+				"variant": "baseline",
+				"mode": "minified",
+				"packedBytes": 1136089,
+				"unpackedBytes": 2699258,
+				"packageBytes": {
+					"js": 459434,
+					"maps": 1443920,
+					"declarations": 38978,
+					"wasm": 634259,
+					"other": 122667
+				},
+				"node": true,
+				"bun": true,
+				"reportTests": 9
+			},
+			"p2": {
+				"variant": "p2",
+				"mode": "minified",
+				"packedBytes": 1214512,
+				"unpackedBytes": 3053252,
+				"packageBytes": {
+					"js": 568891,
+					"maps": 1675442,
+					"declarations": 38978,
+					"wasm": 647274,
+					"other": 122667
+				},
+				"node": true,
+				"bun": true,
+				"reportTests": 9
+			}
+		},
+		"minified-no-maps": {
+			"baseline": {
+				"variant": "baseline",
+				"mode": "minified-no-maps",
+				"packedBytes": 795303,
+				"unpackedBytes": 1255180,
+				"packageBytes": {
+					"js": 459313,
+					"maps": 0,
+					"declarations": 38941,
+					"wasm": 634259,
+					"other": 122667
+				},
+				"node": true,
+				"bun": true,
+				"reportTests": 9
+			},
+			"p2": {
+				"variant": "p2",
+				"mode": "minified-no-maps",
+				"packedBytes": 830400,
+				"unpackedBytes": 1377652,
+				"packageBytes": {
+					"js": 568770,
+					"maps": 0,
+					"declarations": 38941,
+					"wasm": 647274,
+					"other": 122667
+				},
+				"node": true,
+				"bun": true,
+				"reportTests": 9
+			}
+		}
+	},
+	"wasmOpt": {
+		"version": "wasm-opt version 133 (version_133)",
+		"flags": [
+			"--enable-bulk-memory",
+			"--enable-reference-types",
+			"--strip-debug",
+			"--strip-producers"
+		],
+		"profiles": {
+			"Os": {
+				"passes": [
+					"-Os"
+				],
+				"sizes": {
+					"baseline": {
+						"baseline_bg.wasm": {
+							"before": 1933047,
+							"after": 1890980,
+							"brotliBefore": 634259,
+							"brotliAfter": 632853
+						}
+					},
+					"p2": {
+						"scorer.core.wasm": {
+							"before": 2058631,
+							"after": 1910006,
+							"brotliBefore": 646953,
+							"brotliAfter": 639350
+						},
+						"scorer.core2.wasm": {
+							"before": 273,
+							"after": 224,
+							"brotliBefore": 181,
+							"brotliAfter": 133
+						},
+						"scorer.core3.wasm": {
+							"before": 168,
+							"after": 119,
+							"brotliBefore": 140,
+							"brotliAfter": 86
+						}
+					}
+				},
+				"node": true,
+				"bun": true,
+				"cases": 258
+			},
+			"Oz": {
+				"passes": [
+					"-Oz"
+				],
+				"sizes": {
+					"baseline": {
+						"baseline_bg.wasm": {
+							"before": 1933047,
+							"after": 1882389,
+							"brotliBefore": 634259,
+							"brotliAfter": 633317
+						}
+					},
+					"p2": {
+						"scorer.core.wasm": {
+							"before": 2058631,
+							"after": 1897585,
+							"brotliBefore": 646953,
+							"brotliAfter": 641683
+						},
+						"scorer.core2.wasm": {
+							"before": 273,
+							"after": 224,
+							"brotliBefore": 181,
+							"brotliAfter": 133
+						},
+						"scorer.core3.wasm": {
+							"before": 168,
+							"after": 119,
+							"brotliBefore": 140,
+							"brotliAfter": 86
+						}
+					}
+				},
+				"node": true,
+				"bun": true,
+				"cases": 258
+			},
+			"Oz-converge": {
+				"passes": [
+					"-Oz",
+					"--converge"
+				],
+				"sizes": {
+					"baseline": {
+						"baseline_bg.wasm": {
+							"before": 1933047,
+							"after": 1881645,
+							"brotliBefore": 634259,
+							"brotliAfter": 633357
+						}
+					},
+					"p2": {
+						"scorer.core.wasm": {
+							"before": 2058631,
+							"after": 1896908,
+							"brotliBefore": 646953,
+							"brotliAfter": 638859
+						},
+						"scorer.core2.wasm": {
+							"before": 273,
+							"after": 224,
+							"brotliBefore": 181,
+							"brotliAfter": 133
+						},
+						"scorer.core3.wasm": {
+							"before": 168,
+							"after": 119,
+							"brotliBefore": 140,
+							"brotliAfter": 86
+						}
+					}
+				},
+				"node": true,
+				"bun": true,
+				"cases": 258
+			}
+		},
+		"sdk": [
+			{
+				"variant": "baseline",
+				"mode": "minified-no-maps",
+				"optimization": "Os",
+				"packedBytes": 794548,
+				"unpackedBytes": 1253774,
+				"packageBytes": {
+					"js": 459313,
+					"maps": 0,
+					"declarations": 38941,
+					"wasm": 632853,
+					"other": 122667
+				},
+				"node": true,
+				"bun": true,
+				"reportTests": 9
+			},
+			{
+				"variant": "p2",
+				"mode": "minified-no-maps",
+				"optimization": "Os",
+				"packedBytes": 822856,
+				"unpackedBytes": 1369947,
+				"packageBytes": {
+					"js": 568770,
+					"maps": 0,
+					"declarations": 38941,
+					"wasm": 639569,
+					"other": 122667
+				},
+				"node": true,
+				"bun": true,
+				"reportTests": 9
+			},
+			{
+				"variant": "p2",
+				"mode": "minified-no-maps",
+				"optimization": "Oz-converge",
+				"packedBytes": 822348,
+				"unpackedBytes": 1369456,
+				"packageBytes": {
+					"js": 568770,
+					"maps": 0,
+					"declarations": 38941,
+					"wasm": 639078,
+					"other": 122667
+				},
+				"node": true,
+				"bun": true,
+				"reportTests": 9
+			}
+		]
+	}
+}

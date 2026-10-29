@@ -1,7 +1,7 @@
 import js from '@eslint/js';
 import parser from '@babel/eslint-parser';
 export default [
-	{ ignores: ['dist/**'] },
+	{ ignores: ['dist/**', 'src/generated/**'] },
 	{
 		files: ['**/*.ts'],
 		languageOptions: {
