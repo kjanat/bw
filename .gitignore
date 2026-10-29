@@ -21,7 +21,7 @@ coverage
 build
 dist
 artifacts/
-packages/vaultwarden/wasm/target/
+target/
 packages/vaultwarden/wasm/vendor/
 packages/vaultwarden/wasm/THIRD_PARTY_NOTICES.txt
 packages/vaultwarden/src/generated/

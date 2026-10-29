@@ -1,0 +1,22 @@
+[
+	{
+		"name": "psl-wasip2",
+		"js": 117476,
+		"gzipJs": 27983,
+		"brotliJs": 24294,
+		"wasmRaw": 918734,
+		"sidecar": 191675,
+		"totalGzip": 219658,
+		"totalBrotli": 215969
+	},
+	{
+		"name": "html-wasip2",
+		"js": 116973,
+		"gzipJs": 26221,
+		"brotliJs": 22585,
+		"wasmRaw": 449167,
+		"sidecar": 152351,
+		"totalGzip": 178572,
+		"totalBrotli": 174936
+	}
+]

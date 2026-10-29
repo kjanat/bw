@@ -1,0 +1,5 @@
+package vw:size-probe;
+world probe {
+  export extract: func(html: string) -> result<string, string>;
+  export domain: func(host: string) -> option<string>;
+}

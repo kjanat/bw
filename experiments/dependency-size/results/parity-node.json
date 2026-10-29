@@ -1,0 +1,162 @@
+{
+	"runtime": "node",
+	"htmlCases": 28,
+	"htmlMismatches": {
+		"htmlparser2": [
+			{
+				"input": "<pre>\u0000nul</pre>",
+				"expected": {
+					"value": "nul"
+				},
+				"actual": {
+					"value": "�nul"
+				}
+			},
+			{
+				"input": "<table><pre>a<tr><td>b</td></tr>c</pre></table>",
+				"expected": {
+					"value": "a"
+				},
+				"actual": {
+					"value": "abc"
+				}
+			},
+			{
+				"input": "<pre>a<table>b<tr><td>c</td></tr>d</table>e</pre>",
+				"expected": {
+					"value": "abdce"
+				},
+				"actual": {
+					"value": "abcde"
+				}
+			},
+			{
+				"input": "<pre>a<template>hidden</template>b</pre>",
+				"expected": {
+					"value": "ab"
+				},
+				"actual": {
+					"value": "ahiddenb"
+				}
+			},
+			{
+				"input": "<select><pre>invalid</pre></select><pre>real</pre>",
+				"expected": {
+					"value": "real"
+				},
+				"actual": {
+					"value": "invalid"
+				}
+			}
+		],
+		"sax": [
+			{
+				"input": "<pre>\u0000nul</pre>",
+				"expected": {
+					"value": "nul"
+				},
+				"actual": {
+					"value": "\u0000nul"
+				}
+			},
+			{
+				"input": "<pre>a<pre>b</pre>c</pre>",
+				"expected": {
+					"value": "abc"
+				},
+				"actual": {
+					"value": "ab"
+				}
+			},
+			{
+				"input": "<table><pre>a<tr><td>b</td></tr>c</pre></table>",
+				"expected": {
+					"value": "a"
+				},
+				"actual": {
+					"value": "abc"
+				}
+			},
+			{
+				"input": "<pre>a<table>b<tr><td>c</td></tr>d</table>e</pre>",
+				"expected": {
+					"value": "abdce"
+				},
+				"actual": {
+					"value": "abcde"
+				}
+			},
+			{
+				"input": "<template><pre>hidden</pre></template><pre>visible</pre>",
+				"expected": {
+					"value": "visible"
+				},
+				"actual": {
+					"value": "hidden"
+				}
+			},
+			{
+				"input": "<pre>a<template>hidden</template>b</pre>",
+				"expected": {
+					"value": "ab"
+				},
+				"actual": {
+					"value": "ahiddenb"
+				}
+			},
+			{
+				"input": "<select><pre>invalid</pre></select><pre>real</pre>",
+				"expected": {
+					"value": "real"
+				},
+				"actual": {
+					"value": "invalid"
+				}
+			}
+		],
+		"wasmHtml": [
+			{
+				"input": "<select><pre>invalid</pre></select><pre>real</pre>",
+				"expected": {
+					"value": "real"
+				},
+				"actual": {
+					"value": "invalid"
+				}
+			}
+		]
+	},
+	"domainRules": 10857,
+	"domainChecks": 65174,
+	"experimentalMismatches": 14261,
+	"experimentalDomainMismatches": 0,
+	"wasmDomainChecks": 32587,
+	"wasmDomainMismatches": 6,
+	"wasmDomainExamples": [
+		{
+			"host": "oya.to",
+			"expected": null,
+			"actual": "oya.to"
+		},
+		{
+			"host": "login.oya.to",
+			"expected": "login.oya.to",
+			"actual": "oya.to"
+		},
+		{
+			"host": "https://user:pass@a.b.oya.to:8080/path?q=x",
+			"expected": "b.oya.to",
+			"actual": "oya.to"
+		},
+		{
+			"host": "aliases121.com",
+			"expected": null,
+			"actual": "aliases121.com"
+		},
+		{
+			"host": "login.aliases121.com",
+			"expected": "login.aliases121.com",
+			"actual": "aliases121.com"
+		}
+	]
+}

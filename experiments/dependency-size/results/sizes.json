@@ -1,0 +1,65 @@
+[
+	{
+		"name": "parse5",
+		"js": 151718,
+		"gzipJs": 42133,
+		"brotliJs": 36523,
+		"sidecar": 0,
+		"totalGzip": 42133,
+		"totalBrotli": 36523
+	},
+	{
+		"name": "htmlparser2",
+		"js": 52284,
+		"gzipJs": 22291,
+		"brotliJs": 20648,
+		"sidecar": 0,
+		"totalGzip": 22291,
+		"totalBrotli": 20648
+	},
+	{
+		"name": "parse5-sax",
+		"js": 102190,
+		"gzipJs": 33381,
+		"brotliJs": 28834,
+		"sidecar": 0,
+		"totalGzip": 33381,
+		"totalBrotli": 28834
+	},
+	{
+		"name": "tldts",
+		"js": 131726,
+		"gzipJs": 46414,
+		"brotliJs": 40563,
+		"sidecar": 0,
+		"totalGzip": 46414,
+		"totalBrotli": 40563
+	},
+	{
+		"name": "tldts-experimental",
+		"js": 107885,
+		"gzipJs": 47256,
+		"brotliJs": 33577,
+		"sidecar": 0,
+		"totalGzip": 47256,
+		"totalBrotli": 33577
+	},
+	{
+		"name": "tldts-compressed-data",
+		"js": 8804,
+		"gzipJs": 3206,
+		"brotliJs": 2891,
+		"sidecar": 37456,
+		"totalGzip": 40662,
+		"totalBrotli": 40347
+	},
+	{
+		"name": "tldts-binary-data",
+		"js": 8941,
+		"gzipJs": 3254,
+		"brotliJs": 2956,
+		"sidecar": 36838,
+		"totalGzip": 40092,
+		"totalBrotli": 39794
+	}
+]
