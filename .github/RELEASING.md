@@ -13,12 +13,14 @@ fixtures, and SDK prelogin/login/sync through a local HTTP fixture. The full
 Vaultwarden server matrix runs on Node 26 alongside this workflow, with each
 server's pinned Bitwarden CLI reference.
 
-Once present on the default branch, the `pkg-pr-new` workflow starts when CI
-begins. It waits for the build-ready artifact and verifies the archive checksums.
-The built packages are extracted into temporary directories, then the locked
+CI calls the `pkg-pr-new` workflow after its source and package checks pass,
+preserving the pull-request event so the publisher can comment on the PR. It
+reuses that run's build artifacts and verifies their archive checksums. The
+built packages are extracted into temporary directories, then the locked
 `pkg-pr-new` command repacks them with matching preview dependency URLs. The
 consumer uses the publisher's URLs and checksums and installs only the CLI
-preview, allowing its SDK dependency to resolve without overrides. The pkg.pr.new
+preview, allowing its SDK dependency to resolve without overrides. Source checks
+are not repeated for previews. The pkg.pr.new
 GitHub App must be installed on this repository before publication.
 
 ## Prepare a draft

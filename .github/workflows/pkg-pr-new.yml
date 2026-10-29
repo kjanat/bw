@@ -1,57 +1,26 @@
 name: pkg.pr.new
 on:
-  workflow_run:
-    workflows: [CI]
-    types: [in_progress]
+  workflow_call:
+    inputs:
+      ref: { type: string, default: "" }
 permissions: { contents: read, actions: read }
 cache-mode: read
 defaults: { run: { shell: "bash -euo pipefail {0}" } }
 jobs:
-  source:
-    name: Wait for package build artifacts
-    if: github.event.workflow_run.event == 'pull_request' || github.event.workflow_run.event == 'push'
-    runs-on: ubuntu-26.04
-    timeout-minutes: 30
-    outputs:
-      source: ${{ steps.source.outputs.source }}
-    env:
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
-      BUILD_RUN_ID: ${{ github.event.workflow_run.id }}
-    steps:
-      - id: source
-        name: Wait for the completed-build record
-        run: |
-          mkdir -p source
-          while ! gh run download "${BUILD_RUN_ID}" --name build-ready --dir source > download.log 2>&1; do
-            status=$(gh run view "${BUILD_RUN_ID}" --json status --jq '.status')
-            if [[ "${status}" == completed ]]; then
-              cat download.log
-              printf '::error::The run finished without completed build artifacts.\n'
-              exit 1
-            fi
-            rm -f source/build.json
-            sleep 10
-          done
-          source=$(jq -ce --argjson run "${BUILD_RUN_ID}" 'select(.run == $run and (.ref | test("^[0-9a-f]{40}$")))' source/build.json)
-          printf 'source=%s\n' "${source}" >> "${GITHUB_OUTPUT}"
   preview:
-    needs: [source]
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ fromJSON(needs.source.outputs.source).ref }}
+          ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
-      - uses: $/.github/actions/setup-bun
+      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
       - run: bun install --frozen-lockfile --ignore-scripts
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: npm-packages
           path: artifacts
-          run-id: ${{ fromJSON(needs.source.outputs.source).run }}
-          github-token: ${{ github.token }}
       - name: Verify archive checksums
         working-directory: artifacts
         run: sha256sum -c ./*.sha256
@@ -70,9 +39,8 @@ jobs:
           if-no-files-found: error
   tests:
     name: Preview packages
-    needs: [source, preview]
-    uses: $/.github/workflows/test.yml
+    needs: [preview]
+    uses: $/.github/workflows/consumer.yml
     with:
-      ref: ${{ fromJSON(needs.source.outputs.source).ref }}
-      build-run-id: ${{ fromJSON(needs.source.outputs.source).run }}
+      ref: ${{ inputs.ref }}
       preview: true

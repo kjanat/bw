@@ -59,11 +59,7 @@ jobs:
         with:
           ref: ${{ fromJSON(env.RELEASE).sha }}
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: "26"
-          registry-url: https://registry.npmjs.org
-          package-manager-cache: false
+      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
       - run: npm install --global npm@12.2.1 --ignore-scripts
       - name: Download approved archive and checksums
         run: gh release download "${TAG}" --pattern "${PACKAGE}.tgz" --pattern SHA256SUMS --dir artifacts
@@ -77,5 +73,9 @@ jobs:
       - name: Match the release archive to the tested build
         run: cmp "artifacts/${PACKAGE}.tgz" "tested/${PACKAGE}.tgz"
       - name: Publish the approved archive
-        env: { NODE_AUTH_TOKEN: "${{ secrets.NPM_TOKEN }}" }
-        run: bash .github/release/publish.sh
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/.npmrc
+        run: |
+          printf '%s\n' "//registry.npmjs.org/:_authToken=\${NODE_AUTH_TOKEN}" > "${NPM_CONFIG_USERCONFIG}"
+          bash .github/release/publish.sh

@@ -1,0 +1,48 @@
+name: Installed packages
+on:
+  workflow_call:
+    inputs:
+      ref: { type: string, default: "" }
+      preview: { type: boolean, default: false }
+permissions: { contents: read, actions: read }
+defaults: { run: { shell: "bash -euo pipefail {0}" } }
+jobs:
+  consumer:
+    name: Installed packages (${{ matrix.label }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { label: node, runtime: node, node: "26", runner: ubuntu-26.04 }
+          - { label: node 24.8.0, runtime: node, node: "24.8.0", runner: ubuntu-26.04 }
+          - { label: bun, runtime: bun, node: "26", runner: ubuntu-26.04 }
+          - { label: node arm64, runtime: node, node: "26", runner: ubuntu-26.04-arm }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    env:
+      MISE_NODE_VERSION: ${{ matrix.node }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { ref: "${{ inputs.ref || github.sha }}", persist-credentials: false }
+      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: npm-packages
+          path: artifacts
+      - name: Verify archive checksums
+        working-directory: artifacts
+        run: sha256sum -c ./*.sha256
+      - name: Download preview publication metadata
+        if: inputs.preview
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: package-previews
+          path: artifacts
+      - name: Download and verify published previews
+        if: inputs.preview
+        run: bun .github/release/preview.ts artifacts/preview.json
+      - name: Test an isolated installation
+        env:
+          RUNTIME: ${{ matrix.runtime }}
+          PREVIEW_METADATA: ${{ inputs.preview && 'artifacts/preview.json' || '' }}
+        run: bun .github/release/verify.ts "${RUNTIME}"
