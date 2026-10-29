@@ -14,6 +14,7 @@ import {
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runDirect, inDirectory } from '../../tools/runtime.mjs';
+import { runConsumerSmoke } from '../../tools/release/smoke.mjs';
 
 export async function verifySdk({ variant = 'p2', mode = 'default', optimization = 'none' } = {}) {
 	return inDirectory(fileURLToPath(new URL('.', import.meta.url)), async () => {
@@ -88,10 +89,8 @@ export async function verifySdk({ variant = 'p2', mode = 'default', optimization
 					overrides: { [sdkManifest.name]: `file:${archive}` },
 				}),
 			);
-			cpSync(join(repo, 'tools/release/smoke.mjs'), join(consumer, 'smoke.mjs'));
-			cpSync(join(repo, 'apps/cli/test/fixtures/kdbx'), join(consumer, 'fixtures/kdbx'), { recursive: true });
 			run('bun', ['install', '--ignore-scripts'], consumer);
-			run(runtime, ['smoke.mjs'], consumer, { ...process.env, EXPECTED_SDK_VERSION: sdkManifest.version });
+			runConsumerSmoke(runtime, consumer, sdkManifest.version);
 			const installed = join(consumer, 'node_modules', sdkManifest.name);
 			const sizes = { js: 0, maps: 0, declarations: 0, wasm: 0, other: 0 };
 			for (const file of readdirSync(installed, { recursive: true })) {

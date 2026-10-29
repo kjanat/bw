@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { checksum, parseRelease, verifyChecksums, type ReleaseMetadata } from './release/metadata.ts';
 import { publicationNeeded } from './release/publish.ts';
+import { smokeConsumer } from './release/smoke.mjs';
 import { repoRoot } from './runtime.mjs';
 
 const sha = 'a'.repeat(40);
@@ -212,3 +213,25 @@ test('tampered assets or changed tested archives stop release mutations', async 
 		await f.cleanup();
 	}
 }, 30000);
+
+test('consumer smoke rejects packages resolved from an ancestor installation', async () => {
+	const root = await mkdtemp(resolve(tmpdir(), 'vw-consumer-isolation-'));
+	try {
+		const consumer = resolve(root, 'consumer');
+		await mkdir(consumer);
+		await writeFile(resolve(consumer, 'package.json'), '{"private":true}');
+		for (const name of ['vaultwarden-cli', 'vaultwarden']) {
+			const directory = resolve(root, 'node_modules/@kjanat', name);
+			await mkdir(directory, { recursive: true });
+			await writeFile(
+				resolve(directory, 'package.json'),
+				JSON.stringify({ name: `@kjanat/${name}`, main: 'index.mjs' }),
+			);
+			await writeFile(resolve(directory, 'index.mjs'), 'throw new Error("Ancestor package must not be imported");');
+		}
+		await expect(smokeConsumer({ consumer, expectedSdkVersion: '0.1.3' })).rejects
+			.toThrow('Package resolved outside the consumer installation');
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});

@@ -1,10 +1,10 @@
 #!/usr/bin/env bun
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { cp, mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { runDirect, inDirectory, repoRoot } from '../runtime.mjs';
+import { runConsumerSmoke } from './smoke.mjs';
 
 export async function verifyRelease(runtime: 'node' | 'bun', previewMetadataPath?: string) {
 	return inDirectory(repoRoot, async () => {
@@ -46,14 +46,8 @@ export async function verifyRelease(runtime: 'node' | 'bun', previewMetadataPath
 				...(!previewMetadataPath ? { overrides: { [sdk.name]: packages[sdk.name] } } : {}),
 			}),
 		);
-		await cp(fileURLToPath(new URL('./smoke.mjs', import.meta.url)), resolve(consumer, 'smoke.mjs'));
-		await cp(resolve('apps/cli/test/fixtures/kdbx'), resolve(consumer, 'fixtures/kdbx'), { recursive: true });
 		execFileSync('bun', ['install', '--ignore-scripts'], { cwd: consumer, stdio: 'inherit' });
-		execFileSync(runtime, ['smoke.mjs'], {
-			cwd: consumer,
-			stdio: 'inherit',
-			env: { ...process.env, EXPECTED_SDK_VERSION: sdk.version },
-		});
+		runConsumerSmoke(runtime, consumer, sdk.version);
 	});
 }
 

@@ -29,6 +29,11 @@ GitHub App must be installed on this repository before publication.
 Release operations use `bun run repo release`. The workflows call `draft prepare`,
 `draft stage`, `draft attach`, `download`, `verify-attestations`, `validate`, and
 `publish`; DreamCLI binds their inputs directly from the workflow environment.
+The shared `smoke` command resolves the installed CLI and its SDK from the consumer
+directory and rejects packages found outside that installation. Its runner and
+KDBX fixtures stay in the repository; release checks and the WASIp2 experiment
+use the same `runConsumerSmoke` helper.
+
 Each command also supports flags and `--help`. The command entrypoints in
 `tools/release` are importable and executable through the same CLI.
 

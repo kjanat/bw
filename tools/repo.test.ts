@@ -12,6 +12,7 @@ const entrypoints = [
 	'tools/release/pack.ts',
 	'tools/release/preview.ts',
 	'tools/release/verify.ts',
+	'tools/release/smoke.mjs',
 	'tools/release/draft.ts',
 	'tools/release/download.ts',
 	'tools/release/validate.ts',
