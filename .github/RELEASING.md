@@ -38,18 +38,22 @@ git push origin v0.1.0
 A `v*` tag starts Release. To prepare or retry an existing tag manually:
 
 ```sh
-gh workflow run release.yml -f tag=v0.1.0
+gh workflow run release.yml --ref v0.1.0 -f tag=v0.1.0
 ```
 
 Release creates a GitHub draft if none exists, builds and tests the tagged
 commit, then attaches the tested `vaultwarden.tgz` and `cli.tgz` archives,
-`SHA256SUMS`, and `release.json`. The workflow does not publish the draft or
-publish packages to npm.
+`SHA256SUMS`, and `release.json`. Before attaching them, it generates GitHub
+build-provenance attestations for all four assets and verifies their repository,
+signing workflow, tag and source commit. Manual dispatch must use the release
+tag as its workflow ref so the attestation identifies the tagged source.
+The workflow does not publish the draft or publish packages to npm.
 
 ## Approve and publish
 
 Review the draft notes, checks and archives, then publish the GitHub release.
-The `release.published` event validates the release metadata, waits for the
+The `release.published` event verifies all four asset attestations and the
+release metadata, waits for the
 successful Release workflow, compares each attached archive byte-for-byte with
 the tested build artifact, then publishes that archive to npm with provenance
 and lifecycle scripts disabled. Prerelease versions use the `next` dist-tag.
@@ -62,5 +66,20 @@ for package in vaultwarden vaultwarden-cli; do
 done
 ```
 
-The `npm` environment may also provide `NPM_TOKEN` as an authentication
-fallback.
+Publication uses npm trusted publishing through GitHub OIDC, with no token
+fallback. npm package provenance is generated separately from the GitHub
+release-asset attestations.
+
+To verify downloaded release assets locally:
+
+```sh
+tag=v0.1.2
+gh release download "${tag}" --repo kjanat/vw --dir artifacts
+for asset in vaultwarden.tgz cli.tgz SHA256SUMS release.json; do
+  gh attestation verify "artifacts/${asset}" --repo kjanat/vw \
+    --signer-workflow kjanat/vw/.github/workflows/release.yml \
+    --source-ref "refs/tags/${tag}" \
+    --source-digest "$(jq -r .sha artifacts/release.json)" \
+    --deny-self-hosted-runners
+done
+```

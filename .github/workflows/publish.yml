@@ -16,6 +16,7 @@ jobs:
     name: Validate tested release assets
     runs-on: ubuntu-26.04
     timeout-minutes: 10
+    permissions: { contents: read, actions: read, attestations: read }
     outputs:
       release: ${{ steps.source.outputs.release }}
     steps:
@@ -28,6 +29,8 @@ jobs:
       - name: Verify release checksums
         working-directory: artifacts
         run: sha256sum -c SHA256SUMS
+      - name: Verify release attestations
+        run: bash .github/release/verify-attestations.sh
       - name: Validate release assets and build provenance
         id: source
         run: |

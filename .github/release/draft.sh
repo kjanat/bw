@@ -15,6 +15,7 @@ workspace_for() {
 case "${1}" in
 	prepare)
 		: "${TAG:?}" "${GITHUB_RUN_ID:?}" "${GITHUB_OUTPUT:?}"
+		[[ "${GITHUB_REF:?}" == "refs/tags/${TAG}" ]]
 		sha=$(git rev-parse HEAD)
 		git merge-base --is-ancestor "${sha}" origin/master
 		version=${TAG#v}
@@ -37,9 +38,8 @@ case "${1}" in
 		fi
 		printf 'release=%s\n' "${release}" >>"${GITHUB_OUTPUT}"
 		;;
-	attach)
-		: "${RELEASE:?}" "${GITHUB_STEP_SUMMARY:?}"
-		tag=$(jq -er '.tag' <<<"${RELEASE}")
+	stage)
+		: "${RELEASE:?}"
 		sha=$(git rev-parse HEAD)
 		expected_sha=$(jq -er '.sha' <<<"${RELEASE}")
 		[[ "${sha}" == "${expected_sha}" ]]
@@ -57,12 +57,24 @@ case "${1}" in
 		jq . <<<"${RELEASE}" >release.json
 		sha256sum -- "${archives[@]}" release.json >SHA256SUMS
 		sha256sum -c SHA256SUMS
+		;;
+	attach)
+		: "${RELEASE:?}" "${GITHUB_STEP_SUMMARY:?}"
+		tag=$(jq -er '.tag' <<<"${RELEASE}")
+		sha=$(git rev-parse HEAD)
+		cd artifacts
+		sha256sum -c SHA256SUMS
+		jq -e --argjson release "${RELEASE}" --arg sha "${sha}" '. == $release and .sha == $sha' release.json
+		archives=()
+		for package in $(jq -er '.packages[]' <<<"${RELEASE}"); do
+			archives+=("${package}.tgz")
+		done
 		gh release view "${tag}" --json isDraft --jq '.isDraft' | jq -e '. == true'
 		gh release upload "${tag}" "${archives[@]}" SHA256SUMS release.json --clobber
 		printf 'Draft ready for review: %s\n' "${tag}" >>"${GITHUB_STEP_SUMMARY}"
 		;;
 	*)
-		printf 'Usage: draft.sh prepare|attach\n' >&2
+		printf 'Usage: draft.sh prepare|stage|attach\n' >&2
 		exit 1
 		;;
 esac

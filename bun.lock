@@ -13,7 +13,7 @@
     },
     "apps/cli": {
       "name": "@kjanat/vaultwarden-cli",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "bin": {
         "vw": "./dist/main.mjs",
       },
@@ -40,7 +40,7 @@
     },
     "packages/vaultwarden": {
       "name": "@kjanat/vaultwarden",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "dependencies": {
         "@xmldom/xmldom": "catalog:",
         "fflate": "catalog:",
