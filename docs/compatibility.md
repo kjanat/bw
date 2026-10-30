@@ -267,9 +267,21 @@ KDFs may omit reference comparisons. The recorded `1.36.0 / 2026.10.0` and
 job; a known pair that now authenticates also fails until its stale exception is
 removed. No newer CLI version inherits an older version's exception.
 
+Reference login and unlock are separate Bun `test.failingIf` cases for each KDF.
+Fixture setup and exact failure classification remain ordinary checks, so unrelated
+errors cannot satisfy an expected failure. After verified reference failures, the
+same runner continues the Vaultwarden protocol suite without reference comparisons.
+An unexpected reference success fails the test and requires removing the stale
+expected-failure entry.
+
 On 2026-10-29, disposable local runs reproduced that error under both KDFs for
 each of these two exact pairs. The `2026.10.1` pair failed before its exception
 was added, confirming that the older CLI's exception did not apply to it.
+
+On 2026-10-30, both KDF probes reproduced `bw` 2026.10.1's user-key-ID
+backfill failure on each of Vaultwarden 1.37.0, 1.37.1, 1.37.2 and 1.37.3.
+These exact pairs expect `KeyIdBackfillError` together with HTTP 404 from the
+user-key-ID request. Other status codes and unrelated failures still fail normally.
 
 For compatible pairs, the runner executes KDF/vault checks, eight external-import
 shards, and authentication/REST parity. A shard can be rerun with

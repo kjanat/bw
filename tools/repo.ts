@@ -2,6 +2,7 @@
 import { cli, command, group, arg, flag } from '@kjanat/dreamcli';
 import { createAdapter } from '@kjanat/dreamcli/runtime';
 import { execFileSync } from 'node:child_process';
+import { statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { repoRoot, resolveWasmOpt } from './runtime.mjs';
 import { releaseTagPattern } from './release/metadata.ts';
@@ -276,7 +277,14 @@ export function createRepoCLI(direct: Record<string, unknown> = {}) {
 				.flag('runtime', runtimeFlag())
 				.flag(
 					'preview-metadata',
-					flag.path({ type: 'file' }).env('PREVIEW_METADATA').describe('Preview publication metadata'),
+					flag.custom((raw: unknown) => {
+						// GitHub Actions supplies an empty value for archive-only verification.
+						if (raw === '') return undefined;
+						if (typeof raw !== 'string' || !statSync(raw, { throwIfNoEntry: false })?.isFile()) {
+							throw new Error('Preview publication metadata must name an existing file.');
+						}
+						return raw;
+					}).env('PREVIEW_METADATA').describe('Preview publication metadata'),
 				)
 				.action(async ({ flags }) => {
 					const metadata = flags['preview-metadata'] ? resolve(flags['preview-metadata']) : undefined;

@@ -106,6 +106,27 @@ test('commands pass validated options to operations and honor runtime selection'
 	expect(calls).toEqual(['full', 'pr']);
 });
 
+test('release verification treats empty preview metadata as absent and validates supplied paths', async () => {
+	const calls: unknown[] = [];
+	const app = createRepoCLI({
+		[new URL('./release/verify.ts', import.meta.url).href]: {
+			verifyRelease: (runtime: string, metadata?: string) => calls.push([runtime, metadata]),
+		},
+	});
+	for (const metadata of [undefined, '', resolve(repoRoot, 'package.json')]) {
+		const result = await app.execute(['release', 'verify'], {
+			env: { RUNTIME: 'node', PREVIEW_METADATA: metadata },
+		});
+		expect(result.exitCode).toBe(0);
+		expect(calls.splice(0)).toEqual([['node', metadata || undefined]]);
+	}
+	for (const metadata of [resolve(repoRoot, 'missing-preview.json'), repoRoot]) {
+		const result = await app.execute(['release', 'verify', '--preview-metadata', metadata]);
+		expect(result.exitCode).not.toBe(0);
+		expect(calls).toEqual([]);
+	}
+});
+
 test('entrypoint imports do not run operations or change the working directory', async () => {
 	const cwd = process.cwd();
 	const exitCode = process.exitCode;

@@ -2,7 +2,7 @@ export type CompatibilityMode = 'full' | 'pr';
 export interface ReferenceIncompatibility {
 	server: string;
 	referenceCliVersion: string;
-	error: 'invalid-prelogin-kdf';
+	error: 'invalid-prelogin-kdf' | 'missing-user-key-id-endpoint';
 }
 export interface CompatibilityTargets {
 	nodeVersion: string;
@@ -88,7 +88,7 @@ export async function planCompatibility(
 		const key = `${entry.server}/${entry.referenceCliVersion}`;
 		if (
 			!servers.includes(entry.server) || !references.includes(entry.referenceCliVersion)
-			|| entry.error !== 'invalid-prelogin-kdf' || exceptions.has(key)
+			|| !['invalid-prelogin-kdf', 'missing-user-key-id-endpoint'].includes(entry.error) || exceptions.has(key)
 		) {
 			throw new Error(`Invalid or duplicate reference incompatibility: ${key}.`);
 		}

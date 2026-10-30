@@ -6,19 +6,16 @@ import { registrationVerificationToken } from '#test/fixtures/registration';
 import { writeTestCertificate } from '#test/fixtures/tls';
 import type { ReferenceIncompatibility } from '#test/compatibility-plan';
 
-export type AuthenticationOutcome = 'authenticated' | 'invalid-prelogin-kdf' | 'failed';
+export type AuthenticationOutcome = 'authenticated' | ReferenceIncompatibility['error'] | 'failed';
 
-export function classifyAuthentication(
-	outcomes: readonly AuthenticationOutcome[],
-	expected?: ReferenceIncompatibility,
-): 'compatible' | 'known-incompatible' {
-	if (outcomes.length !== 2) throw new Error('Both KDF authentication results are required.');
-	if (outcomes.every(result => result === 'authenticated')) {
-		if (expected) throw new Error('Reference login now works; remove the stale incompatibility entry.');
-		return 'compatible';
-	}
-	if (expected && outcomes.every(result => result === expected.error)) return 'known-incompatible';
-	throw new Error(`Unexpected reference authentication failure: PBKDF2=${outcomes[0]}, Argon2id=${outcomes[1]}.`);
+export function classifyLoginFailure(code: number, stderr: string): AuthenticationOutcome {
+	if (code !== 1) return 'failed';
+	if (stderr.includes('KDF config response does not contain a valid KDF type')) return 'invalid-prelogin-kdf';
+	if (
+		/Failed to post the user key id:.*status: 404,/.test(stderr)
+		&& stderr.includes('KeyIdBackfillError: API call failed during user key id backfill')
+	) return 'missing-user-key-id-endpoint';
+	return 'failed';
 }
 
 /** Check both KDFs against a real disposable server before any comparison can be omitted. */
@@ -26,7 +23,6 @@ export async function checkReferenceAuthentication(options: {
 	server: string;
 	reference: string;
 	directory: string;
-	expected?: ReferenceIncompatibility;
 	signal: AbortSignal;
 }) {
 	const { server, reference, directory, signal } = options;
@@ -161,18 +157,14 @@ export async function checkReferenceAuthentication(options: {
 			}
 			const login = await run(['login', email, '--passwordenv', 'BW_PASSWORD', '--raw', '--nointeraction']);
 			if (login.code !== 0) {
-				outcomes.push(
-					login.code === 1 && login.stderr.includes('KDF config response does not contain a valid KDF type')
-						? 'invalid-prelogin-kdf'
-						: 'failed',
-				);
+				outcomes.push(classifyLoginFailure(login.code, login.stderr));
 			} else {
 				const status = await run(['status'], login.stdout.trim());
 				const unlocked = status.code === 0 && JSON.parse(status.stdout).status === 'unlocked';
 				outcomes.push(unlocked ? 'authenticated' : 'failed');
 			}
 		}
-		return classifyAuthentication(outcomes, options.expected);
+		return outcomes;
 	} finally {
 		await proxy.stop(true);
 	}

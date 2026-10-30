@@ -5,7 +5,7 @@ import {
 	resolveReleaseImage,
 	type CompatibilityTargets,
 } from '#test/compatibility-plan';
-import { classifyAuthentication } from '#test/reference-authentication';
+import { classifyLoginFailure } from '#test/reference-authentication';
 
 const image = `vaultwarden/server@sha256:${'a'.repeat(64)}`;
 const targets: CompatibilityTargets = {
@@ -108,13 +108,11 @@ test('reference discovery reads all published versions, not just the latest tag'
 	await expect(resolveReleaseImage('1.38.0', async () => 'not a digest')).rejects.toThrow('digest');
 });
 
-test('only an exact known failure reproduced for both KDFs can omit reference comparisons', () => {
-	const expected = targets.referenceIncompatibilities[0];
-	expect(classifyAuthentication(['authenticated', 'authenticated'])).toBe('compatible');
-	expect(classifyAuthentication(['invalid-prelogin-kdf', 'invalid-prelogin-kdf'], expected)).toBe('known-incompatible');
-	expect(() => classifyAuthentication(['invalid-prelogin-kdf', 'invalid-prelogin-kdf'])).toThrow('Unexpected');
-	expect(() => classifyAuthentication(['invalid-prelogin-kdf', 'failed'], expected)).toThrow('Unexpected');
-	expect(() => classifyAuthentication(['authenticated', 'invalid-prelogin-kdf'], expected)).toThrow('Unexpected');
-	expect(() => classifyAuthentication(['authenticated', 'authenticated'], expected)).toThrow('stale');
-	expect(() => classifyAuthentication(['invalid-prelogin-kdf'], expected)).toThrow('Both KDF');
+test('reference key-ID migration failures require the exact missing-endpoint error', () => {
+	const stderr = 'Failed to post the user key id: Response(ResponseContent { status: 404, message: "Not Found" })\n'
+		+ 'KeyIdBackfillError: API call failed during user key id backfill';
+	expect(classifyLoginFailure(1, stderr)).toBe('missing-user-key-id-endpoint');
+	expect(classifyLoginFailure(2, stderr)).toBe('failed');
+	expect(classifyLoginFailure(1, stderr.replace('404', '500'))).toBe('failed');
+	expect(classifyLoginFailure(1, 'KeyIdBackfillError: API call failed during user key id backfill')).toBe('failed');
 });

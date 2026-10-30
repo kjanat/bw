@@ -628,10 +628,10 @@ exact-field and error-message parity is tracked in the implementation inventory.
 ## Shell completion
 
 ```sh
-vw completions zsh > ./_vw
-vw completions bash > ./vw.bash
-vw completions fish > ./vw.fish
-vw completions powershell > ./vw.ps1
+vw completions zsh >./_vw
+vw completions bash >./vw.bash
+vw completions fish >./vw.fish
+vw completions powershell >./vw.ps1
 ```
 
 Completion scripts target the `vw` executable. Install or source the generated
@@ -766,7 +766,7 @@ password removal, access limits, expiry, disabling and deletion.
 ```sh
 vw create attachment --file ./document.pdf --itemid ITEM_ID
 vw get attachment ATTACHMENT_ID --itemid ITEM_ID --output ./download.pdf
-vw get attachment document.pdf --itemid ITEM_ID --raw > ./download.pdf
+vw get attachment document.pdf --itemid ITEM_ID --raw >./download.pdf
 vw delete attachment ATTACHMENT_ID --itemid ITEM_ID
 ```
 

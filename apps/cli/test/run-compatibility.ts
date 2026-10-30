@@ -6,7 +6,6 @@ import { isAbsolute, join } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
 import { assertStableVersion, resolveCompatibilityTarget, type CompatibilityTargets } from '#test/compatibility-plan';
-import { checkReferenceAuthentication } from '#test/reference-authentication';
 import { runDirect } from '../../../tools/runtime.mjs';
 
 export interface CompatibilityOptions {
@@ -48,7 +47,7 @@ export async function runCompatibility(options: CompatibilityOptions = {}) {
 	if (ssoEnabled && process.platform !== 'linux') {
 		throw new Error('The SSO fixture requires Linux.');
 	}
-	const compareReference = !protocolOnly && !smtpEnabled && !ssoEnabled;
+	let compareReference = !protocolOnly && !smtpEnabled && !ssoEnabled;
 	if (!/^axllent\/mailpit@sha256:[a-f0-9]{64}$/.test(mailpitImage)) {
 		throw new Error('Mailpit must use a pinned digest.');
 	}
@@ -123,7 +122,6 @@ export async function runCompatibility(options: CompatibilityOptions = {}) {
 		return { code, output: redacted };
 	}
 	let exitCode: number | undefined;
-	const knownIncompatible = Symbol('known reference incompatibility');
 	try {
 		if (compareReference) {
 			const referenceVersion = Bun.spawn([reference!, '--version'], {
@@ -302,23 +300,34 @@ export async function runCompatibility(options: CompatibilityOptions = {}) {
 				entry.server === version
 				&& entry.referenceCliVersion === expectedReferenceVersion
 			);
-			const result = await checkReferenceAuthentication({
-				server,
-				reference: reference!,
-				directory,
-				expected,
-				signal: cancellation.signal,
+			const probe = spawn('bun', ['test', 'test/reference-authentication-live.test.ts'], {
+				detached: true,
+				cwd: new URL('..', import.meta.url).pathname,
+				env: {
+					PATH: process.env.PATH,
+					VW_TEST_SERVER: server,
+					VW_TEST_BW: reference,
+					VW_TEST_REFERENCE_DIRECTORY: directory,
+					VW_TEST_REFERENCE_FAILURE: expected?.error,
+				},
+				stdio: 'inherit',
 			});
+			running.add(probe);
+			const code = await new Promise<number>((resolve, reject) => {
+				probe.once('error', reject);
+				probe.once('exit', code => resolve(code ?? 130));
+			}).finally(() => running.delete(probe));
+			if (code !== 0) throw new Error('Reference authentication tests failed.');
+			compareReference = expected === undefined;
 			const summary = `Vaultwarden ${version} / bw ${expectedReferenceVersion}: ${
-				result === 'compatible'
+				compareReference
 					? 'PBKDF2 and Argon2id login passed; running comparisons.'
-					: `Known incompatibility reproduced for both KDFs (${
+					: `Expected reference login failures (${
 						expected!.error
-					}); reference comparisons unavailable. Server protocol checks run separately.`
+					}); continuing Vaultwarden protocol tests without reference comparisons.`
 			}`;
 			console.log(summary);
 			if (process.env.GITHUB_STEP_SUMMARY) await appendFile(process.env.GITHUB_STEP_SUMMARY, `${summary}\n`);
-			if (result === 'known-incompatible') throw knownIncompatible;
 		}
 		const cwd = new URL('..', import.meta.url).pathname;
 		const env = {
@@ -427,9 +436,6 @@ export async function runCompatibility(options: CompatibilityOptions = {}) {
 				}
 			}
 		}
-	} catch (error) {
-		if (error !== knownIncompatible) throw error;
-		exitCode = 0;
 	} finally {
 		stopTests();
 		if (oidc) {

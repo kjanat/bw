@@ -1040,7 +1040,7 @@ for (
 						undefined,
 						memberCliDir,
 					);
-					if (serverVersion === '1.36.0') {
+					if (Bun.semver.satisfies(serverVersion, '<1.37.4')) {
 						expect(memberCollectionlessMove.code).toBe(0);
 						const moved = JSON.parse(memberCollectionlessMove.stdout) as {
 							organizationId: string;
@@ -1074,7 +1074,7 @@ for (
 						undefined,
 						memberCliDir,
 					);
-					if (serverVersion === '1.36.0') {
+					if (Bun.semver.satisfies(serverVersion, '<1.37.4')) {
 						expect(memberCollectionlessShare.code).toBe(0);
 						expect(JSON.parse(memberCollectionlessShare.stdout).collectionIds).toEqual([]);
 					} else {
@@ -1099,7 +1099,7 @@ for (
 						undefined,
 						memberCliDir,
 					);
-					if (serverVersion === '1.36.0') {
+					if (Bun.semver.satisfies(serverVersion, '<1.37.4')) {
 						expect(memberCollectionlessCreate.code).toBe(0);
 						expect(JSON.parse(memberCollectionlessCreate.stdout).collectionIds).toEqual([]);
 					} else {
@@ -1295,7 +1295,7 @@ for (
 						session,
 						password,
 					);
-					if (type >= 6 && serverVersion === '1.36.0') {
+					if (type >= 6 && Bun.semver.satisfies(serverVersion, '<1.37.4')) {
 						expect(result.code).toBe(1);
 						expect(result.stderr).toContain('requires Vaultwarden 1.37.4 or newer');
 						continue;
