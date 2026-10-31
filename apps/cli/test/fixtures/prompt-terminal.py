@@ -13,7 +13,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 
-def check(scenario, module, directory):
+def check(scenario: str, module: str, directory: str) -> bool:
     master, slave = pty.openpty()
     before = termios.tcgetattr(slave)
     script = (
@@ -79,8 +79,8 @@ try {
         ]
     environment = {"PATH": os.environ["PATH"]}
     command = ["node", "--input-type=module", "-e", script]
+    cli = str(Path(unquote(urlparse(module).path)).with_name("main.ts"))
     if scenario == "cli_interrupt":
-        cli = str(Path(unquote(urlparse(module).path)).with_name("main.ts"))
         environment["VW_APPDATA_DIR"] = directory
         configured = subprocess.run(
             ["node", cli, "config", "server", "https://example.com"],
@@ -107,9 +107,9 @@ try {
                     break
             if index < len(steps):
                 marker, answer, hidden = steps[index]
-                echo = bool(termios.tcgetattr(slave)[3] & termios.ECHO)
-                if marker in output and (not hidden or not echo):
-                    os.write(master, answer)
+                silent = not termios.tcgetattr(slave)[3] & termios.ECHO
+                if marker in output and (not hidden or silent):
+                    _ = os.write(master, answer)
                     index += 1
         if child.poll() is None:
             raise RuntimeError("Prompt child did not finish")
@@ -148,7 +148,7 @@ try {
     finally:
         if child.poll() is None:
             child.kill()
-            child.wait()
+            _ = child.wait()
         os.close(master)
         os.close(slave)
 
